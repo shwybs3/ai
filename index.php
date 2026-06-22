@@ -184,6 +184,15 @@ function migrate(): void
         day VARCHAR(10) NOT NULL,
         count INT NOT NULL DEFAULT 0
     )$engine",
+    "CREATE TABLE IF NOT EXISTS activity_log (
+        id $id,
+        admin_id INT NOT NULL,
+        admin_name VARCHAR(120) NOT NULL,
+        field VARCHAR(60) NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        url VARCHAR(500) NOT NULL,
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -221,6 +230,11 @@ function migrate(): void
         'banner_title' => 'مرحباً بك في Yassota',
         'banner_subtitle' => 'تسوّق، اربح نقاط، واسحبها أموالاً حقيقية',
         'banner_bg_image' => '',
+        'footer_text' => '',
+        'buy_button_text' => 'طلب شراء',
+        'empty_products_text' => 'لا توجد منتجات حالياً، تابعنا قريباً',
+        'theme_accent_color' => '#e6294b',
+        'theme_accent2_color' => '#ff4d4d',
         'points_rate' => '0.001',      // 1 نقطة = كم دولار
         'min_withdraw_usd' => '25',
         'captcha_reward' => '10',
@@ -327,6 +341,8 @@ function icon(string $name, string $class = 'ic'): string
         'chevron-up' => '<path d="M5 15l7-7 7 7"/>',
         'chevron-right' => '<path d="M9 6l6 6-6 6"/>',
         'star' => '<path d="M12 3.5 14.6 9l6 .9-4.3 4.2 1 6L12 17.3 6.7 20l1-6L3.4 9.9 9.4 9z"/>',
+        'hat' => '<path d="M4 13.5c0-4.5 3.6-8 8-8s8 3.5 8 8"/><ellipse cx="12" cy="13.5" rx="9" ry="2.2"/><path d="M9 6.2C9.3 4.3 10.5 3 12 3s2.7 1.3 3 3.2"/>',
+        'terminal' => '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5 11 12l-4 2.5M13 15h4"/>',
     ];
     $body = $paths[$name] ?? $paths['check'];
     return '<svg class="' . e($class) . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $body . '</svg>';
@@ -348,6 +364,12 @@ function set_setting(string $k, $v): void
         : "INSERT INTO settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = ?";
     $st = db()->prepare($sql);
     $st->execute([$k, $v, $v]);
+}
+
+function log_activity(int $adminId, string $adminName, string $field, string $filename, string $url): void
+{
+    db()->prepare("INSERT INTO activity_log (admin_id, admin_name, field, filename, url) VALUES (?,?,?,?,?)")
+        ->execute([$adminId, $adminName, $field, $filename, $url]);
 }
 
 function current_user(): ?array
@@ -896,6 +918,8 @@ if ($action === 'admin_upload') {
     $filename = bin2hex(random_bytes(8)) . '.' . $allowed[$mime];
     move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
     $url = 'uploads/' . $dir . '/' . $filename;
+    $admin = current_user();
+    log_activity((int)$admin['id'], $admin['name'] ?: $admin['username'], $field, $f['name'], $url);
     echo json_encode(['ok' => true, 'url' => $url]);
     exit;
 }
@@ -1529,6 +1553,13 @@ input,textarea,select{font-family:inherit}
 .card img.pimg{height:<?= (int)setting('product_image_height', 130) ?>px}
 .cat-tiles{grid-template-columns:repeat(auto-fill,minmax(<?= (int)setting('cat_tile_size', 140) ?>px,1fr))}
 .banner-carousel-slide img{height:<?= (int)setting('banner_height', 160) ?>px}
+<?php
+$themeAccent = setting('theme_accent_color', '#e6294b');
+$themeAccent2 = setting('theme_accent2_color', '#ff4d4d');
+if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent2)):
+?>
+:root{--accent:<?= e($themeAccent) ?>;--accent2:<?= e($themeAccent2) ?>}
+<?php endif; ?>
 </style>
 </head>
 <body>
@@ -1546,7 +1577,7 @@ input,textarea,select{font-family:inherit}
   <div class="login-wrap">
     <div class="login-top">
       <a href="?" class="login-back"><?= icon('chevron-right', 'ic-sm') ?>العودة للرئيسية</a>
-      <div class="login-logo"><?php if ($logo): ?><img src="<?= e($logo) ?>"><?php endif; ?> <?= e($siteName) ?></div>
+      <div class="login-logo"><?php if ($logo): ?><img src="<?= e($logo) ?>"><?php else: ?><?= icon('hat', 'ic') ?><?php endif; ?> <?= e($siteName) ?></div>
     </div>
     <div class="login-card">
       <div class="login-tabs">
@@ -1644,7 +1675,7 @@ input,textarea,select{font-family:inherit}
 
 <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
 <div class="sidebar" id="sidebar">
-  <div class="sb-head"><strong><?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()"><?= icon('close', 'ic') ?></button></div>
+  <div class="sb-head"><strong><?= icon('hat', 'ic-sm') ?> <?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()"><?= icon('close', 'ic') ?></button></div>
   <nav>
     <a href="?"><?= icon('home') ?> الرئيسية</a>
     <a href="?page=earn"><?= icon('coin') ?> اكسب عملات (كابتشا)</a>
@@ -1655,7 +1686,7 @@ input,textarea,select{font-family:inherit}
     <a href="?page=contact"><?= icon('send') ?> تواصل معنا</a>
     <a href="?page=privacy"><?= icon('lock') ?> سياسة الخصوصية</a>
     <a href="?page=terms"><?= icon('doc') ?> شروط الاستخدام</a>
-    <?php if (is_admin()): ?><a href="?page=admin"><?= icon('admin') ?> لوحة الإدارة</a><?php endif; ?>
+    <?php if (is_admin()): ?><a href="?page=admin"><?= icon('hat') ?> لوحة الإدارة</a><?php endif; ?>
   </nav>
 </div>
 
@@ -1764,7 +1795,7 @@ case 'home':
             <span class="price"><?= e($p['price']) ?>$</span>
             <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
           </div>
-          <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>)"><?= icon('cart', 'ic ic-sm') ?>طلب شراء</button>
+          <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>)"><?= icon('cart', 'ic ic-sm') ?><?= e(setting('buy_button_text', 'طلب شراء')) ?></button>
         </div>
         <?php
     }
@@ -1823,7 +1854,7 @@ case 'home':
     <?php endif; ?>
 
     <?php if (!$products): ?>
-      <div class="empty"><?= icon('rocket', 'ic ic-lg') ?><br>لا توجد منتجات حالياً، تابعنا قريباً</div>
+      <div class="empty"><?= icon('rocket', 'ic ic-lg') ?><br><?= e(setting('empty_products_text', 'لا توجد منتجات حالياً، تابعنا قريباً')) ?></div>
     <?php else: ?>
       <?php foreach ($categories as $c): if (empty($byCat[$c['id']])) continue; ?>
         <div class="section-title" id="cat-<?= (int)$c['id'] ?>"><?= icon(category_icon_name($c['name']), 'ic') ?><?= e($c['name']) ?></div>
@@ -2061,7 +2092,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['chart','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -2073,6 +2104,7 @@ case 'admin':
         $pending_topups = db()->query("SELECT COUNT(*) c FROM topup_requests WHERE status='pending'")->fetch()['c'];
         $pending_withdraws = db()->query("SELECT COUNT(*) c FROM withdraw_requests WHERE status='pending'")->fetch()['c'];
         $points_total = db()->query("SELECT COALESCE(SUM(points),0) s FROM users")->fetch()['s'];
+        $recent_activity = db()->query("SELECT * FROM activity_log ORDER BY id DESC LIMIT 15")->fetchAll();
     ?>
       <div class="formrow">
         <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_count ?></div><div class="lbl">المستخدمون</div></div></div>
@@ -2084,6 +2116,25 @@ case 'admin':
       </div>
       <div class="admin-box">
         <p style="color:var(--muted);font-size:13px">نسبة الربح الحالية: <?= e(setting('profit_split_admin')) ?>% للإدارة / <?= e(setting('profit_split_user')) ?>% للمستخدم — عدّلها من تبويب الإعدادات بحسب عوائد MoneyTag الفعلية.</p>
+      </div>
+      <div class="admin-box">
+        <h3><?= icon('terminal', 'ic') ?>سجل النشاط — آخر الملفات المرفوعة</h3>
+        <?php if (!$recent_activity): ?>
+          <p style="color:var(--muted);font-size:13px">لا يوجد نشاط رفع ملفات حتى الآن.</p>
+        <?php else: ?>
+        <table>
+          <tr><th>الأدمن</th><th>النوع</th><th>اسم الملف</th><th>الوقت</th><th></th></tr>
+          <?php foreach ($recent_activity as $a): ?>
+          <tr>
+            <td><?= e($a['admin_name']) ?></td>
+            <td><?= e($a['field']) ?></td>
+            <td><?= e($a['filename']) ?></td>
+            <td><?= e($a['created_at']) ?></td>
+            <td><a href="<?= e($a['url']) ?>" target="_blank" class="btn btn-ghost"><?= icon('image', 'ic-sm') ?>عرض</a></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php endif; ?>
       </div>
 
     <?php elseif ($tab === 'products'):
@@ -2443,6 +2494,11 @@ case 'admin':
           <label>نسبة ربح المستخدم %<input name="profit_split_user" value="<?= e(setting('profit_split_user')) ?>"></label>
           <label>ارتفاع صورة بطاقة المنتج (px)<input type="number" name="product_image_height" value="<?= e(setting('product_image_height')) ?>" min="60" max="400"></label>
           <label>عرض بطاقة القسم (px)<input type="number" name="cat_tile_size" value="<?= e(setting('cat_tile_size')) ?>" min="80" max="320"></label>
+          <label>نص زر الشراء<input name="buy_button_text" value="<?= e(setting('buy_button_text')) ?>"></label>
+          <label>نص عدم وجود منتجات<input name="empty_products_text" value="<?= e(setting('empty_products_text')) ?>"></label>
+          <label>نص أسفل الصفحة (الفوتر، اتركه فارغاً للنص الافتراضي)<input name="footer_text" value="<?= e(setting('footer_text')) ?>" placeholder="© 2026 Yassota — جميع الحقوق محفوظة"></label>
+          <label>اللون الأساسي للموقع<input type="color" name="theme_accent_color" value="<?= e(setting('theme_accent_color')) ?>"></label>
+          <label>لون التمييز الثانوي<input type="color" name="theme_accent2_color" value="<?= e(setting('theme_accent2_color')) ?>"></label>
           <label>تفعيل الإعلانات (عند ضغط زر فقط)
             <select name="ad_enabled">
               <option value="1" <?= setting('ad_enabled') === '1' ? 'selected' : '' ?>>مفعّلة</option>
@@ -2501,7 +2557,7 @@ default:
 
 <button id="scrollTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="أعلى الصفحة"><?= icon('chevron-up', 'ic') ?></button>
 
-<footer>© <?= date('Y') ?> <?= e($siteName) ?> — جميع الحقوق محفوظة</footer>
+<footer><?= setting('footer_text') ? e(setting('footer_text')) : '© ' . date('Y') . ' ' . e($siteName) . ' — جميع الحقوق محفوظة' ?></footer>
 
 <?php if (!isset($_COOKIE['policy_accepted']) || $_COOKIE['policy_accepted'] !== setting('policy_version', '1')): ?>
 <div class="policy-modal" id="policyModal">
