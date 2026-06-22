@@ -47,6 +47,8 @@ function migrate(): void
     "CREATE TABLE IF NOT EXISTS users (
         id $id,
         google_id VARCHAR(64) NULL,
+        username VARCHAR(60) NULL UNIQUE,
+        password_hash VARCHAR(255) NULL,
         email VARCHAR(190) NOT NULL UNIQUE,
         name VARCHAR(190) NULL,
         avatar VARCHAR(500) NULL,
@@ -164,6 +166,20 @@ function migrate(): void
 
     foreach ($tables as $sql) $pdo->exec($sql);
 
+    // أعمدة username/password_hash قد تكون مفقودة على تنصيب قديم — نضيفها بأمان
+    $existingCols = [];
+    try {
+        $colSql = DB_DRIVER === 'sqlite' ? "PRAGMA table_info(users)" : "SHOW COLUMNS FROM users";
+        foreach ($pdo->query($colSql)->fetchAll() as $row) {
+            $existingCols[] = DB_DRIVER === 'sqlite' ? $row['name'] : $row['Field'];
+        }
+    } catch (Throwable $e) {}
+    foreach (['username' => 'VARCHAR(60) NULL', 'password_hash' => 'VARCHAR(255) NULL'] as $col => $def) {
+        if (!in_array($col, $existingCols, true)) {
+            try { $pdo->exec("ALTER TABLE users ADD COLUMN $col $def"); } catch (Throwable $e) {}
+        }
+    }
+
     // seed default settings
     $defaults = [
         'site_name' => 'Yassota Store',
@@ -180,6 +196,7 @@ function migrate(): void
         'profit_split_admin' => '95',
         'profit_split_user' => '5',
         'policy_version' => '1',
+        'welcome_bonus_points' => '200',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -294,14 +311,44 @@ function tg_broadcast_product(array $product): void
 }
 
 /* ======================================================================
-   3) GOOGLE OAUTH
+   3) GOOGLE OAUTH + TRADITIONAL AUTH
    ====================================================================== */
+function google_redirect_uri(): string
+{
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https' ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $path = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
+    return "$scheme://$host$path?action=google_callback";
+}
+
+function gen_username(string $base): string
+{
+    $base = preg_replace('/[^a-zA-Z0-9_]/', '', strtolower(explode('@', $base)[0]));
+    if ($base === '') $base = 'user';
+    $base = mb_substr($base, 0, 20);
+    $username = $base;
+    $i = 0;
+    while (true) {
+        $st = db()->prepare("SELECT id FROM users WHERE username = ?");
+        $st->execute([$username]);
+        if (!$st->fetch()) return $username;
+        $i++;
+        $username = $base . $i;
+    }
+}
+
+function award_welcome_bonus(int $uid): void
+{
+    $bonus = (int)setting('welcome_bonus_points', 200);
+    if ($bonus > 0) add_points($uid, $bonus, 'welcome', 'هدية الترحيب بالتسجيل');
+}
+
 function google_login_url(): string
 {
     if (!GOOGLE_CLIENT_ID) return '#';
     $params = [
         'client_id' => GOOGLE_CLIENT_ID,
-        'redirect_uri' => GOOGLE_REDIRECT_URI,
+        'redirect_uri' => google_redirect_uri(),
         'response_type' => 'code',
         'scope' => 'openid email profile',
         'access_type' => 'online',
@@ -316,7 +363,7 @@ function google_handle_callback(string $code): void
         'code' => $code,
         'client_id' => GOOGLE_CLIENT_ID,
         'client_secret' => GOOGLE_CLIENT_SECRET,
-        'redirect_uri' => GOOGLE_REDIRECT_URI,
+        'redirect_uri' => google_redirect_uri(),
         'grant_type' => 'authorization_code',
     ]), false, stream_context_create(['http' => ['method' => 'POST', 'header' => "Content-Type: application/x-www-form-urlencoded\r\n"]])), true);
 
@@ -334,17 +381,72 @@ function google_handle_callback(string $code): void
     $st->execute([$email]);
     $u = $st->fetch();
     $role = ($email === ADMIN_EMAIL) ? 'admin' : 'user';
+    $isNew = !$u;
 
     if ($u) {
         db()->prepare("UPDATE users SET name=?, avatar=?, google_id=?, role=?, last_login=" . (DB_DRIVER === 'sqlite' ? "datetime('now')" : 'NOW()') . " WHERE id=?")
             ->execute([$name, $avatar, $gid, $role, $u['id']]);
         $uid = $u['id'];
     } else {
-        db()->prepare("INSERT INTO users (google_id, email, name, avatar, role) VALUES (?,?,?,?,?)")
-            ->execute([$gid, $email, $name, $avatar, $role]);
+        $username = gen_username($email);
+        db()->prepare("INSERT INTO users (google_id, email, name, avatar, role, username) VALUES (?,?,?,?,?,?)")
+            ->execute([$gid, $email, $name, $avatar, $role, $username]);
         $uid = db()->lastInsertId();
+        award_welcome_bonus((int)$uid);
     }
     $_SESSION['uid'] = $uid;
+    redirect($isNew ? '?page=welcome' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
+}
+
+function handle_register(): void
+{
+    csrf_check();
+    $username = trim($_POST['username'] ?? '');
+    $email = trim($_POST['email'] ?? '');
+    $password = (string)($_POST['password'] ?? '');
+
+    if (!$username || !$email || !$password) { flash('يرجى تعبئة جميع الحقول.', 'error'); redirect('?'); }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) { flash('البريد الإلكتروني غير صالح.', 'error'); redirect('?'); }
+    if (mb_strlen($password) < 6) { flash('كلمة المرور يجب أن تكون 6 أحرف على الأقل.', 'error'); redirect('?'); }
+    if (!preg_match('/^[a-zA-Z0-9_]{3,20}$/', $username)) { flash('اسم المستخدم يجب أن يكون 3-20 حرف/رقم إنجليزي بدون مسافات.', 'error'); redirect('?'); }
+
+    $st = db()->prepare("SELECT id FROM users WHERE email = ?");
+    $st->execute([$email]);
+    if ($st->fetch()) { flash('هذا البريد مسجل مسبقاً، سجّل الدخول.', 'error'); redirect('?'); }
+
+    $st = db()->prepare("SELECT id FROM users WHERE username = ?");
+    $st->execute([$username]);
+    if ($st->fetch()) { flash('اسم المستخدم محجوز، اختر اسماً آخر.', 'error'); redirect('?'); }
+
+    $role = ($email === ADMIN_EMAIL) ? 'admin' : 'user';
+    db()->prepare("INSERT INTO users (username, email, password_hash, name, role) VALUES (?,?,?,?,?)")
+        ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role]);
+    $uid = db()->lastInsertId();
+    award_welcome_bonus((int)$uid);
+    $_SESSION['uid'] = $uid;
+    redirect('?page=welcome');
+}
+
+function handle_login(): void
+{
+    csrf_check();
+    $identity = trim($_POST['identity'] ?? '');
+    $password = (string)($_POST['password'] ?? '');
+    if (!$identity || !$password) { flash('يرجى تعبئة جميع الحقول.', 'error'); redirect('?'); }
+
+    $st = db()->prepare("SELECT * FROM users WHERE email = ? OR username = ?");
+    $st->execute([$identity, $identity]);
+    $u = $st->fetch();
+
+    if (!$u || !$u['password_hash'] || !password_verify($password, $u['password_hash'])) {
+        flash('بيانات الدخول غير صحيحة.', 'error'); redirect('?');
+    }
+    if ($u['is_banned']) { flash('هذا الحساب محظور.', 'error'); redirect('?'); }
+
+    $role = ($u['email'] === ADMIN_EMAIL) ? 'admin' : $u['role'];
+    db()->prepare("UPDATE users SET role=?, last_login=" . (DB_DRIVER === 'sqlite' ? "datetime('now')" : 'NOW()') . " WHERE id=?")
+        ->execute([$role, $u['id']]);
+    $_SESSION['uid'] = $u['id'];
     redirect('?' . ($role === 'admin' ? 'page=admin' : ''));
 }
 
@@ -361,6 +463,9 @@ if ($action === 'google_callback') {
     google_handle_callback($_GET['code'] ?? '');
     exit;
 }
+
+if ($action === 'register') { handle_register(); exit; }
+if ($action === 'login') { handle_login(); exit; }
 
 if ($action === 'logout') { logout(); redirect('?'); }
 
@@ -723,7 +828,7 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
     </div>
     <a href="?action=logout" class="btn btn-ghost">خروج</a>
   <?php else: ?>
-    <a href="<?= e(google_login_url()) ?>" class="btn btn-primary">تسجيل الدخول بجوجل</a>
+    <button class="btn btn-primary" onclick="openAuthModal()">تسجيل الدخول</button>
   <?php endif; ?>
 </div>
 
@@ -741,6 +846,41 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
     <?php if (is_admin()): ?><a href="?page=admin">🎛️ لوحة الإدارة</a><?php endif; ?>
   </nav>
 </div>
+
+<?php if (!$user): ?>
+<div class="modal-bg" id="authModal" style="display:none">
+  <div class="modal">
+    <div style="display:flex;gap:10px;margin-bottom:14px">
+      <button type="button" class="btn btn-ghost" style="flex:1" id="tabLoginBtn" onclick="switchAuthTab('login')">تسجيل الدخول</button>
+      <button type="button" class="btn btn-ghost" style="flex:1" id="tabRegisterBtn" onclick="switchAuthTab('register')">حساب جديد</button>
+    </div>
+
+    <form id="loginForm" method="post" action="?action=login">
+      <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+      <h2>تسجيل الدخول</h2>
+      <input type="text" name="identity" placeholder="البريد الإلكتروني أو اسم المستخدم" required>
+      <input type="password" name="password" placeholder="كلمة المرور" required>
+      <button type="submit" class="btn btn-primary" style="width:100%">دخول</button>
+    </form>
+
+    <form id="registerForm" method="post" action="?action=register" style="display:none">
+      <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+      <h2>حساب جديد</h2>
+      <input type="text" name="username" placeholder="اسم المستخدم (إنجليزي بدون مسافات)" required>
+      <input type="email" name="email" placeholder="البريد الإلكتروني" required>
+      <input type="password" name="password" placeholder="كلمة المرور (6 أحرف فأكثر)" required>
+      <button type="submit" class="btn btn-success" style="width:100%">إنشاء حساب 🎁</button>
+    </form>
+
+    <?php if (GOOGLE_CLIENT_ID): ?>
+      <div style="text-align:center;margin:14px 0;color:var(--muted)">— أو —</div>
+      <a href="<?= e(google_login_url()) ?>" class="btn btn-ghost" style="display:block;text-align:center">تسجيل الدخول بجوجل</a>
+    <?php endif; ?>
+
+    <button type="button" class="btn btn-ghost" style="width:100%;margin-top:10px" onclick="closeAuthModal()">إغلاق</button>
+  </div>
+</div>
+<?php endif; ?>
 
 <?php $f = flash(); if ($f): ?>
   <div class="flash <?= e($f['type']) ?>"><?= e($f['msg']) ?></div>
@@ -793,7 +933,7 @@ case 'home':
     break;
 
 case 'earn':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لتبدأ بكسب العملات.</div>'; break; }
+    if (!$user) { echo '<div class="empty">سجّل الدخول لتبدأ بكسب العملات.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     $day = date('Y-m-d');
     $st = db()->prepare("SELECT count FROM captcha_logs WHERE user_id=? AND day=?");
     $st->execute([$user['id'], $day]);
@@ -811,7 +951,7 @@ case 'earn':
     break;
 
 case 'tasks':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض المهام.</div>'; break; }
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض المهام.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     $tasks = db()->query("SELECT * FROM tasks WHERE active=1")->fetchAll();
     $day = date('Y-m-d');
     ?>
@@ -842,7 +982,7 @@ case 'tasks':
     break;
 
 case 'wallet':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض محفظتك.</div>'; break; }
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض محفظتك.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     $wallets = db()->query("SELECT * FROM wallets WHERE active=1")->fetchAll();
     $usd = points_to_usd($user['points']);
     $minw = setting('min_withdraw_usd', 25);
@@ -879,7 +1019,7 @@ case 'wallet':
     break;
 
 case 'orders':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض طلباتك.</div>'; break; }
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض طلباتك.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     $st = db()->prepare("SELECT o.*, p.name, p.icon FROM orders o JOIN products p ON p.id=o.product_id WHERE o.user_id=? ORDER BY o.id DESC");
     $st->execute([$user['id']]);
     $orders = $st->fetchAll();
@@ -901,6 +1041,22 @@ case 'privacy':
 case 'terms':
     $st = db()->prepare("SELECT content FROM pages WHERE slug=?"); $st->execute([$page]); $c = $st->fetch();
     echo '<div class="admin-box" style="margin-top:18px;line-height:1.8">' . nl2br(e($c['content'] ?? '')) . '</div>';
+    break;
+
+case 'welcome':
+    if (!$user) { redirect('?'); }
+    $bonus = (int)setting('welcome_bonus_points', 200);
+    $dest = is_admin() ? '?page=admin' : '?';
+    ?>
+    <div class="admin-box" style="margin-top:40px;text-align:center;padding:40px 20px">
+      <div style="font-size:48px;margin-bottom:10px">🎉</div>
+      <h2>أهلاً بك، <?= e($user['name'] ?: $user['username']) ?>!</h2>
+      <p style="color:var(--muted);margin:14px 0">تم إنشاء حسابك بنجاح، وحصلت على هدية ترحيبية: <strong style="color:var(--accent2)">+<?= $bonus ?> عملة Yassota</strong> 🎁</p>
+      <p style="color:var(--muted);font-size:13px">سيتم تحويلك للصفحة الرئيسية بعد لحظات...</p>
+      <a href="<?= e($dest) ?>" class="btn btn-primary" style="margin-top:16px;display:inline-block">انتقل الآن</a>
+    </div>
+    <script>setTimeout(() => { location.href = '<?= e($dest) ?>'; }, 3000);</script>
+    <?php
     break;
 
 case 'admin':
@@ -1239,6 +1395,16 @@ default:
 
 <script>
 const CSRF = "<?= csrf_token() ?>";
+const LOGGED_IN = <?= $user ? 'true' : 'false' ?>;
+function openAuthModal(){ const m = document.getElementById('authModal'); if (m) m.style.display = 'flex'; }
+function closeAuthModal(){ const m = document.getElementById('authModal'); if (m) m.style.display = 'none'; }
+function switchAuthTab(tab){
+  document.getElementById('loginForm').style.display = tab === 'login' ? 'block' : 'none';
+  document.getElementById('registerForm').style.display = tab === 'register' ? 'block' : 'none';
+  document.getElementById('tabLoginBtn').classList.toggle('btn-primary', tab === 'login');
+  document.getElementById('tabRegisterBtn').classList.toggle('btn-primary', tab === 'register');
+}
+function requireLogin(){ openAuthModal(); return false; }
 window.addEventListener('load', () => {
   const pl = document.getElementById('preloader');
   setTimeout(() => { pl.style.opacity = 0; setTimeout(() => pl.remove(), 400); }, 300);
@@ -1261,6 +1427,7 @@ async function post(action, data){
   return r.json();
 }
 function buyProduct(id){
+  if (!LOGGED_IN) return requireLogin();
   if (!confirm('تأكيد إرسال طلب الشراء؟')) return;
   const d = new FormData(); d.append('product_id', id);
   post('api_buy_product', d).then(res => { toast(res.msg); });
@@ -1272,6 +1439,7 @@ function loadCaptcha(){
 }
 if (document.getElementById('captchaBox')) loadCaptcha();
 function submitCaptcha(){
+  if (!LOGGED_IN) return requireLogin();
   const ans = document.getElementById('captchaAnswer').value.trim();
   const d = new FormData(); d.append('answer', ans);
   post('api_solve_captcha', d).then(res => {
@@ -1281,6 +1449,7 @@ function submitCaptcha(){
   });
 }
 function startTask(id, url, seconds){
+  if (!LOGGED_IN) return requireLogin();
   window.open(url, '_blank');
   let remain = seconds;
   toast('انتظر ' + seconds + ' ثانية ثم سيتم التحقق...');
@@ -1294,16 +1463,19 @@ function startTask(id, url, seconds){
   }, 1000);
 }
 function saveWallet(){
+  if (!LOGGED_IN) return requireLogin();
   const d = new FormData();
   d.append('type', document.getElementById('wType').value);
   d.append('address', document.getElementById('wAddr').value);
   post('api_save_wallet', d).then(res => toast(res.msg));
 }
 function requestWithdraw(){
+  if (!LOGGED_IN) return requireLogin();
   if (!confirm('تأكيد طلب سحب الرصيد بالكامل؟')) return;
   post('api_request_withdraw', new FormData()).then(res => { toast(res.msg); if (res.ok) setTimeout(() => location.reload(), 1200); });
 }
 function requestTopup(){
+  if (!LOGGED_IN) return requireLogin();
   const d = new FormData();
   d.append('wallet_id', document.getElementById('topupWallet').value);
   d.append('amount', document.getElementById('topupAmount').value);

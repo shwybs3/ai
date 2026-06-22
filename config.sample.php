@@ -15,9 +15,10 @@ define('DB_PASS', 'your_db_password');
 define('ADMIN_EMAIL', 'sadoo1234999@gmail.com'); // البريد الوحيد المسموح له بالوصول للوحة الإدارة
 
 // ===== Google OAuth =====
+// رابط إعادة التوجيه يُحسب تلقائياً من دومين الموقع الحالي (index.php?action=google_callback)
+// أضف هذا الرابط بالضبط إلى "Authorized redirect URIs" في Google Cloud Console
 define('GOOGLE_CLIENT_ID', '');
 define('GOOGLE_CLIENT_SECRET', '');
-define('GOOGLE_REDIRECT_URI', ''); // مثال: https://yourdomain.com/index.php?action=google_callback
 
 // ===== بوت تيليجرام =====
 define('BOT_TOKEN', '');
