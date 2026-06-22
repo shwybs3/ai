@@ -224,6 +224,7 @@ function migrate(): void
         'google_site_verification' => '',
         'openrouter_api_key' => '',
         'openrouter_model' => 'meta-llama/llama-3.3-70b-instruct:free',
+        'openrouter_image_model' => '',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -843,6 +844,36 @@ function openrouter_chat(string $prompt): array
     return ['ok' => true, 'text' => $data['choices'][0]['message']['content']];
 }
 
+function openrouter_image(string $prompt): array
+{
+    $key = setting('openrouter_api_key');
+    $model = setting('openrouter_image_model');
+    if (!$key) return ['ok' => false, 'msg' => 'لم يتم ضبط مفتاح OpenRouter من الإعدادات.'];
+    if (!$model) return ['ok' => false, 'msg' => 'لم يتم ضبط موديل توليد الصور من الإعدادات.'];
+    $res = http_post_json('https://openrouter.ai/api/v1/chat/completions', [
+        'model' => $model,
+        'modalities' => ['image', 'text'],
+        'messages' => [['role' => 'user', 'content' => $prompt]],
+    ], [
+        'Authorization: Bearer ' . $key,
+        'HTTP-Referer: ' . (defined('SITE_URL') ? SITE_URL : 'https://yassota.com'),
+    ]);
+    $data = json_decode((string)$res['body'], true);
+    $dataUri = $data['choices'][0]['message']['images'][0]['image_url']['url'] ?? null;
+    if (!$dataUri || !preg_match('#^data:image/(\w+);base64,(.+)$#', $dataUri, $m)) {
+        $err = $res['error'] ?: ($data['error']['message'] ?? 'لم يُرجع الموديل صورة (تأكد أن الموديل يدعم توليد الصور).');
+        return ['ok' => false, 'msg' => $err];
+    }
+    $ext = $m[1] === 'jpeg' ? 'jpg' : $m[1];
+    $bytes = base64_decode($m[2]);
+    if (!$bytes) return ['ok' => false, 'msg' => 'فشل فك تشفير الصورة الناتجة.'];
+    $destDir = __DIR__ . '/uploads/products';
+    if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+    $filename = bin2hex(random_bytes(8)) . '.' . $ext;
+    file_put_contents($destDir . '/' . $filename, $bytes);
+    return ['ok' => true, 'url' => 'uploads/products/' . $filename];
+}
+
 if ($action === 'admin_test_openrouter') {
     require_admin();
     csrf_check();
@@ -868,10 +899,20 @@ if ($action === 'admin_ai_generate') {
     $text = preg_replace('/^```json|```$/m', '', $text);
     $json = json_decode(trim($text), true);
     if (!$json || empty($json['description'])) {
-        echo json_encode(['ok' => true, 'description' => trim($r['text']), 'meta_description' => '']);
-        exit;
+        $out = ['ok' => true, 'description' => trim($r['text']), 'meta_description' => ''];
+    } else {
+        $out = ['ok' => true, 'description' => $json['description'], 'meta_description' => $json['meta_description'] ?? ''];
     }
-    echo json_encode(['ok' => true, 'description' => $json['description'], 'meta_description' => $json['meta_description'] ?? '']);
+    if (($_POST['gen_image'] ?? '') === '1') {
+        $imgPrompt = "صورة منتج رقمي إعلانية بجودة عالية لمنتج اسمه \"$name\"، تصميم نظيف وجذاب مناسب لمتجر إلكتروني، بدون نص مكتوب على الصورة.";
+        $imgRes = openrouter_image($imgPrompt);
+        if ($imgRes['ok']) {
+            $out['image'] = $imgRes['url'];
+        } else {
+            $out['image_error'] = $imgRes['msg'];
+        }
+    }
+    echo json_encode($out);
     exit;
 }
 
@@ -1842,7 +1883,7 @@ case 'admin':
           </div>
           <textarea name="description" id="pdesc" placeholder="الوصف" rows="3"></textarea>
           <textarea name="meta_description" id="pmeta" placeholder="وصف SEO مختصر للمحرّكات (اختياري)" rows="2"></textarea>
-          <button type="button" class="btn btn-ghost" onclick="aiGenerateProduct()"><?= icon('rocket', 'ic-sm') ?>توليد الوصف وSEO بالذكاء الاصطناعي</button>
+          <button type="button" class="btn btn-ghost" onclick="aiGenerateProduct()"><?= icon('rocket', 'ic-sm') ?>توليد الوصف + الصورة + SEO بالذكاء الاصطناعي</button>
           <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ المنتج</button>
         </form>
         <form method="post" action="?action=admin_save_category" style="margin-top:10px;display:flex;gap:8px">
@@ -2120,6 +2161,12 @@ case 'admin':
               <option value="anthropic/claude-3.5-haiku">
             </datalist>
           </label>
+          <label>موديل توليد الصور (اختياري)<input name="openrouter_image_model" value="<?= e(setting('openrouter_image_model')) ?>" list="orImageModels" placeholder="مثال: google/gemini-2.5-flash-image-preview">
+            <datalist id="orImageModels">
+              <option value="google/gemini-2.5-flash-image-preview">
+              <option value="google/gemini-2.0-flash-exp:free">
+            </datalist>
+          </label>
         </form>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()"><?= icon('check', 'ic-sm') ?>حفظ الإعدادات</button>
@@ -2371,12 +2418,13 @@ function aiGenerateProduct(){
   const price = document.getElementById('pprice').value.trim();
   if (!name) return toast('أدخل اسم المنتج أولاً.');
   toast('جاري التوليد بالذكاء الاصطناعي...');
-  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('price', price);
+  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('price', price); d.append('gen_image', '1');
   fetch('?action=admin_ai_generate', { method: 'POST', body: d }).then(r => r.json()).then(res => {
     if (!res.ok) return toast(res.msg);
     document.getElementById('pdesc').value = res.description || '';
     if (res.meta_description) document.getElementById('pmeta').value = res.meta_description;
-    toast('تم التوليد بنجاح');
+    if (res.image) document.getElementById('pimage').value = res.image;
+    toast(res.image ? 'تم توليد الوصف والصورة وSEO بنجاح' : 'تم توليد الوصف وSEO' + (res.image_error ? ' (تعذر توليد الصورة: ' + res.image_error + ')' : ''));
   });
 }
 function copyAddr(btn){
