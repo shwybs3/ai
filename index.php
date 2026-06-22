@@ -210,6 +210,7 @@ function migrate(): void
     add_column_if_missing($pdo, 'orders', 'tx_note', 'VARCHAR(190) NULL');
     add_column_if_missing($pdo, 'categories', 'image', 'VARCHAR(500) NULL');
     add_column_if_missing($pdo, 'categories', 'color', 'VARCHAR(20) NULL');
+    add_column_if_missing($pdo, 'users', 'telegram_id', 'VARCHAR(40) NULL');
 
     // seed default settings
     $defaults = [
@@ -238,6 +239,9 @@ function migrate(): void
         'openrouter_image_model' => '',
         'product_image_height' => '130',
         'cat_tile_size' => '140',
+        'telegram_bot_username' => '',
+        'banner_interval' => '4000',
+        'banner_height' => '160',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -269,6 +273,14 @@ function e($s): string { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'
 /* ---- Professional inline SVG icon set (no emojis) ---- */
 function icon(string $name, string $class = 'ic'): string
 {
+    if ($name === 'google') {
+        return '<svg class="' . e($class) . '" viewBox="0 0 48 48" aria-hidden="true">'
+            . '<path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8 3l5.7-5.7C34.5 6.2 29.5 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.9z"/>'
+            . '<path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16 19 13 24 13c3.1 0 5.9 1.1 8 3l5.7-5.7C34.5 6.2 29.5 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>'
+            . '<path fill="#4CAF50" d="M24 44c5.4 0 10.3-2.1 14-5.5l-6.5-5.4C29.5 34.7 26.9 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.6 5.1C9.6 39.6 16.3 44 24 44z"/>'
+            . '<path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4.1 5.6l6.5 5.4C41.5 35.6 44 30.2 44 24c0-1.3-.1-2.7-.4-3.9z"/>'
+            . '</svg>';
+    }
     $paths = [
         'home' => '<path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9.5 20v-6h5v6"/>',
         'coin' => '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5c0-1.2 1-2 2.5-2s2.5.8 2.5 2-1 1.6-2.5 2-2.5.8-2.5 2 1 2 2.5 2 2.5-.8 2.5-2"/>',
@@ -326,10 +338,10 @@ function setting(string $k, $default = '')
 }
 function set_setting(string $k, $v): void
 {
-    $st = db()->prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = ?");
-    if (DB_DRIVER === 'sqlite') {
-        $st = db()->prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = ?");
-    }
+    $sql = DB_DRIVER === 'sqlite'
+        ? "INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = ?"
+        : "INSERT INTO settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = ?";
+    $st = db()->prepare($sql);
     $st->execute([$k, $v, $v]);
 }
 
@@ -567,6 +579,51 @@ function google_handle_callback(string $code): void
     redirect($isNew ? '?page=welcome' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
 }
 
+function telegram_handle_login(): void
+{
+    if (!BOT_TOKEN) { flash('تسجيل الدخول بتيليجرام غير مفعّل حالياً.', 'error'); redirect('?page=login'); }
+    $data = $_POST;
+    $hash = $data['hash'] ?? '';
+    unset($data['hash']);
+    if (empty($data['id']) || !$hash) { flash('بيانات تيليجرام غير مكتملة.', 'error'); redirect('?page=login'); }
+
+    $checkArr = [];
+    foreach ($data as $k => $v) $checkArr[] = $k . '=' . $v;
+    sort($checkArr);
+    $checkString = implode("\n", $checkArr);
+    $secretKey = hash('sha256', BOT_TOKEN, true);
+    $computedHash = hash_hmac('sha256', $checkString, $secretKey);
+
+    if (!hash_equals($computedHash, $hash)) { flash('تعذّر التحقق من حساب تيليجرام.', 'error'); redirect('?page=login'); }
+    if (time() - (int)($data['auth_date'] ?? 0) > 86400) { flash('انتهت صلاحية جلسة تيليجرام، حاول مجدداً.', 'error'); redirect('?page=login'); }
+
+    $tgId = (string)$data['id'];
+    $name = trim(($data['first_name'] ?? '') . ' ' . ($data['last_name'] ?? '')) ?: ('tg_' . $tgId);
+    $avatar = $data['photo_url'] ?? '';
+
+    $st = db()->prepare("SELECT * FROM users WHERE telegram_id = ?");
+    $st->execute([$tgId]);
+    $u = $st->fetch();
+    $isNew = !$u;
+
+    if ($u) {
+        db()->prepare("UPDATE users SET name=?, avatar=?, last_login=" . (DB_DRIVER === 'sqlite' ? "datetime('now')" : 'NOW()') . " WHERE id=?")
+            ->execute([$name, $avatar, $u['id']]);
+        $uid = $u['id'];
+        $role = $u['role'];
+    } else {
+        $email = 'tg_' . $tgId . '@telegram.local';
+        $username = gen_username($email);
+        db()->prepare("INSERT INTO users (telegram_id, email, name, avatar, role, username) VALUES (?,?,?,?,?,?)")
+            ->execute([$tgId, $email, $name, $avatar, 'user', $username]);
+        $uid = db()->lastInsertId();
+        $role = 'user';
+        award_welcome_bonus((int)$uid);
+    }
+    $_SESSION['uid'] = $uid;
+    redirect($isNew ? '?page=welcome' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
+}
+
 function handle_register(): void
 {
     csrf_check();
@@ -632,6 +689,8 @@ if ($action === 'google_callback') {
     google_handle_callback($_GET['code'] ?? '');
     exit;
 }
+
+if ($action === 'telegram_login') { telegram_handle_login(); exit; }
 
 if ($action === 'register') { handle_register(); exit; }
 if ($action === 'login') { handle_login(); exit; }
@@ -1341,6 +1400,13 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .cat-tile-label{position:relative;z-index:1;width:100%;text-align:center;background:rgba(0,0,0,.55);color:#fff;font-weight:800;font-size:13px;padding:8px 4px}
 .cat-tile-mini{width:60px;height:34px;border-radius:6px;overflow:hidden;position:relative}
 .cat-tile-mini img{width:100%;height:100%;object-fit:cover}
+.banner-carousel{position:relative;margin:0 18px 14px;border-radius:14px;overflow:hidden}
+.banner-carousel-track{display:flex;transition:transform .5s var(--ease)}
+.banner-carousel-slide{flex:0 0 100%;display:block}
+.banner-carousel-slide img{width:100%;height:var(--banner-h,160px);object-fit:cover;display:block}
+.banner-carousel-dots{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:6px}
+.bc-dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.45);cursor:pointer;transition:.2s}
+.bc-dot.active{background:#fff;width:18px;border-radius:4px}
 .soon-card{opacity:.85}
 .balance-pill{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#1b2240,#202a4d);border:1px solid #2a3050;border-radius:30px;padding:10px 16px;margin-bottom:16px;font-size:14px;color:var(--muted)}
 .balance-pill strong{color:var(--accent2)}
@@ -1457,6 +1523,7 @@ input,textarea,select{font-family:inherit}
 @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}
 .card img.pimg{height:<?= (int)setting('product_image_height', 130) ?>px}
 .cat-tiles{grid-template-columns:repeat(auto-fill,minmax(<?= (int)setting('cat_tile_size', 140) ?>px,1fr))}
+.banner-carousel-slide img{height:<?= (int)setting('banner_height', 160) ?>px}
 </style>
 </head>
 <body>
@@ -1512,13 +1579,44 @@ input,textarea,select{font-family:inherit}
       <div class="login-divider">أو</div>
       <div class="social-grid">
         <?php if (GOOGLE_CLIENT_ID): ?>
-          <a href="<?= e(google_login_url()) ?>" class="social-btn"><?= icon('globe', 'ic') ?></a>
+          <a href="<?= e(google_login_url()) ?>" class="social-btn"><?= icon('google', 'ic') ?></a>
         <?php else: ?>
-          <div class="social-btn soon"><?= icon('globe', 'ic') ?><span class="soon-tag">قريباً</span></div>
+          <div class="social-btn soon"><?= icon('google', 'ic') ?><span class="soon-tag">قريباً</span></div>
         <?php endif; ?>
-        <div class="social-btn soon"><?= icon('send', 'ic') ?><span class="soon-tag">قريباً</span></div>
+        <?php if (setting('telegram_bot_username')): ?>
+          <div class="social-btn" id="tgLoginBtn" style="cursor:pointer" onclick="document.getElementById('tgWidgetReal').querySelector('iframe')?.click()"><?= icon('send', 'ic') ?>
+            <div id="tgWidgetReal" style="position:absolute;inset:0;opacity:0;overflow:hidden"></div>
+          </div>
+        <?php else: ?>
+          <div class="social-btn soon"><?= icon('send', 'ic') ?><span class="soon-tag">قريباً</span></div>
+        <?php endif; ?>
         <div class="social-btn soon"><?= icon('user', 'ic') ?><span class="soon-tag">قريباً</span></div>
       </div>
+      <?php if (setting('telegram_bot_username')): ?>
+      <script>
+      window.onTelegramAuth = function(user){
+        const f = document.createElement('form');
+        f.method = 'POST'; f.action = '?action=telegram_login';
+        Object.keys(user).forEach(k => {
+          const i = document.createElement('input');
+          i.type = 'hidden'; i.name = k; i.value = user[k];
+          f.appendChild(i);
+        });
+        document.body.appendChild(f);
+        f.submit();
+      };
+      (function(){
+        const s = document.createElement('script');
+        s.async = true;
+        s.src = 'https://telegram.org/js/telegram-widget.js?22';
+        s.setAttribute('data-telegram-login', '<?= e(setting('telegram_bot_username')) ?>');
+        s.setAttribute('data-size', 'large');
+        s.setAttribute('data-onauth', 'onTelegramAuth(user)');
+        s.setAttribute('data-request-access', 'write');
+        document.getElementById('tgWidgetReal').appendChild(s);
+      })();
+      </script>
+      <?php endif; ?>
     </div>
   </div>
 </div>
@@ -1685,9 +1783,20 @@ case 'home':
       </div>
     </div>
     <?php endif; ?>
-    <?php foreach ($banners as $b): ?>
-      <a href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" loading="lazy" style="width:100%;border-radius:14px;margin:0 18px 14px;max-width:calc(100% - 36px)"></a>
-    <?php endforeach; ?>
+    <?php if ($banners): ?>
+    <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
+      <div class="banner-carousel-track">
+        <?php foreach ($banners as $b): ?>
+          <a class="banner-carousel-slide" href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" loading="lazy" alt=""></a>
+        <?php endforeach; ?>
+      </div>
+      <?php if (count($banners) > 1): ?>
+      <div class="banner-carousel-dots">
+        <?php foreach ($banners as $i => $b): ?><span class="bc-dot<?= $i === 0 ? ' active' : '' ?>" onclick="bannerGoTo(<?= $i ?>)"></span><?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
 
     <?php if ($categories): ?>
     <div class="cat-tiles">
@@ -2228,7 +2337,14 @@ case 'admin':
       </div>
 
       <div class="admin-box">
-        <h3><?= icon('plus', 'ic') ?>بنرات صور إضافية (شرائح أسفل البنر الرئيسي)</h3>
+        <h3><?= icon('plus', 'ic') ?>بنرات صور إضافية (شرائح متحركة أسفل البنر الرئيسي)</h3>
+        <form method="post" action="?action=admin_save_settings" class="formrow" style="margin-bottom:14px">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="redirect_tab" value="banners">
+          <label>مدة التبديل بين الصور (ميلي ثانية)<input type="number" name="banner_interval" value="<?= e(setting('banner_interval')) ?>" min="1500" step="500"></label>
+          <label>ارتفاع شرائح البنر (px)<input type="number" name="banner_height" value="<?= e(setting('banner_height')) ?>" min="80" max="400"></label>
+          <button class="btn btn-ghost" style="grid-column:1/-1"><?= icon('check', 'ic-sm') ?>حفظ إعدادات الشرائح</button>
+        </form>
         <form method="post" action="?action=admin_save_banner" class="formrow" enctype="multipart/form-data">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <div class="upload-row" style="grid-column:1/-1">
@@ -2328,6 +2444,7 @@ case 'admin':
           </label>
           <label>رمز منطقة الإعلان (Zone ID)<input name="ad_zone_id" value="<?= e(setting('ad_zone_id')) ?>"></label>
           <label>تيليجرام خدمة العملاء<input name="support_telegram" value="<?= e(setting('support_telegram')) ?>" placeholder="@username"></label>
+          <label>اسم بوت تيليجرام لتسجيل الدخول (بدون @)<input name="telegram_bot_username" value="<?= e(setting('telegram_bot_username')) ?>" placeholder="مثال: YassotaBot"></label>
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
           <label>مفتاح OpenRouter API<input type="password" name="openrouter_api_key" value="<?= e(setting('openrouter_api_key')) ?>" placeholder="sk-or-..."></label>
           <label>موديل OpenRouter<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
@@ -2353,7 +2470,7 @@ case 'admin':
         </div>
         <hr style="border-color:#232a45;margin:18px 0">
         <p style="color:var(--muted);font-size:13px">
-          بيانات قاعدة البيانات وبوت تيليجرام وGoogle OAuth تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي. مفتاح OpenRouter مجاني ويمكن الحصول عليه من openrouter.ai، ويدعم آلاف الموديلات المجانية والمدفوعة لتوليد الوصف وSEO تلقائياً للمنتجات.
+          بيانات قاعدة البيانات وبوت تيليجرام وGoogle OAuth تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي. مفتاح OpenRouter مجاني ويمكن الحصول عليه من openrouter.ai، ويدعم آلاف الموديلات المجانية والمدفوعة لتوليد الوصف وSEO تلقائياً للمنتجات. لتفعيل تسجيل الدخول بتيليجرام: أنشئ بوتاً عبر @BotFather، ضع <code>BOT_TOKEN</code> الخاص به في <code>config.php</code>، واكتب اسم المستخدم للبوت (بدون @) في الحقل أعلاه — كما يجب ضبط دومين الموقع للبوت عبر أمر <code>/setdomain</code> في @BotFather.
         </p>
       </div>
     <?php endif; ?>
@@ -2468,6 +2585,27 @@ function toggleSidebar(){
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('show');
 }
+(function(){
+  const car = document.getElementById('bannerCarousel');
+  if (!car) return;
+  const track = car.querySelector('.banner-carousel-track');
+  const dots = car.querySelectorAll('.bc-dot');
+  const count = track.children.length;
+  const dirSign = document.documentElement.dir === 'rtl' ? 1 : -1;
+  let idx = 0, timer = null;
+  window.bannerGoTo = function(i){
+    idx = i;
+    track.style.transform = 'translateX(' + (i * 100 * dirSign) + '%)';
+    dots.forEach((d, di) => d.classList.toggle('active', di === i));
+  };
+  function next(){ bannerGoTo((idx + 1) % count); }
+  if (count > 1) {
+    const interval = parseInt(car.dataset.interval, 10) || 4000;
+    timer = setInterval(next, interval);
+    car.addEventListener('mouseenter', () => clearInterval(timer));
+    car.addEventListener('mouseleave', () => { timer = setInterval(next, interval); });
+  }
+})();
 function toast(msg){
   const t = document.getElementById('toast');
   t.textContent = msg;
