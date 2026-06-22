@@ -208,6 +208,8 @@ function migrate(): void
     add_column_if_missing($pdo, 'orders', 'account_id', 'VARCHAR(190) NULL');
     add_column_if_missing($pdo, 'orders', 'receipt_image', 'VARCHAR(500) NULL');
     add_column_if_missing($pdo, 'orders', 'tx_note', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'categories', 'image', 'VARCHAR(500) NULL');
+    add_column_if_missing($pdo, 'categories', 'color', 'VARCHAR(20) NULL');
 
     // seed default settings
     $defaults = [
@@ -234,6 +236,8 @@ function migrate(): void
         'openrouter_api_key' => '',
         'openrouter_model' => 'meta-llama/llama-3.3-70b-instruct:free',
         'openrouter_image_model' => '',
+        'product_image_height' => '130',
+        'cat_tile_size' => '140',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -961,7 +965,19 @@ if ($action && str_starts_with($action, 'admin_')) {
 
         case 'admin_save_category':
             $name = trim($_POST['name'] ?? '');
-            if ($name) db()->prepare("INSERT INTO categories (name) VALUES (?)")->execute([$name]);
+            $cid = (int)($_POST['id'] ?? 0);
+            $cimage = trim($_POST['image'] ?? '');
+            $ccolor = trim($_POST['color'] ?? '');
+            if ($name && $cid) {
+                db()->prepare("UPDATE categories SET name=?, image=?, color=? WHERE id=?")->execute([$name, $cimage ?: null, $ccolor ?: null, $cid]);
+            } elseif ($name) {
+                db()->prepare("INSERT INTO categories (name, image, color) VALUES (?,?,?)")->execute([$name, $cimage ?: null, $ccolor ?: null]);
+            }
+            redirect('?page=admin&tab=products');
+
+        case 'admin_delete_category':
+            db()->prepare("DELETE FROM categories WHERE id=?")->execute([(int)$_POST['id']]);
+            flash('تم حذف القسم.');
             redirect('?page=admin&tab=products');
 
         case 'admin_order_decision':
@@ -1317,11 +1333,32 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .cat-chips::-webkit-scrollbar{display:none}
 .cat-chip{display:flex;align-items:center;gap:6px;flex-shrink:0;background:#1a2138;border:1px solid #262d4d;border-radius:30px;padding:8px 16px;font-size:13px;font-weight:600;color:var(--text);transition:transform .2s var(--ease),border-color .2s}
 .cat-chip:hover{transform:translateY(-2px);border-color:var(--accent2)}
+.cat-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;padding:0 18px 16px}
+.cat-tile{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;aspect-ratio:1/1;border-radius:16px;overflow:hidden;background:linear-gradient(135deg,#7c6cff,#00d2a0);box-shadow:0 6px 16px rgba(0,0,0,.25);transition:transform .2s var(--ease)}
+.cat-tile:hover{transform:translateY(-4px) scale(1.03)}
+.cat-tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.cat-tile-icon{flex:1;display:flex;align-items:center;justify-content:center;color:#fff;opacity:.9}
+.cat-tile-label{position:relative;z-index:1;width:100%;text-align:center;background:rgba(0,0,0,.55);color:#fff;font-weight:800;font-size:13px;padding:8px 4px}
+.cat-tile-mini{width:60px;height:34px;border-radius:6px;overflow:hidden;position:relative}
+.cat-tile-mini img{width:100%;height:100%;object-fit:cover}
 .soon-card{opacity:.85}
 .balance-pill{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#1b2240,#202a4d);border:1px solid #2a3050;border-radius:30px;padding:10px 16px;margin-bottom:16px;font-size:14px;color:var(--muted)}
 .balance-pill strong{color:var(--accent2)}
 .buy-modal label{display:block;font-size:13px;color:var(--muted);margin-bottom:10px}
-.buy-modal input[type=file]{padding:8px;cursor:pointer}
+.upload-box{position:relative;border:2px dashed #2a3050;border-radius:var(--radius,12px);background:#11152a;padding:18px 14px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:6px}
+.upload-box:hover,.upload-box.dragover{border-color:var(--accent2);background:#151b34}
+.upload-box input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+.upload-box .ic{color:var(--accent2)}
+.upload-box-text{font-size:13px;color:var(--muted)}
+.upload-box-text strong{color:var(--text)}
+.upload-box-hint{font-size:11px;color:var(--muted);opacity:.7}
+.upload-box.has-file{border-color:var(--accent2);border-style:solid}
+.upload-box-preview{display:flex;align-items:center;gap:10px;width:100%}
+.upload-box-preview img{width:56px;height:56px;border-radius:8px;object-fit:cover;flex-shrink:0}
+.upload-box-preview-info{flex:1;text-align:right;overflow:hidden}
+.upload-box-preview-info span{display:block;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.upload-box-remove{background:#1b2240;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;flex-shrink:0;position:relative;z-index:2}
+.upload-box-remove:hover{color:var(--danger);background:#3b1d22}
 .btn-copy{background:#1b2240;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;transition:color .2s,background .2s}
 .btn-copy:hover{color:#fff;background:#262d52}
 .btn-copy.copied{color:var(--accent2);background:#1d3b2e}
@@ -1418,6 +1455,8 @@ input,textarea,select{font-family:inherit}
 @keyframes shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
 
 @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}
+.card img.pimg{height:<?= (int)setting('product_image_height', 130) ?>px}
+.cat-tiles{grid-template-columns:repeat(auto-fill,minmax(<?= (int)setting('cat_tile_size', 140) ?>px,1fr))}
 </style>
 </head>
 <body>
@@ -1545,9 +1584,20 @@ input,textarea,select{font-family:inherit}
     <?php endif; ?>
 
     <label>صورة الإيصال <span style="color:var(--danger)">*</span> (إجبارية)
-      <input type="file" id="buyReceiptFile" accept="image/*" required>
+      <div class="upload-box" id="buyReceiptBox">
+        <div class="upload-box-empty">
+          <?= icon('upload', 'ic') ?>
+          <div class="upload-box-text"><strong>اضغط لاختيار صورة</strong> أو اسحبها هنا</div>
+          <div class="upload-box-hint">JPG, PNG, WEBP — حتى 5MB</div>
+        </div>
+        <div class="upload-box-preview" style="display:none">
+          <img id="buyReceiptPreview">
+          <div class="upload-box-preview-info"><span id="buyReceiptName"></span></div>
+          <button type="button" class="upload-box-remove" onclick="clearReceiptFile(event)"><?= icon('x', 'ic-sm') ?></button>
+        </div>
+        <input type="file" id="buyReceiptFile" accept="image/*" required>
+      </div>
     </label>
-    <img id="buyReceiptPreview" style="display:none;max-width:120px;border-radius:8px;margin-top:6px">
 
     <label>رقم العملية (اختياري)
       <input type="text" id="buyTxNote" placeholder="رقم العملية / المرجع إن وجد">
@@ -1640,6 +1690,15 @@ case 'home':
     <?php endforeach; ?>
 
     <?php if ($categories): ?>
+    <div class="cat-tiles">
+      <?php foreach ($categories as $c): ?>
+        <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#1a2138') ?>">
+          <?php if (!empty($c['image'])): ?><img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>">
+          <?php else: ?><div class="cat-tile-icon"><?= icon(category_icon_name($c['name']), 'ic ic-xl') ?></div><?php endif; ?>
+          <span class="cat-tile-label"><?= e($c['name']) ?></span>
+        </a>
+      <?php endforeach; ?>
+    </div>
     <div class="cat-chips">
       <?php foreach ($categories as $c): ?>
         <a href="#cat-<?= (int)$c['id'] ?>" class="cat-chip"><?= icon(category_icon_name($c['name']), 'ic-sm') ?><?= e($c['name']) ?></a>
@@ -1936,11 +1995,38 @@ case 'admin':
           <button type="button" class="btn btn-ghost" onclick="aiGenerateProduct()"><?= icon('rocket', 'ic-sm') ?>توليد الوصف + الصورة + SEO بالذكاء الاصطناعي</button>
           <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ المنتج</button>
         </form>
-        <form method="post" action="?action=admin_save_category" style="margin-top:10px;display:flex;gap:8px">
+        <form method="post" action="?action=admin_save_category" style="margin-top:10px">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input name="name" placeholder="اسم قسم جديد" style="flex:1">
-          <button class="btn btn-ghost"><?= icon('plus', 'ic-sm') ?>قسم</button>
+          <div class="formrow">
+            <input name="name" placeholder="اسم القسم (مثال: الألعاب)" required>
+            <input name="color" type="color" value="#7c6cff" title="لون بطاقة القسم" style="padding:4px;height:42px">
+          </div>
+          <div class="upload-row">
+            <input type="text" name="image" id="catimage" placeholder="صورة بطاقة القسم (شعارات/أيقونات مجمّعة، اختياري)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'catimage')"></label>
+          </div>
+          <button class="btn btn-ghost"><?= icon('plus', 'ic-sm') ?>حفظ القسم</button>
         </form>
+        <table style="margin-top:14px">
+          <tr><th>القسم</th><th>البطاقة</th><th></th></tr>
+          <?php foreach ($cats as $c): ?>
+          <tr>
+            <td><?= e($c['name']) ?></td>
+            <td>
+              <div class="cat-tile-mini" style="background:<?= e($c['color'] ?: '#1a2138') ?>">
+                <?php if (!empty($c['image'])): ?><img src="<?= e($c['image']) ?>"><?php endif; ?>
+              </div>
+            </td>
+            <td>
+              <form method="post" action="?action=admin_delete_category" style="display:inline">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="id" value="<?= (int)$c['id'] ?>">
+                <button class="btn btn-danger" onclick="return confirm('حذف القسم؟')"><?= icon('trash', 'ic-sm') ?></button>
+              </form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
       </div>
       <div class="admin-box">
         <table>
@@ -2232,6 +2318,8 @@ case 'admin':
           <label>أقصى مهام باليوم<input name="task_max_per_day" value="<?= e(setting('task_max_per_day')) ?>"></label>
           <label>نسبة ربح الإدارة %<input name="profit_split_admin" value="<?= e(setting('profit_split_admin')) ?>"></label>
           <label>نسبة ربح المستخدم %<input name="profit_split_user" value="<?= e(setting('profit_split_user')) ?>"></label>
+          <label>ارتفاع صورة بطاقة المنتج (px)<input type="number" name="product_image_height" value="<?= e(setting('product_image_height')) ?>" min="60" max="400"></label>
+          <label>عرض بطاقة القسم (px)<input type="number" name="cat_tile_size" value="<?= e(setting('cat_tile_size')) ?>" min="80" max="320"></label>
           <label>تفعيل الإعلانات (عند ضغط زر فقط)
             <select name="ad_enabled">
               <option value="1" <?= setting('ad_enabled') === '1' ? 'selected' : '' ?>>مفعّلة</option>
@@ -2414,18 +2502,47 @@ function buyProduct(id){
   document.getElementById('buyAccountId').value = '';
   document.getElementById('buyTxNote').value = '';
   document.getElementById('buyReceiptFile').value = '';
-  const prev = document.getElementById('buyReceiptPreview');
-  prev.style.display = 'none'; prev.src = '';
+  resetReceiptBox();
   document.getElementById('buyModal').style.display = 'flex';
 }
 function closeBuyModal(){ document.getElementById('buyModal').style.display = 'none'; }
-document.getElementById('buyReceiptFile') && document.getElementById('buyReceiptFile').addEventListener('change', function(){
-  const f = this.files[0];
-  const prev = document.getElementById('buyReceiptPreview');
-  if (!f) { prev.style.display = 'none'; return; }
-  prev.src = URL.createObjectURL(f);
-  prev.style.display = 'block';
-});
+function resetReceiptBox(){
+  const box = document.getElementById('buyReceiptBox');
+  box.classList.remove('has-file');
+  box.querySelector('.upload-box-empty').style.display = 'flex';
+  box.querySelector('.upload-box-preview').style.display = 'none';
+}
+function clearReceiptFile(ev){
+  ev.preventDefault(); ev.stopPropagation();
+  document.getElementById('buyReceiptFile').value = '';
+  resetReceiptBox();
+}
+function showReceiptFile(f){
+  const box = document.getElementById('buyReceiptBox');
+  box.classList.add('has-file');
+  box.querySelector('.upload-box-empty').style.display = 'none';
+  box.querySelector('.upload-box-preview').style.display = 'flex';
+  document.getElementById('buyReceiptPreview').src = URL.createObjectURL(f);
+  document.getElementById('buyReceiptName').textContent = f.name;
+}
+(function(){
+  const box = document.getElementById('buyReceiptBox');
+  const input = document.getElementById('buyReceiptFile');
+  if (!box || !input) return;
+  input.addEventListener('change', function(){
+    const f = this.files[0];
+    if (!f) { resetReceiptBox(); return; }
+    showReceiptFile(f);
+  });
+  ['dragenter', 'dragover'].forEach(evt => box.addEventListener(evt, e => { e.preventDefault(); box.classList.add('dragover'); }));
+  ['dragleave', 'drop'].forEach(evt => box.addEventListener(evt, e => { e.preventDefault(); box.classList.remove('dragover'); }));
+  box.addEventListener('drop', e => {
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      input.files = e.dataTransfer.files;
+      showReceiptFile(e.dataTransfer.files[0]);
+    }
+  });
+})();
 async function submitBuyRequest(){
   if (!buyProductId) return;
   const accountId = document.getElementById('buyAccountId').value.trim();
