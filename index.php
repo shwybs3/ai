@@ -354,22 +354,8 @@ function google_handle_callback(string $code): void
 $action = $_GET['action'] ?? '';
 $page = $_GET['page'] ?? 'home';
 
-// ---- Telegram webhook (no auth) ----
-if ($action === 'telegram_webhook') {
-    $update = json_decode(file_get_contents('php://input'), true);
-    if (!empty($update['message'])) {
-        $m = $update['message'];
-        $chatId = (string)$m['chat']['id'];
-        $username = $m['from']['username'] ?? '';
-        $st = db()->prepare("INSERT INTO telegram_users (chat_id, username) VALUES (?,?) ON DUPLICATE KEY UPDATE username = ?");
-        if (DB_DRIVER === 'sqlite') $st = db()->prepare("INSERT INTO telegram_users (chat_id, username) VALUES (?,?) ON CONFLICT(chat_id) DO UPDATE SET username = ?");
-        $st->execute([$chatId, $username, $username]);
-        if (($m['text'] ?? '') === '/start') {
-            tg_send($chatId, "👋 أهلاً بك في " . setting('site_name') . "!\nتفضل بزيارة الموقع: " . SITE_URL);
-        }
-    }
-    echo 'ok'; exit;
-}
+// ملاحظة: استقبال أوامر بوت تيليجرام الكاملة (القوائم/الأرباح/المحفظة) يتم في telegram_bot.php
+// هذا الملف فقط يستخدم tg_broadcast_product() للبث عند نشر منتج جديد.
 
 if ($action === 'google_callback') {
     google_handle_callback($_GET['code'] ?? '');
