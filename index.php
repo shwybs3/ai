@@ -164,6 +164,14 @@ function migrate(): void
         meta_title VARCHAR(190) NULL,
         meta_description VARCHAR(255) NULL
     )$engine",
+    "CREATE TABLE IF NOT EXISTS tickers (
+        id $id,
+        text VARCHAR(255) NOT NULL,
+        link VARCHAR(500) NULL,
+        active TINYINT NOT NULL DEFAULT 1,
+        sort_order INT NOT NULL DEFAULT 0,
+        created_at $ts
+    )$engine",
     "CREATE TABLE IF NOT EXISTS telegram_users (
         chat_id VARCHAR(40) PRIMARY KEY,
         user_id INT NULL,
@@ -209,6 +217,7 @@ function migrate(): void
         'logo_url' => '',
         'banner_title' => 'مرحباً بك في Yassota',
         'banner_subtitle' => 'تسوّق، اربح نقاط، واسحبها أموالاً حقيقية',
+        'banner_bg_image' => '',
         'points_rate' => '0.001',      // 1 نقطة = كم دولار
         'min_withdraw_usd' => '25',
         'captcha_reward' => '10',
@@ -1014,13 +1023,26 @@ if ($action && str_starts_with($action, 'admin_')) {
             db()->prepare("DELETE FROM banners WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=banners');
 
+        case 'admin_save_ticker':
+            db()->prepare("INSERT INTO tickers (text, link) VALUES (?,?)")->execute([trim($_POST['text'] ?? ''), trim($_POST['link'] ?? '') ?: null]);
+            redirect('?page=admin&tab=banners');
+
+        case 'admin_toggle_ticker':
+            db()->prepare("UPDATE tickers SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=banners');
+
+        case 'admin_delete_ticker':
+            db()->prepare("DELETE FROM tickers WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=banners');
+
         case 'admin_save_settings':
+            $redirectTab = preg_replace('/[^a-z_]/', '', $_POST['redirect_tab'] ?? 'settings') ?: 'settings';
             foreach ($_POST as $k => $v) {
-                if ($k === 'action' || $k === 'csrf') continue;
+                if ($k === 'action' || $k === 'csrf' || $k === 'redirect_tab') continue;
                 set_setting($k, $v);
             }
             flash('تم حفظ الإعدادات.');
-            redirect('?page=admin&tab=settings');
+            redirect('?page=admin&tab=' . $redirectTab);
 
         case 'admin_save_page':
             $mTitle = trim($_POST['meta_title'] ?? '');
@@ -1171,12 +1193,24 @@ a{color:inherit;text-decoration:none}
 .sidebar nav a:hover::before{transform:scaleY(1)}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:55;display:none}
 .overlay.show{display:block}
-.banner{margin:18px;border-radius:24px;background:linear-gradient(135deg,#3d2c8d,#6c5ce7 55%,#00d2a0);padding:46px 28px;position:relative;overflow:hidden;box-shadow:0 14px 40px rgba(108,92,231,.3);animation:fadeUp .7s var(--ease) both}
+.banner{margin:18px 18px 0;border-radius:24px 24px 0 0;background:linear-gradient(135deg,#0d6ab0,#2196d8 55%,#00d2a0);padding:46px 28px;position:relative;overflow:hidden;box-shadow:0 14px 40px rgba(33,150,216,.3);animation:fadeUp .7s var(--ease) both;background-size:cover;background-position:center}
+.banner.has-bg::before,.banner.has-bg::after{display:none}
+.banner.has-bg{background-blend-mode:overlay}
+.banner.has-bg .banner-overlay{position:absolute;inset:0;background:linear-gradient(135deg,rgba(13,30,60,.72),rgba(13,30,60,.45))}
 .banner::before{content:"";position:absolute;width:260px;height:260px;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.25),transparent 70%);top:-120px;right:-60px;animation:float 8s ease-in-out infinite}
 .banner::after{content:"";position:absolute;width:200px;height:200px;border-radius:50%;background:radial-gradient(circle,rgba(0,224,176,.35),transparent 70%);bottom:-110px;left:-40px;animation:float 10s ease-in-out infinite reverse}
 .banner h1{font-size:30px;margin-bottom:10px;position:relative;z-index:1;text-shadow:0 2px 12px rgba(0,0,0,.25)}
 .banner p{color:#f0f0ff;opacity:.95;position:relative;z-index:1;font-size:15px}
 @keyframes float{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-14px,16px) scale(1.08)}}
+
+.ticker-bar{margin:0 18px 18px;background:#0b1730;border:1px solid rgba(255,255,255,.12);border-radius:0 0 24px 24px;border-top:none;display:flex;align-items:center;gap:10px;padding:10px 16px;overflow:hidden;position:relative}
+.ticker-bar .ticker-badge{flex-shrink:0;display:flex;align-items:center;gap:6px;background:var(--accent2);color:#06251c;font-weight:700;font-size:12px;border-radius:20px;padding:5px 12px;z-index:2}
+.ticker-track{flex:1;overflow:hidden;position:relative;mask-image:linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent)}
+.ticker-track-inner{display:flex;gap:48px;white-space:nowrap;animation:tickerScroll 28s linear infinite}
+.ticker-track-inner:hover{animation-play-state:paused}
+.ticker-item{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text);font-weight:600}
+.ticker-item .ic{color:var(--accent2)}
+@keyframes tickerScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
 .section-title{margin:28px 18px 12px;font-size:20px;font-weight:800;display:flex;align-items:center;gap:10px;position:relative}
 .section-title::before{content:"";width:5px;height:22px;border-radius:6px;background:linear-gradient(var(--accent),var(--accent2))}
 .section-title .ic{color:var(--accent2)}
@@ -1543,6 +1577,7 @@ case 'login':
 
 case 'home':
     $banners = db()->query("SELECT * FROM banners WHERE active=1 ORDER BY sort_order")->fetchAll();
+    $tickers = db()->query("SELECT * FROM tickers WHERE active=1 ORDER BY sort_order, id")->fetchAll();
     $products = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC")->fetchAll();
     $categories = db()->query("SELECT * FROM categories ORDER BY sort_order, id")->fetchAll();
     $byCat = []; $uncategorized = [];
@@ -1581,10 +1616,25 @@ case 'home':
         <?php
     }
     ?>
-    <div class="banner">
-      <h1><?= e(setting('banner_title')) ?></h1>
-      <p><?= e(setting('banner_subtitle')) ?></p>
+    <?php $bannerBg = setting('banner_bg_image'); ?>
+    <div class="banner<?= $bannerBg ? ' has-bg' : '' ?>"<?= $bannerBg ? ' style="background-image:url(\'' . e($bannerBg) . '\')"' : '' ?>>
+      <?php if ($bannerBg): ?><div class="banner-overlay"></div><?php endif; ?>
+      <h1 style="position:relative;z-index:1"><?= e(setting('banner_title')) ?></h1>
+      <p style="position:relative;z-index:1"><?= e(setting('banner_subtitle')) ?></p>
     </div>
+    <?php if ($tickers): ?>
+    <div class="ticker-bar">
+      <span class="ticker-badge"><?= icon('megaphone', 'ic-sm') ?>جديد</span>
+      <div class="ticker-track">
+        <div class="ticker-track-inner">
+          <?php foreach (array_merge($tickers, $tickers) as $t): ?>
+            <?php if ($t['link']): ?><a class="ticker-item" href="<?= e($t['link']) ?>"><?= icon('star', 'ic-sm') ?><?= e($t['text']) ?></a>
+            <?php else: ?><span class="ticker-item"><?= icon('star', 'ic-sm') ?><?= e($t['text']) ?></span><?php endif; ?>
+          <?php endforeach; ?>
+        </div>
+      </div>
+    </div>
+    <?php endif; ?>
     <?php foreach ($banners as $b): ?>
       <a href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" loading="lazy" style="width:100%;border-radius:14px;margin:0 18px 14px;max-width:calc(100% - 36px)"></a>
     <?php endforeach; ?>
@@ -2050,8 +2100,49 @@ case 'admin':
 
     <?php elseif ($tab === 'banners'):
         $banners = db()->query("SELECT * FROM banners ORDER BY id DESC")->fetchAll();
+        $tickers = db()->query("SELECT * FROM tickers ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
+        <h3><?= icon('image', 'ic') ?>البنر الرئيسي (العنوان والخلفية)</h3>
+        <form method="post" action="?action=admin_save_settings" class="formrow" enctype="multipart/form-data">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="redirect_tab" value="banners">
+          <input name="banner_title" value="<?= e(setting('banner_title')) ?>" placeholder="عنوان البنر">
+          <input name="banner_subtitle" value="<?= e(setting('banner_subtitle')) ?>" placeholder="وصف البنر">
+          <div class="upload-row" style="grid-column:1/-1">
+            <input type="text" name="banner_bg_image" id="bbgimage" value="<?= e(setting('banner_bg_image')) ?>" placeholder="رابط صورة خلفية مخصصة للبنر (اختياري — يبقى التدرج الافتراضي إذا تركته فارغاً)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'bbgimage')"></label>
+          </div>
+          <button class="btn btn-primary" style="grid-column:1/-1"><?= icon('check', 'ic-sm') ?>حفظ البنر الرئيسي</button>
+        </form>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('megaphone', 'ic') ?>الشريط الإخباري المتحرك (عروض وأخبار)</h3>
+        <form method="post" action="?action=admin_save_ticker" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input name="text" placeholder="نص الخبر / العرض" required>
+          <input name="link" placeholder="رابط عند الضغط (اختياري)">
+          <button class="btn btn-primary"><?= icon('plus', 'ic-sm') ?>إضافة للشريط</button>
+        </form>
+        <table style="margin-top:10px">
+          <tr><th>النص</th><th>الرابط</th><th>الحالة</th><th></th></tr>
+          <?php foreach ($tickers as $t): ?>
+          <tr>
+            <td><?= e($t['text']) ?></td>
+            <td><?= e($t['link']) ?></td>
+            <td><?= $t['active'] ? icon('check', 'ic-sm') : icon('x', 'ic-sm') ?></td>
+            <td style="display:flex;gap:6px">
+              <form method="post" action="?action=admin_toggle_ticker"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$t['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?></button></form>
+              <form method="post" action="?action=admin_delete_ticker"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$t['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('plus', 'ic') ?>بنرات صور إضافية (شرائح أسفل البنر الرئيسي)</h3>
         <form method="post" action="?action=admin_save_banner" class="formrow" enctype="multipart/form-data">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <div class="upload-row" style="grid-column:1/-1">
