@@ -199,6 +199,30 @@ function migrate(): void
         sent TINYINT NOT NULL DEFAULT 0,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS wishlist (
+        id $id,
+        user_id INT NOT NULL,
+        product_id INT NOT NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS coupons (
+        id $id,
+        code VARCHAR(40) NOT NULL,
+        discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+        max_uses INT NOT NULL DEFAULT 0,
+        used_count INT NOT NULL DEFAULT 0,
+        active TINYINT NOT NULL DEFAULT 1,
+        expires_at VARCHAR(20) NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS reviews (
+        id $id,
+        product_id INT NOT NULL,
+        user_id INT NOT NULL,
+        rating INT NOT NULL,
+        comment TEXT NULL,
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -228,6 +252,10 @@ function migrate(): void
     add_column_if_missing($pdo, 'users', 'telegram_id', 'VARCHAR(40) NULL');
     add_column_if_missing($pdo, 'products', 'source', "VARCHAR(20) NULL");
     add_column_if_missing($pdo, 'products', 'external_id', 'VARCHAR(60) NULL');
+    add_column_if_missing($pdo, 'users', 'referral_code', 'VARCHAR(20) NULL');
+    add_column_if_missing($pdo, 'users', 'referred_by', 'INT NULL');
+    add_column_if_missing($pdo, 'users', 'last_bonus_date', 'VARCHAR(10) NULL');
+    add_column_if_missing($pdo, 'orders', 'coupon_code', 'VARCHAR(40) NULL');
 
     // seed default settings
     $defaults = [
@@ -245,6 +273,8 @@ function migrate(): void
         'theme_accent2_color' => '#ff4d4d',
         'satofill_markup_percent' => '15',
         'satofill_api_base' => 'https://satofill.com/api',
+        'referral_bonus_points' => '100',
+        'daily_bonus_points' => '20',
         'points_rate' => '0.001',      // 1 نقطة = كم دولار
         'min_withdraw_usd' => '25',
         'captcha_reward' => '10',
@@ -275,6 +305,7 @@ function migrate(): void
         'terms' => 'شروط الاستخدام الخاصة بمنصة Yassota...',
         'about' => 'Yassota منصة عربية للتسوق وكسب النقاط مقابل إنجاز مهام بسيطة، نلتزم بالشفافية والجودة في جميع خدماتنا.',
         'contact' => 'لأي استفسار أو دعم فني يمكنك التواصل معنا عبر تيليجرام: ' . ($defaults['support_telegram'] ?? '@layos_he') . ' وسيتم الرد عليك في أقرب وقت ممكن.',
+        'faq' => "س: كيف أشحن منتجاً؟\nج: اختر المنتج واضغط طلب شراء، ثم أكمل عملية الدفع وأرفق إيصال التحويل.\n\nس: كم تستغرق معالجة الطلب؟\nج: عادة بين دقائق وحتى 24 ساعة بحسب نوع المنتج.\n\nس: كيف أسحب أرباحي؟\nج: من صفحة المحفظة بعد الوصول للحد الأدنى للسحب، وعبر USDT أو الشام كاش.\n\nس: نسيت كلمة المرور، ماذا أفعل؟\nج: استخدم رابط استعادة كلمة المرور من صفحة تسجيل الدخول.",
     ];
     foreach ($pagesSeed as $slug => $content) {
         $st = $pdo->prepare("INSERT INTO pages (slug, content) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = ?)");
@@ -393,6 +424,8 @@ function icon(string $name, string $class = 'ic'): string
         'cart' => '<circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M3 4h2l2.2 11h10.6L20 7H6.3"/>',
         'check' => '<path d="M5 12.5 9.5 17 19 7"/>',
         'refresh' => '<path d="M4 12a8 8 0 0 1 14-5.3L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-14 5.3L4 16"/><path d="M4 20v-4h4"/>',
+        'heart' => '<path d="M12 20.5s-7.5-4.6-10-9.3C0.4 8 2 4.5 5.5 4c2-0.3 3.8 0.6 5 2.2C11.7 4.6 13.5 3.7 15.5 4 19 4.5 20.6 8 19 11.2c-2.5 4.7-7 9.3-7 9.3z"/>',
+        'search' => '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/>',
         'x' => '<path d="M6 6l12 12M18 6 6 18"/>',
         'edit' => '<path d="M4 17.5 14.5 7l3 3L7 20.5H4z"/><path d="M13 8 16.5 4.5l3 3L16 11"/>',
         'trash' => '<path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m1 0-.8 12.2a2 2 0 0 1-2 1.8H10.8a2 2 0 0 1-2-1.8L8 7"/>',
@@ -459,6 +492,11 @@ function current_user(): ?array
     $st->execute([$_SESSION['uid']]);
     $u = $st->fetch() ?: null;
     if ($u && $u['is_banned']) { logout(); return null; }
+    if ($u && empty($u['referral_code'])) {
+        $code = strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+        db()->prepare("UPDATE users SET referral_code = ? WHERE id = ?")->execute([$code, $u['id']]);
+        $u['referral_code'] = $code;
+    }
     return $u;
 }
 function is_admin(): bool
@@ -788,10 +826,23 @@ function handle_register(): void
     if ($st->fetch()) { flash('اسم المستخدم محجوز، اختر اسماً آخر.', 'error'); redirect('?'); }
 
     $role = ($email === ADMIN_EMAIL) ? 'admin' : 'user';
-    db()->prepare("INSERT INTO users (username, email, password_hash, name, role) VALUES (?,?,?,?,?)")
-        ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role]);
+    $refCode = strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+    $referredBy = null;
+    if (!empty($_SESSION['ref_code'])) {
+        $st = db()->prepare("SELECT id FROM users WHERE referral_code = ?");
+        $st->execute([$_SESSION['ref_code']]);
+        $ref = $st->fetch();
+        if ($ref) $referredBy = (int)$ref['id'];
+    }
+    db()->prepare("INSERT INTO users (username, email, password_hash, name, role, referral_code, referred_by) VALUES (?,?,?,?,?,?,?)")
+        ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role, $refCode, $referredBy]);
     $uid = db()->lastInsertId();
     award_welcome_bonus((int)$uid);
+    if ($referredBy) {
+        $bonus = (int)setting('referral_bonus_points', 100);
+        add_points($referredBy, $bonus, 'referral', 'مكافأة دعوة صديق: ' . $username);
+    }
+    unset($_SESSION['ref_code']);
     $_SESSION['uid'] = $uid;
     redirect('?page=welcome');
 }
@@ -824,6 +875,10 @@ function handle_login(): void
    ====================================================================== */
 $action = $_GET['action'] ?? '';
 $page = $_GET['page'] ?? 'home';
+
+if (!empty($_GET['ref']) && preg_match('/^[A-Z0-9]{4,20}$/', $_GET['ref'])) {
+    $_SESSION['ref_code'] = $_GET['ref'];
+}
 
 // ملاحظة: بوت تيليجرام (القوائم/الأرباح/المحفظة) يعمل كعملية مستقلة بالكامل عبر telegram_bot.php
 // على سيرفر منفصل، ويتواصل مع هذا الموقع فقط من خلال قاعدة البيانات المشتركة (لا استدعاء API مباشر هنا).
@@ -886,24 +941,93 @@ if ($action && str_starts_with($action, 'api_')) {
     }
 
     switch ($action) {
+        case 'api_claim_daily_bonus':
+            csrf_check();
+            $today = date('Y-m-d');
+            if ($u['last_bonus_date'] === $today) { echo json_encode(['ok' => false, 'msg' => 'لقد حصلت على مكافأتك اليوم.']); exit; }
+            $amt = (int)setting('daily_bonus_points', 20);
+            add_points((int)$u['id'], $amt, 'daily_bonus', 'مكافأة تسجيل دخول يومية');
+            db()->prepare("UPDATE users SET last_bonus_date = ? WHERE id = ?")->execute([$today, $u['id']]);
+            echo json_encode(['ok' => true, 'msg' => "تم إضافة +{$amt} عملة!"]); exit;
+
+        case 'api_toggle_wishlist':
+            csrf_check();
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $st = db()->prepare("SELECT id FROM wishlist WHERE user_id=? AND product_id=?");
+            $st->execute([$u['id'], $pid]);
+            $row = $st->fetch();
+            if ($row) {
+                db()->prepare("DELETE FROM wishlist WHERE id=?")->execute([$row['id']]);
+                echo json_encode(['ok' => true, 'added' => false]);
+            } else {
+                db()->prepare("INSERT INTO wishlist (user_id, product_id) VALUES (?,?)")->execute([$u['id'], $pid]);
+                echo json_encode(['ok' => true, 'added' => true]);
+            }
+            exit;
+
+        case 'api_submit_review':
+            csrf_check();
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $rating = max(1, min(5, (int)($_POST['rating'] ?? 0)));
+            $comment = trim($_POST['comment'] ?? '');
+            $st = db()->prepare("SELECT 1 FROM orders WHERE user_id=? AND product_id=? AND status='approved'");
+            $st->execute([$u['id'], $pid]);
+            if (!$st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'يمكنك تقييم المنتجات التي اشتريتها فقط.']); exit; }
+            $st = db()->prepare("SELECT id FROM reviews WHERE user_id=? AND product_id=?");
+            $st->execute([$u['id'], $pid]);
+            if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'لقد قيّمت هذا المنتج مسبقاً.']); exit; }
+            db()->prepare("INSERT INTO reviews (product_id, user_id, rating, comment) VALUES (?,?,?,?)")->execute([$pid, $u['id'], $rating, $comment]);
+            echo json_encode(['ok' => true, 'msg' => 'شكراً لتقييمك!']); exit;
+
+        case 'api_validate_coupon':
+            $code = trim($_POST['code'] ?? '');
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $st = db()->prepare("SELECT * FROM products WHERE id=? AND status='active'");
+            $st->execute([$pid]);
+            $p = $st->fetch();
+            if (!$p) { echo json_encode(['ok' => false, 'msg' => 'المنتج غير متوفر.']); exit; }
+            $st = db()->prepare("SELECT * FROM coupons WHERE code=? AND active=1");
+            $st->execute([$code]);
+            $c = $st->fetch();
+            if (!$c) { echo json_encode(['ok' => false, 'msg' => 'كود الخصم غير صالح.']); exit; }
+            if ($c['max_uses'] > 0 && $c['used_count'] >= $c['max_uses']) { echo json_encode(['ok' => false, 'msg' => 'تم استهلاك هذا الكود بالكامل.']); exit; }
+            if ($c['expires_at'] && $c['expires_at'] < date('Y-m-d')) { echo json_encode(['ok' => false, 'msg' => 'انتهت صلاحية هذا الكود.']); exit; }
+            $newPrice = round($p['price'] * (1 - $c['discount_percent'] / 100), 2);
+            echo json_encode(['ok' => true, 'new_price' => $newPrice, 'discount_percent' => (float)$c['discount_percent']]); exit;
+
         case 'api_buy_product':
             csrf_check();
             $pid = (int)($_POST['product_id'] ?? 0);
             $accountId = trim($_POST['account_id'] ?? '');
             $receipt = trim($_POST['receipt_image'] ?? '');
             $txNote = trim($_POST['tx_note'] ?? '');
+            $couponCode = trim($_POST['coupon_code'] ?? '');
             $st = db()->prepare("SELECT * FROM products WHERE id=? AND status='active'");
             $st->execute([$pid]);
             $p = $st->fetch();
             if (!$p) { echo json_encode(['ok' => false, 'msg' => 'المنتج غير متوفر.']); exit; }
             if ($accountId === '') { echo json_encode(['ok' => false, 'msg' => 'يجب إدخال الآيدي الخاص بك.']); exit; }
             if ($receipt === '') { echo json_encode(['ok' => false, 'msg' => 'صورة الإيصال إجبارية لإتمام الطلب.']); exit; }
+
+            $finalPrice = (float)$p['price'];
+            $coupon = null;
+            if ($couponCode !== '') {
+                $st = db()->prepare("SELECT * FROM coupons WHERE code=? AND active=1");
+                $st->execute([$couponCode]);
+                $coupon = $st->fetch();
+                if (!$coupon) { echo json_encode(['ok' => false, 'msg' => 'كود الخصم غير صالح.']); exit; }
+                if ($coupon['max_uses'] > 0 && $coupon['used_count'] >= $coupon['max_uses']) { echo json_encode(['ok' => false, 'msg' => 'تم استهلاك هذا الكود بالكامل.']); exit; }
+                if ($coupon['expires_at'] && $coupon['expires_at'] < date('Y-m-d')) { echo json_encode(['ok' => false, 'msg' => 'انتهت صلاحية هذا الكود.']); exit; }
+                $finalPrice = round($finalPrice * (1 - $coupon['discount_percent'] / 100), 2);
+            }
+
             $usd_balance = points_to_usd($u['points']);
-            if ($usd_balance < $p['price']) {
+            if ($usd_balance < $finalPrice) {
                 echo json_encode(['ok' => false, 'msg' => 'رصيدك غير كافٍ لإتمام الشراء، يمكنك شحن المحفظة من صفحة "محفظتي".']); exit;
             }
-            db()->prepare("INSERT INTO orders (user_id, product_id, price, account_id, receipt_image, tx_note) VALUES (?,?,?,?,?,?)")
-                ->execute([$u['id'], $pid, $p['price'], $accountId, $receipt, $txNote]);
+            db()->prepare("INSERT INTO orders (user_id, product_id, price, account_id, receipt_image, tx_note, coupon_code) VALUES (?,?,?,?,?,?,?)")
+                ->execute([$u['id'], $pid, $finalPrice, $accountId, $receipt, $txNote, $couponCode ?: null]);
+            if ($coupon) db()->prepare("UPDATE coupons SET used_count = used_count + 1 WHERE id = ?")->execute([$coupon['id']]);
             echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب الشراء، بانتظار موافقة الإدارة.']);
             exit;
 
@@ -1508,6 +1632,15 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .admin-tabs a{display:inline-flex;align-items:center;gap:6px}
 .card .icon-wrap{width:56px;height:56px;flex-shrink:0;border-radius:14px;background:#1d1014;display:flex;align-items:center;justify-content:center;margin-bottom:10px;color:var(--accent2)}
 .card .icon-wrap.emoji-icon{font-size:28px;line-height:1}
+.wish-btn{position:absolute;top:10px;left:10px;z-index:2;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.4);border:1px solid #3a1c25;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer;transition:.2s}
+.wish-btn .ic{fill:none;stroke:currentColor}
+.wish-btn.active{color:var(--accent2)}
+.wish-btn.active .ic{fill:var(--accent2)}
+.search-bar{display:flex;gap:8px;margin:0 18px 16px}
+.search-bar input{flex:1;padding:12px 14px;border-radius:12px;border:1px solid #3a1c23;background:#1d0f14;color:var(--text);font-size:14px}
+.search-bar button{width:44px;border-radius:12px;border:1px solid #3a1c23;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.star-rating{display:flex;gap:2px;color:var(--accent2)}
+.star-rating .ic{width:16px;height:16px}
 .icon-wrap .ic{flex-shrink:0}
 .card img.pimg{display:block;flex-shrink:0}
 .brand .ic{color:var(--accent2)}
@@ -1863,6 +1996,15 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
       <input type="text" id="buyTxNote" placeholder="رقم العملية / المرجع إن وجد">
     </label>
 
+    <label>كود الخصم (اختياري)
+      <div class="upload-row">
+        <input type="text" id="buyCouponCode" placeholder="أدخل كود الخصم إن وجد">
+        <button type="button" class="btn btn-ghost" onclick="applyCoupon()">تطبيق</button>
+      </div>
+      <div id="buyCouponMsg" style="font-size:13px;margin-top:4px"></div>
+    </label>
+    <div class="balance-pill"><?= icon('cart', 'ic-sm') ?>السعر النهائي: <strong id="buyFinalPrice">0$</strong></div>
+
     <div style="display:flex;gap:10px;margin-top:14px">
       <button type="button" class="btn btn-primary" style="flex:1" id="buySubmitBtn" onclick="submitBuyRequest()"><?= icon('check', 'ic-sm') ?>تأكيد الطلب</button>
       <button type="button" class="btn btn-ghost" style="flex:1" onclick="closeBuyModal()">إلغاء</button>
@@ -1888,8 +2030,21 @@ case 'login':
 case 'home':
     $banners = db()->query("SELECT * FROM banners WHERE active=1 ORDER BY sort_order")->fetchAll();
     $tickers = db()->query("SELECT * FROM tickers WHERE active=1 ORDER BY sort_order, id")->fetchAll();
-    $products = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC")->fetchAll();
+    $searchQ = trim($_GET['q'] ?? '');
+    if ($searchQ !== '') {
+        $st = db()->prepare("SELECT * FROM products WHERE status='active' AND name LIKE ? ORDER BY id DESC");
+        $st->execute(['%' . $searchQ . '%']);
+        $products = $st->fetchAll();
+    } else {
+        $products = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC")->fetchAll();
+    }
     $categories = db()->query("SELECT * FROM categories ORDER BY sort_order, id")->fetchAll();
+    $wishlistSet = [];
+    if ($user) {
+        $st = db()->prepare("SELECT product_id FROM wishlist WHERE user_id=?");
+        $st->execute([$user['id']]);
+        foreach ($st->fetchAll() as $w) $wishlistSet[$w['product_id']] = true;
+    }
     $byCat = []; $uncategorized = [];
     foreach ($products as $p) {
         if ($p['category_id']) $byCat[$p['category_id']][] = $p;
@@ -1905,9 +2060,12 @@ case 'home':
     }
     function render_product_card(array $p): void
     {
+        global $wishlistSet;
+        $isFav = !empty($wishlistSet[$p['id']]);
         ?>
         <div class="card">
           <?php if ($p['tag']): ?><span class="tag"><?= e($p['tag']) ?></span><?php endif; ?>
+          <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" onclick="toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
           <a href="?page=product&id=<?= (int)$p['id'] ?>">
             <?php if ($p['image']): ?>
               <img class="pimg" loading="lazy" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
@@ -1923,7 +2081,7 @@ case 'home':
             <span class="price"><?= e($p['price']) ?>$</span>
             <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
           </div>
-          <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>)"><?= icon('cart', 'ic ic-sm') ?><?= e(setting('buy_button_text', 'طلب شراء')) ?></button>
+          <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>)"><?= icon('cart', 'ic ic-sm') ?><?= e(setting('buy_button_text', 'طلب شراء')) ?></button>
         </div>
         <?php
     }
@@ -1961,6 +2119,12 @@ case 'home':
       <?php endif; ?>
     </div>
     <?php endif; ?>
+
+    <form method="get" action="?" class="search-bar">
+      <input type="hidden" name="page" value="home">
+      <input type="text" name="q" value="<?= e($searchQ) ?>" placeholder="ابحث عن منتج...">
+      <button type="submit"><?= icon('search', 'ic-sm') ?></button>
+    </form>
 
     <?php $tileCats = array_filter($categories, fn($c) => !empty($c['image'])); ?>
     <?php if ($tileCats): ?>
@@ -2101,7 +2265,7 @@ case 'wallet':
     $log = db()->prepare("SELECT * FROM earn_logs WHERE user_id=? ORDER BY id DESC LIMIT 12");
     $log->execute([$user['id']]);
     $logs = $log->fetchAll();
-    $sourceLabel = ['welcome' => 'هدية الترحيب', 'captcha' => 'كابتشا', 'task' => 'مهمة', 'topup' => 'شحن رصيد', 'refund' => 'استرجاع', 'admin' => 'الإدارة', 'withdraw' => 'سحب'];
+    $sourceLabel = ['welcome' => 'هدية الترحيب', 'captcha' => 'كابتشا', 'task' => 'مهمة', 'topup' => 'شحن رصيد', 'refund' => 'استرجاع', 'admin' => 'الإدارة', 'withdraw' => 'سحب', 'referral' => 'دعوة صديق', 'daily_bonus' => 'مكافأة يومية'];
     ?>
     <div class="wallet-balance-card">
       <div class="wbc-top">
@@ -2113,6 +2277,28 @@ case 'wallet':
       <div class="wbc-progress">
         <div class="wbc-progress-bar"><div class="wbc-progress-fill" style="width:<?= $progress ?>%"></div></div>
         <span class="wbc-progress-txt"><?= $canWithdraw ? icon('check', 'ic-sm') . 'يمكنك السحب الآن' : 'الحد الأدنى للسحب: ' . e($minw) . '$ (' . $progress . '%)' ?></span>
+      </div>
+    </div>
+
+    <?php
+    $todayStr = date('Y-m-d');
+    $gotDailyBonus = $user['last_bonus_date'] === $todayStr;
+    $dailyBonusAmt = (int)setting('daily_bonus_points', 20);
+    $refStCount = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by = ?");
+    $refStCount->execute([$user['id']]);
+    $refCount = (int)$refStCount->fetch()['c'];
+    ?>
+    <div class="admin-box" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><strong><?= icon('coin', 'ic-sm') ?> المكافأة اليومية</strong><div style="font-size:13px;color:var(--muted);margin-top:4px"><?= $gotDailyBonus ? 'حصلت عليها اليوم، عُد غداً.' : "اضغط للحصول على +{$dailyBonusAmt} عملة." ?></div></div>
+      <button class="btn btn-primary" id="dailyBonusBtn" <?= $gotDailyBonus ? 'disabled style="opacity:.5;cursor:not-allowed"' : 'onclick="claimDailyBonus()"' ?>><?= icon('coins', 'ic-sm') ?><?= $gotDailyBonus ? 'تم الاستلام' : 'استلام' ?></button>
+    </div>
+
+    <div class="admin-box">
+      <h3><?= icon('send', 'ic') ?>دعوة الأصدقاء</h3>
+      <p style="font-size:13px;color:var(--muted)">شارك رابطك واحصل على <?= (int)setting('referral_bonus_points', 100) ?> عملة عن كل صديق يسجّل عبره. عدد من دعوتهم: <strong><?= $refCount ?></strong></p>
+      <div class="upload-row">
+        <input type="text" readonly value="<?= e(rtrim(SITE_URL, '/')) ?>/index.php?ref=<?= e($user['referral_code']) ?>" id="refLinkInput" onclick="this.select()">
+        <button class="btn btn-ghost" type="button" onclick="navigator.clipboard.writeText(document.getElementById('refLinkInput').value);this.textContent='تم النسخ!'"><?= icon('check', 'ic-sm') ?>نسخ</button>
       </div>
     </div>
 
@@ -2192,8 +2378,9 @@ case 'privacy':
 case 'terms':
 case 'about':
 case 'contact':
+case 'faq':
     $st = db()->prepare("SELECT content FROM pages WHERE slug=?"); $st->execute([$page]); $c = $st->fetch();
-    $pageTitles = ['privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'about' => 'من نحن', 'contact' => 'تواصل معنا'];
+    $pageTitles = ['privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'about' => 'من نحن', 'contact' => 'تواصل معنا', 'faq' => 'الأسئلة الشائعة'];
     echo '<div class="section-title">' . icon('doc', 'ic') . e($pageTitles[$page]) . '</div>';
     echo '<div class="admin-box" style="margin-top:18px;line-height:1.8">' . nl2br(e($c['content'] ?? '')) . '</div>';
     if ($page === 'contact' && setting('support_telegram')) {
@@ -2582,7 +2769,19 @@ case 'admin':
     <?php elseif ($tab === 'pages'):
         $privacy = db()->query("SELECT * FROM pages WHERE slug='privacy'")->fetch();
         $terms = db()->query("SELECT * FROM pages WHERE slug='terms'")->fetch();
+        $faq = db()->query("SELECT * FROM pages WHERE slug='faq'")->fetch();
     ?>
+      <div class="admin-box">
+        <h3><?= icon('doc', 'ic') ?>الأسئلة الشائعة (FAQ)</h3>
+        <form method="post" action="?action=admin_save_page">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="slug" value="faq">
+          <input name="meta_title" placeholder="عنوان SEO" value="<?= e($faq['meta_title'] ?? '') ?>">
+          <input name="meta_description" placeholder="وصف SEO مختصر" value="<?= e($faq['meta_description'] ?? '') ?>">
+          <textarea name="content" rows="8" placeholder="سؤال وجواب، سطر فارغ بين كل سؤال والآخر"><?= e($faq['content'] ?? '') ?></textarea>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
+        </form>
+      </div>
       <div class="admin-box">
         <h3><?= icon('lock', 'ic') ?>سياسة الخصوصية</h3>
         <form method="post" action="?action=admin_save_page">
@@ -2854,14 +3053,57 @@ async function uploadInto(input, targetId){
   else toast(res.msg || 'فشل رفع الملف.');
 }
 let buyProductId = null;
-function buyProduct(id){
+let buyProductPrice = 0;
+let buyAppliedCoupon = null;
+function buyProduct(id, price){
   if (!LOGGED_IN) return requireLogin();
   buyProductId = id;
+  buyProductPrice = price || 0;
+  buyAppliedCoupon = null;
   document.getElementById('buyAccountId').value = '';
   document.getElementById('buyTxNote').value = '';
   document.getElementById('buyReceiptFile').value = '';
+  document.getElementById('buyCouponCode').value = '';
+  document.getElementById('buyCouponMsg').textContent = '';
+  document.getElementById('buyFinalPrice').textContent = buyProductPrice + '$';
   resetReceiptBox();
   document.getElementById('buyModal').style.display = 'flex';
+}
+async function applyCoupon(){
+  const code = document.getElementById('buyCouponCode').value.trim();
+  const msgEl = document.getElementById('buyCouponMsg');
+  if (!code) { msgEl.textContent = ''; buyAppliedCoupon = null; document.getElementById('buyFinalPrice').textContent = buyProductPrice + '$'; return; }
+  const d = new FormData();
+  d.append('code', code);
+  d.append('product_id', buyProductId);
+  const res = await post('api_validate_coupon', d);
+  if (res.ok) {
+    buyAppliedCoupon = code;
+    msgEl.style.color = '#2ecc71';
+    msgEl.textContent = 'تم تطبيق خصم ' + res.discount_percent + '%';
+    document.getElementById('buyFinalPrice').textContent = res.new_price + '$';
+  } else {
+    buyAppliedCoupon = null;
+    msgEl.style.color = '#e74c3c';
+    msgEl.textContent = res.msg || 'كود غير صالح';
+    document.getElementById('buyFinalPrice').textContent = buyProductPrice + '$';
+  }
+}
+function toggleWishlist(id, btn){
+  if (!LOGGED_IN) return requireLogin();
+  const d = new FormData();
+  d.append('product_id', id);
+  post('api_toggle_wishlist', d).then(res => {
+    if (res.ok) btn.classList.toggle('active', res.added);
+    else toast(res.msg || 'حدث خطأ');
+  });
+}
+function claimDailyBonus(){
+  if (!LOGGED_IN) return requireLogin();
+  post('api_claim_daily_bonus', new FormData()).then(res => {
+    toast(res.msg);
+    if (res.ok) setTimeout(() => location.reload(), 1000);
+  });
 }
 function closeBuyModal(){ document.getElementById('buyModal').style.display = 'none'; }
 function resetReceiptBox(){
@@ -2919,6 +3161,7 @@ async function submitBuyRequest(){
   d.append('account_id', accountId);
   d.append('receipt_image', upRes.url);
   d.append('tx_note', txNote);
+  if (buyAppliedCoupon) d.append('coupon_code', buyAppliedCoupon);
   const res = await post('api_buy_product', d);
   btn.disabled = false;
   toast(res.msg);
