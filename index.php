@@ -36,6 +36,18 @@ function db(): PDO
     return $pdo;
 }
 
+function add_column_if_missing(PDO $pdo, string $table, string $col, string $def): void
+{
+    try {
+        $colSql = DB_DRIVER === 'sqlite' ? "PRAGMA table_info($table)" : "SHOW COLUMNS FROM $table";
+        $cols = [];
+        foreach ($pdo->query($colSql)->fetchAll() as $row) {
+            $cols[] = DB_DRIVER === 'sqlite' ? $row['name'] : $row['Field'];
+        }
+        if (!in_array($col, $cols, true)) $pdo->exec("ALTER TABLE $table ADD COLUMN $col $def");
+    } catch (Throwable $e) {}
+}
+
 function migrate(): void
 {
     $pdo = db();
@@ -148,7 +160,9 @@ function migrate(): void
     )$engine",
     "CREATE TABLE IF NOT EXISTS pages (
         slug VARCHAR(40) PRIMARY KEY,
-        content TEXT NULL
+        content TEXT NULL,
+        meta_title VARCHAR(190) NULL,
+        meta_description VARCHAR(255) NULL
     )$engine",
     "CREATE TABLE IF NOT EXISTS telegram_users (
         chat_id VARCHAR(40) PRIMARY KEY,
@@ -179,6 +193,10 @@ function migrate(): void
             try { $pdo->exec("ALTER TABLE users ADD COLUMN $col $def"); } catch (Throwable $e) {}
         }
     }
+
+    add_column_if_missing($pdo, 'products', 'meta_description', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'pages', 'meta_title', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'pages', 'meta_description', 'VARCHAR(255) NULL');
 
     // seed default settings
     $defaults = [
@@ -212,6 +230,52 @@ migrate();
    2) HELPERS
    ====================================================================== */
 function e($s): string { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+
+/* ---- Professional inline SVG icon set (no emojis) ---- */
+function icon(string $name, string $class = 'ic'): string
+{
+    $paths = [
+        'home' => '<path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9.5 20v-6h5v6"/>',
+        'coin' => '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5c0-1.2 1-2 2.5-2s2.5.8 2.5 2-1 1.6-2.5 2-2.5.8-2.5 2 1 2 2.5 2 2.5-.8 2.5-2"/>',
+        'tasks' => '<rect x="4" y="3.5" width="16" height="17" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+        'wallet' => '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1.2"/>',
+        'orders' => '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>',
+        'lock' => '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+        'doc' => '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
+        'admin' => '<path d="M12 3 4 6v6c0 5 3.5 7.5 8 9 4.5-1.5 8-4 8-9V6z"/><path d="M9.5 12l1.8 1.8L15 10.2"/>',
+        'menu' => '<path d="M4 7h16M4 12h16M4 17h16"/>',
+        'close' => '<path d="M6 6l12 12M18 6 6 18"/>',
+        'user' => '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.5 3.1-6 7-6s7 2.5 7 6"/>',
+        'logout' => '<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M16 16l4-4-4-4M20 12H9"/>',
+        'cart' => '<circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M3 4h2l2.2 11h10.6L20 7H6.3"/>',
+        'check' => '<path d="M5 12.5 9.5 17 19 7"/>',
+        'x' => '<path d="M6 6l12 12M18 6 6 18"/>',
+        'edit' => '<path d="M4 17.5 14.5 7l3 3L7 20.5H4z"/><path d="M13 8 16.5 4.5l3 3L16 11"/>',
+        'trash' => '<path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m1 0-.8 12.2a2 2 0 0 1-2 1.8H10.8a2 2 0 0 1-2-1.8L8 7"/>',
+        'toggle' => '<rect x="3" y="8" width="18" height="8" rx="4"/><circle cx="8" cy="12" r="2.6"/>',
+        'image' => '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 17l4.5-4.5 3 3L17.5 11l1.5 1.5"/>',
+        'settings' => '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2-1.2L14.2 3H9.8l-.4 2.6a7 7 0 0 0-2 1.2l-2.3-.9-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-.9c.6.5 1.3.9 2 1.2l.4 2.6h4.4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/>',
+        'plus' => '<path d="M12 5v14M5 12h14"/>',
+        'megaphone' => '<path d="M3 10v4l3 .6V18a1.5 1.5 0 0 0 3 0v-2.8l9 1.8V9L9 10.8 6 10z"/>',
+        'chart' => '<path d="M4 19h16M7 19V11M12 19V6M17 19v-8"/>',
+        'gift' => '<rect x="4" y="10" width="16" height="10" rx="1.5"/><path d="M4 10h16M12 10v10"/><path d="M12 10c-3 0-4-1.6-4-3a2.2 2.2 0 0 1 4-1.3c.3-.4.6-.7 1-.9M12 10c3 0 4-1.6 4-3a2.2 2.2 0 0 0-4-1.3c-.3-.4-.6-.7-1-.9"/>',
+        'pages' => '<path d="M6 3h9l5 5v13H6z"/><path d="M15 3v5h5M9 12h6M9 16h6"/>',
+        'users' => '<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.4"/><path d="M15.5 14.2c2.6.4 4.5 2.2 4.5 4.8"/>',
+        'globe' => '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 0 1 0 18M12 3a13 13 0 0 0 0 18"/>',
+        'upload' => '<path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+        'rocket' => '<path d="M12 3c3 1.5 5 4.5 5 8.5L12 15l-5-3.5C7 7.5 9 4.5 12 3z"/><path d="M9 14l-2.5 1.5L7 18l2.5-1M15 14l2.5 1.5L17 18l-2.5-1"/><circle cx="12" cy="9" r="1.3"/>',
+        'clock' => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+        'bank' => '<path d="M3 10 12 4l9 6"/><path d="M4 10h16v2H4z"/><path d="M6 12v7M10 12v7M14 12v7M18 12v7"/><path d="M3 21h18"/>',
+        'send' => '<path d="M4 12 20 4 13 20l-2-6-7-2z"/>',
+        'copy' => '<rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
+        'history' => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/><path d="M3.5 9 3 6l-2.7 1"/>',
+        'shield' => '<path d="M12 3 5 6v6c0 5 3 7.5 7 9 4-1.5 7-4 7-9V6z"/><path d="M9.2 12l1.8 1.8L15 10.2"/>',
+        'coins' => '<circle cx="9" cy="9" r="5.5"/><path d="M15 9.3c2.7.5 4.5 2 4.5 4.2 0 3-2.9 5-6.5 5-2.7 0-5-1.1-6.1-2.7"/>',
+        'minus' => '<path d="M5 12h14"/>',
+    ];
+    $body = $paths[$name] ?? $paths['check'];
+    return '<svg class="' . e($class) . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $body . '</svg>';
+}
 
 function setting(string $k, $default = '')
 {
@@ -249,7 +313,7 @@ function is_admin(): bool
 }
 function require_admin(): void
 {
-    if (!is_admin()) { http_response_code(403); die('🚫 ممنوع — هذه الصفحة للإدارة فقط.'); }
+    if (!is_admin()) { http_response_code(403); die('ممنوع — هذه الصفحة للإدارة فقط.'); }
 }
 function logout(): void { $_SESSION = []; session_destroy(); }
 
@@ -357,19 +421,61 @@ function google_login_url(): string
     return 'https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query($params);
 }
 
+function http_post(string $url, array $fields): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query($fields),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+    ]);
+    $body = curl_exec($ch);
+    $err = curl_error($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['body' => $body, 'error' => $err, 'code' => $code];
+}
+
+function http_get(string $url): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+    ]);
+    $body = curl_exec($ch);
+    $err = curl_error($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['body' => $body, 'error' => $err, 'code' => $code];
+}
+
 function google_handle_callback(string $code): void
 {
-    $tokenRes = json_decode(file_get_contents('https://oauth2.googleapis.com/token?' . http_build_query([
+    if (!$code) { flash('فشل تسجيل الدخول بجوجل: لم يصل رمز التفويض من جوجل.', 'error'); redirect('?'); }
+
+    $tokenHttp = http_post('https://oauth2.googleapis.com/token', [
         'code' => $code,
         'client_id' => GOOGLE_CLIENT_ID,
         'client_secret' => GOOGLE_CLIENT_SECRET,
         'redirect_uri' => google_redirect_uri(),
         'grant_type' => 'authorization_code',
-    ]), false, stream_context_create(['http' => ['method' => 'POST', 'header' => "Content-Type: application/x-www-form-urlencoded\r\n"]])), true);
+    ]);
+    $tokenRes = json_decode((string)$tokenHttp['body'], true);
 
-    if (empty($tokenRes['access_token'])) { flash('فشل تسجيل الدخول بجوجل.', 'error'); redirect('?'); }
+    if (empty($tokenRes['access_token'])) {
+        $detail = $tokenHttp['error'] ?: ($tokenRes['error_description'] ?? $tokenRes['error'] ?? 'استجابة غير متوقعة من جوجل (HTTP ' . $tokenHttp['code'] . ')');
+        error_log('Google OAuth token exchange failed: ' . $detail . ' | redirect_uri=' . google_redirect_uri());
+        flash('فشل تسجيل الدخول بجوجل: ' . $detail, 'error');
+        redirect('?');
+    }
 
-    $info = json_decode(file_get_contents('https://www.googleapis.com/oauth2/v3/userinfo?access_token=' . $tokenRes['access_token']), true);
+    $infoHttp = http_get('https://www.googleapis.com/oauth2/v3/userinfo?access_token=' . urlencode($tokenRes['access_token']));
+    $info = json_decode((string)$infoHttp['body'], true);
     if (empty($info['email'])) { flash('تعذّر جلب بيانات حسابك من جوجل.', 'error'); redirect('?'); }
 
     $email = $info['email'];
@@ -469,11 +575,40 @@ if ($action === 'login') { handle_login(); exit; }
 
 if ($action === 'logout') { logout(); redirect('?'); }
 
-if ($page === 'admin' && !is_admin()) { http_response_code(403); die('🚫 ممنوع — هذه الصفحة للإدارة فقط. سجّل الدخول ببريد الأدمن.'); }
+if ($page === 'admin' && !is_admin()) { http_response_code(403); die('ممنوع — هذه الصفحة للإدارة فقط. سجّل الدخول ببريد الأدمن.'); }
 
 if ($action === 'accept_policy') {
     setcookie('policy_accepted', setting('policy_version', '1'), time() + 60 * 60 * 24 * 365, '/');
     echo 'ok'; exit;
+}
+
+if ($action === 'robots') {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "User-agent: *\nAllow: /\nSitemap: " . rtrim(SITE_URL, '/') . "/index.php?action=sitemap\n";
+    exit;
+}
+
+if ($action === 'sitemap') {
+    header('Content-Type: application/xml; charset=utf-8');
+    $base = rtrim(SITE_URL, '/') . '/index.php';
+    $urls = [
+        ['loc' => $base, 'priority' => '1.0'],
+        ['loc' => $base . '?page=privacy', 'priority' => '0.3'],
+        ['loc' => $base . '?page=terms', 'priority' => '0.3'],
+    ];
+    $products = db()->query("SELECT id, created_at FROM products WHERE status='active'")->fetchAll();
+    foreach ($products as $p) {
+        $urls[] = ['loc' => $base . '?page=product&id=' . (int)$p['id'], 'priority' => '0.8', 'lastmod' => substr((string)$p['created_at'], 0, 10)];
+    }
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+    echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
+    foreach ($urls as $u) {
+        echo '<url><loc>' . e($u['loc']) . '</loc>';
+        if (!empty($u['lastmod'])) echo '<lastmod>' . e($u['lastmod']) . '</lastmod>';
+        echo '<priority>' . $u['priority'] . '</priority></url>' . "\n";
+    }
+    echo '</urlset>';
+    exit;
 }
 
 /* ---- JSON API actions (AJAX) ---- */
@@ -589,6 +724,35 @@ if ($action && str_starts_with($action, 'api_')) {
     }
 }
 
+/* ---- Admin file upload (logo/banner/product images) ---- */
+if ($action === 'admin_upload') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $field = preg_replace('/[^a-z_]/', '', $_POST['field'] ?? 'misc');
+    $dir = match (true) {
+        str_contains($field, 'logo') => 'site',
+        str_contains($field, 'banner') => 'banners',
+        default => 'products',
+    };
+    if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+        echo json_encode(['ok' => false, 'msg' => 'فشل رفع الملف.']); exit;
+    }
+    $f = $_FILES['file'];
+    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+    $mime = mime_content_type($f['tmp_name']);
+    if (!isset($allowed[$mime]) || $f['size'] > 5 * 1024 * 1024) {
+        echo json_encode(['ok' => false, 'msg' => 'الملف يجب أن يكون صورة (jpg/png/webp/gif) أصغر من 5MB.']); exit;
+    }
+    $destDir = __DIR__ . '/uploads/' . $dir;
+    if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+    $filename = bin2hex(random_bytes(8)) . '.' . $allowed[$mime];
+    move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
+    $url = 'uploads/' . $dir . '/' . $filename;
+    echo json_encode(['ok' => true, 'url' => $url]);
+    exit;
+}
+
 /* ---- Admin POST actions ---- */
 if ($action && str_starts_with($action, 'admin_')) {
     require_admin();
@@ -598,19 +762,19 @@ if ($action && str_starts_with($action, 'admin_')) {
         case 'admin_save_product':
             $id = (int)($_POST['id'] ?? 0);
             $name = trim($_POST['name'] ?? '');
-            $icon = trim($_POST['icon'] ?? '');
             $price = (float)($_POST['price'] ?? 0);
             $old_price = $_POST['old_price'] !== '' ? (float)$_POST['old_price'] : null;
             $cat = (int)($_POST['category_id'] ?? 0) ?: null;
             $desc = trim($_POST['description'] ?? '');
+            $metaDesc = trim($_POST['meta_description'] ?? '');
             $tag = trim($_POST['tag'] ?? '');
             $image = trim($_POST['image'] ?? '');
             if ($id) {
-                db()->prepare("UPDATE products SET name=?, icon=?, price=?, old_price=?, category_id=?, description=?, tag=?, image=? WHERE id=?")
-                    ->execute([$name, $icon, $price, $old_price, $cat, $desc, $tag, $image, $id]);
+                db()->prepare("UPDATE products SET name=?, price=?, old_price=?, category_id=?, description=?, meta_description=?, tag=?, image=? WHERE id=?")
+                    ->execute([$name, $price, $old_price, $cat, $desc, $metaDesc, $tag, $image, $id]);
             } else {
-                db()->prepare("INSERT INTO products (name, icon, price, old_price, category_id, description, tag, image) VALUES (?,?,?,?,?,?,?,?)")
-                    ->execute([$name, $icon, $price, $old_price, $cat, $desc, $tag, $image]);
+                db()->prepare("INSERT INTO products (name, price, old_price, category_id, description, meta_description, tag, image) VALUES (?,?,?,?,?,?,?,?)")
+                    ->execute([$name, $price, $old_price, $cat, $desc, $metaDesc, $tag, $image]);
                 $id = db()->lastInsertId();
                 $st = db()->prepare("SELECT * FROM products WHERE id=?"); $st->execute([$id]);
                 tg_broadcast_product($st->fetch());
@@ -696,10 +860,12 @@ if ($action && str_starts_with($action, 'admin_')) {
             redirect('?page=admin&tab=settings');
 
         case 'admin_save_page':
+            $mTitle = trim($_POST['meta_title'] ?? '');
+            $mDesc = trim($_POST['meta_description'] ?? '');
             db()->prepare(DB_DRIVER === 'sqlite'
-                ? "INSERT INTO pages (slug, content) VALUES (?,?) ON CONFLICT(slug) DO UPDATE SET content=?"
-                : "INSERT INTO pages (slug, content) VALUES (?,?) ON DUPLICATE KEY UPDATE content=?")
-                ->execute([$_POST['slug'], $_POST['content'], $_POST['content']]);
+                ? "INSERT INTO pages (slug, content, meta_title, meta_description) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET content=excluded.content, meta_title=excluded.meta_title, meta_description=excluded.meta_description"
+                : "INSERT INTO pages (slug, content, meta_title, meta_description) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE content=VALUES(content), meta_title=VALUES(meta_title), meta_description=VALUES(meta_description)")
+                ->execute([$_POST['slug'], $_POST['content'], $mTitle, $mDesc]);
             flash('تم حفظ الصفحة.');
             redirect('?page=admin&tab=pages');
 
@@ -721,22 +887,66 @@ if ($action && str_starts_with($action, 'admin_')) {
 $user = current_user();
 $siteName = setting('site_name');
 $logo = setting('logo_url');
+
+/* ---- SEO: per-page title / description / canonical / structured data ---- */
+$seoProduct = null;
+if ($page === 'product') {
+    $st = db()->prepare("SELECT * FROM products WHERE id=? AND status='active'");
+    $st->execute([(int)($_GET['id'] ?? 0)]);
+    $seoProduct = $st->fetch();
+    if (!$seoProduct) { http_response_code(404); }
+}
+$pageLabels = ['home' => 'الرئيسية', 'earn' => 'اكسب عملات', 'tasks' => 'المهام اليومية', 'wallet' => 'محفظتي', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'welcome' => 'مرحباً بك', 'admin' => 'لوحة الإدارة'];
+if ($seoProduct) {
+    $seoTitle = $seoProduct['name'] . ' — ' . e($siteName);
+    $seoDesc = $seoProduct['meta_description'] ?: mb_substr((string)$seoProduct['description'], 0, 155);
+    $seoImage = $seoProduct['image'] ?: $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=product&id=' . (int)$seoProduct['id'];
+} elseif (in_array($page, ['privacy', 'terms'], true)) {
+    $pg = db()->prepare("SELECT * FROM pages WHERE slug=?"); $pg->execute([$page]); $pgRow = $pg->fetch();
+    $seoTitle = ($pgRow['meta_title'] ?? '') ?: ($pageLabels[$page] . ' — ' . $siteName);
+    $seoDesc = ($pgRow['meta_description'] ?? '') ?: setting('site_description');
+    $seoImage = $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=' . $page;
+} elseif ($page === 'home') {
+    $seoTitle = $siteName . ' — ' . setting('banner_subtitle');
+    $seoDesc = setting('site_description');
+    $seoImage = $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php';
+} else {
+    $seoTitle = ($pageLabels[$page] ?? $siteName) . ' — ' . $siteName;
+    $seoDesc = setting('site_description');
+    $seoImage = $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=' . e($page);
+}
 ?>
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title><?= e($siteName) ?> — <?= e(setting('banner_subtitle')) ?></title>
-<meta name="description" content="<?= e(setting('site_description')) ?>">
+<title><?= e($seoTitle) ?></title>
+<meta name="description" content="<?= e($seoDesc) ?>">
 <meta name="keywords" content="<?= e(setting('site_keywords')) ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta property="og:title" content="<?= e($siteName) ?>">
-<meta property="og:description" content="<?= e(setting('site_description')) ?>">
-<?php if ($logo): ?><meta property="og:image" content="<?= e($logo) ?>"><link rel="icon" href="<?= e($logo) ?>"><?php endif; ?>
-<link rel="canonical" href="<?= e(SITE_URL ?: '') ?>">
+<?php if ($page !== 'admin' && !$user): ?><meta name="robots" content="index, follow"><?php else: ?><meta name="robots" content="noindex, nofollow"><?php endif; ?>
+<meta property="og:type" content="<?= $seoProduct ? 'product' : 'website' ?>">
+<meta property="og:title" content="<?= e($seoTitle) ?>">
+<meta property="og:description" content="<?= e($seoDesc) ?>">
+<?php if ($seoImage): ?><meta property="og:image" content="<?= e($seoImage) ?>"><?php endif; ?>
+<?php if ($logo): ?><link rel="icon" href="<?= e($logo) ?>"><?php endif; ?>
+<link rel="canonical" href="<?= e($seoCanonical) ?>">
+<?php if ($seoProduct): ?>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Product","name":"<?= e($seoProduct['name']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>","offers":{"@type":"Offer","price":"<?= e($seoProduct['price']) ?>","priceCurrency":"USD","availability":"https://schema.org/InStock"}}
+</script>
+<?php else: ?>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebSite","name":"<?= e($siteName) ?>","url":"<?= e(SITE_URL) ?>"<?= $logo ? ',"image":"' . e($logo) . '"' : '' ?>}
+</script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"Organization","name":"<?= e($siteName) ?>","url":"<?= e(SITE_URL) ?>"<?= $logo ? ',"logo":"' . e($logo) . '"' : '' ?>}
 </script>
+<?php endif; ?>
 <style>
 :root{--bg:#0f1320;--bg2:#161b2e;--card:#1b2138;--accent:#6c5ce7;--accent2:#00d2a0;--text:#eef0f7;--muted:#8a90ab;--danger:#ff5c5c;--radius:16px}
 *{box-sizing:border-box;margin:0;padding:0}
@@ -808,42 +1018,111 @@ table th,table td{padding:8px;border-bottom:1px solid #232a45;text-align:right}
 .badge.approved{background:#1d3b2e}
 .badge.rejected{background:#3b1d1d}
 footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
+.ic{width:20px;height:20px;display:inline-block;vertical-align:middle;flex-shrink:0}
+.ic-sm{width:16px;height:16px}
+.ic-lg{width:30px;height:30px}
+.ic-xl{width:46px;height:46px}
+.btn .ic{margin-inline-end:6px;margin-bottom:2px}
+.burger .ic{width:24px;height:24px}
+.sidebar nav a .ic{color:var(--accent2)}
+.bottom-nav a .ic{display:block;margin:0 auto 3px}
+.bottom-nav a.active .ic{color:var(--accent2)}
+.admin-tabs a{display:inline-flex;align-items:center;gap:6px}
+.card .icon-wrap{width:56px;height:56px;border-radius:14px;background:#11152a;display:flex;align-items:center;justify-content:center;margin-bottom:10px;color:var(--accent2)}
+.brand .ic{color:var(--accent2)}
+.stat-card{background:#11152a;border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px}
+.stat-card .ic{color:var(--accent2);background:#1b2240;border-radius:10px;padding:8px;width:36px;height:36px}
+.stat-card .num{font-size:20px;font-weight:800}
+.stat-card .lbl{color:var(--muted);font-size:12px}
+.upload-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
+.upload-row input[type=text]{flex:1;margin-bottom:0}
+.upload-row label.btn{margin:0;white-space:nowrap;cursor:pointer}
+.upload-row .preview{width:44px;height:44px;border-radius:8px;object-fit:cover;background:#11152a}
+.icon-badge{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px}
+.icon-badge.ok{background:#1d3b2e;color:var(--accent2)}
+.icon-badge.no{background:#3b1d1d;color:var(--danger)}
+
+.wallet-balance-card{background:linear-gradient(135deg,#1b1f3d,#2a1f4d);border:1px solid #2f3666;border-radius:18px;padding:20px;margin:18px;position:relative;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.wallet-balance-card::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 100% 0%,rgba(124,108,255,.25),transparent 60%)}
+.wbc-top{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted);position:relative;z-index:1}
+.wbc-label{display:flex;align-items:center;gap:6px;color:#fff;font-weight:700}
+.wbc-amount{display:flex;align-items:center;gap:10px;margin:14px 0 2px;position:relative;z-index:1}
+.wbc-amount .ic-xl{color:var(--accent2)}
+.wbc-amount span{font-size:34px;font-weight:800}
+.wbc-amount small{color:var(--muted);font-size:14px}
+.wbc-usd{color:var(--muted);font-size:14px;position:relative;z-index:1}
+.wbc-usd strong{color:#fff;font-size:16px}
+.wbc-progress{margin-top:14px;position:relative;z-index:1}
+.wbc-progress-bar{height:8px;border-radius:6px;background:#11152a;overflow:hidden}
+.wbc-progress-fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .6s ease}
+.wbc-progress-txt{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:6px}
+
+.topup-method{background:#11152a;border-radius:10px;padding:12px;margin-bottom:8px;transition:transform .15s ease}
+.topup-method:hover{transform:translateY(-2px)}
+.topup-method-head strong{display:flex;align-items:center;gap:6px;font-size:14px}
+.topup-method-addr{display:flex;align-items:center;gap:8px;margin-top:6px}
+.topup-method-addr code{flex:1;font-family:monospace;word-break:break-all;color:var(--muted);font-size:12px}
+.btn-copy{background:#1b2240;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;transition:color .2s,background .2s}
+.btn-copy:hover{color:#fff;background:#262d52}
+.btn-copy.copied{color:var(--accent2);background:#1d3b2e}
+
+.tx-list{display:flex;flex-direction:column;gap:2px}
+.tx-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #232a45}
+.tx-row:last-child{border-bottom:none}
+.tx-icon{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9px;flex-shrink:0}
+.tx-icon.pos{background:#1d3b2e;color:var(--accent2)}
+.tx-icon.neg{background:#3b1d1d;color:var(--danger)}
+.tx-info{display:flex;flex-direction:column;flex:1;min-width:0}
+.tx-info strong{font-size:13px}
+.tx-info span{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tx-amount{font-weight:800;font-size:14px}
+.tx-amount.pos{color:var(--accent2)}
+.tx-amount.neg{color:var(--danger)}
+
+.breadcrumb a{color:var(--accent2)}
+.product-detail{display:flex;flex-direction:column;gap:16px;margin:0 18px 24px;background:var(--card);border-radius:var(--radius);padding:18px;max-width:calc(100% - 36px)}
+@media(min-width:640px){.product-detail{flex-direction:row;align-items:flex-start}}
+.pd-img{width:100%;max-width:320px;border-radius:14px;object-fit:cover;color:var(--accent2);background:#11152a;min-height:200px}
+.pd-info{flex:1}
+.pd-info h1{font-size:22px;margin-bottom:8px}
+.pd-price{margin-bottom:12px}
+.pd-desc{color:var(--muted);line-height:1.8;margin-bottom:16px}
 </style>
 </head>
 <body>
 <div id="preloader">
-  <?php if ($logo): ?><img src="<?= e($logo) ?>" alt="logo"><?php endif; ?>
+  <?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php endif; ?>
   <div class="spinner"></div>
   <div style="color:var(--muted);font-size:13px">جاري التحميل...</div>
 </div>
 
 <div class="topbar">
-  <button class="burger" onclick="toggleSidebar()">☰</button>
-  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>"><?php endif; ?> <?= e($siteName) ?></a>
+  <button class="burger" onclick="toggleSidebar()"><?= icon('menu', 'ic') ?></button>
+  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><?= icon('rocket', 'ic ic-lg') ?><?php endif; ?> <?= e($siteName) ?></a>
   <div class="grow"></div>
   <?php if ($user): ?>
     <div class="user-chip">
-      <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>"><?php endif; ?>
+      <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>"><?php else: ?><?= icon('user', 'ic ic-sm') ?><?php endif; ?>
       <span><?= e($user['name']) ?></span>
     </div>
-    <a href="?action=logout" class="btn btn-ghost">خروج</a>
+    <a href="?action=logout" class="btn btn-ghost"><?= icon('logout', 'ic ic-sm') ?>خروج</a>
   <?php else: ?>
-    <button class="btn btn-primary" onclick="openAuthModal()">تسجيل الدخول</button>
+    <button class="btn btn-primary" onclick="openAuthModal()"><?= icon('user', 'ic ic-sm') ?>تسجيل الدخول</button>
   <?php endif; ?>
 </div>
 
 <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
 <div class="sidebar" id="sidebar">
-  <div class="sb-head"><strong><?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()">✕</button></div>
+  <div class="sb-head"><strong><?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()"><?= icon('close', 'ic') ?></button></div>
   <nav>
-    <a href="?">🏠 الرئيسية</a>
-    <a href="?page=earn">🪙 اكسب عملات (كابتشا)</a>
-    <a href="?page=tasks">📋 المهام اليومية</a>
-    <a href="?page=wallet">💳 محفظتي</a>
-    <a href="?page=orders">📦 طلباتي</a>
-    <a href="?page=privacy">🔒 سياسة الخصوصية</a>
-    <a href="?page=terms">📜 شروط الاستخدام</a>
-    <?php if (is_admin()): ?><a href="?page=admin">🎛️ لوحة الإدارة</a><?php endif; ?>
+    <a href="?"><?= icon('home') ?> الرئيسية</a>
+    <a href="?page=earn"><?= icon('coin') ?> اكسب عملات (كابتشا)</a>
+    <a href="?page=tasks"><?= icon('tasks') ?> المهام اليومية</a>
+    <a href="?page=wallet"><?= icon('wallet') ?> محفظتي</a>
+    <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
+    <a href="?page=privacy"><?= icon('lock') ?> سياسة الخصوصية</a>
+    <a href="?page=terms"><?= icon('doc') ?> شروط الاستخدام</a>
+    <?php if (is_admin()): ?><a href="?page=admin"><?= icon('admin') ?> لوحة الإدارة</a><?php endif; ?>
   </nav>
 </div>
 
@@ -869,12 +1148,12 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
       <input type="text" name="username" placeholder="اسم المستخدم (إنجليزي بدون مسافات)" required>
       <input type="email" name="email" placeholder="البريد الإلكتروني" required>
       <input type="password" name="password" placeholder="كلمة المرور (6 أحرف فأكثر)" required>
-      <button type="submit" class="btn btn-success" style="width:100%">إنشاء حساب 🎁</button>
+      <button type="submit" class="btn btn-success" style="width:100%"><?= icon('gift', 'ic ic-sm') ?>إنشاء حساب</button>
     </form>
 
     <?php if (GOOGLE_CLIENT_ID): ?>
       <div style="text-align:center;margin:14px 0;color:var(--muted)">— أو —</div>
-      <a href="<?= e(google_login_url()) ?>" class="btn btn-ghost" style="display:block;text-align:center">تسجيل الدخول بجوجل</a>
+      <a href="<?= e(google_login_url()) ?>" class="btn btn-ghost" style="display:block;text-align:center"><?= icon('globe', 'ic ic-sm') ?>تسجيل الدخول بجوجل</a>
     <?php endif; ?>
 
     <button type="button" class="btn btn-ghost" style="width:100%;margin-top:10px" onclick="closeAuthModal()">إغلاق</button>
@@ -905,30 +1184,59 @@ case 'home':
       <a href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" loading="lazy" style="width:100%;border-radius:14px;margin:0 18px 14px;max-width:calc(100% - 36px)"></a>
     <?php endforeach; ?>
 
-    <div class="section-title">🛍️ أحدث المنتجات</div>
+    <div class="section-title"><?= icon('cart', 'ic') ?>أحدث المنتجات</div>
     <?php if (!$products): ?>
-      <div class="empty">لا توجد منتجات حالياً، تابعنا قريباً 🚀</div>
+      <div class="empty"><?= icon('rocket', 'ic ic-lg') ?><br>لا توجد منتجات حالياً، تابعنا قريباً</div>
     <?php else: ?>
       <div class="grid">
         <?php foreach ($products as $p): ?>
           <div class="card">
             <?php if ($p['tag']): ?><span class="tag"><?= e($p['tag']) ?></span><?php endif; ?>
-            <?php if ($p['image']): ?>
-              <img class="pimg" loading="lazy" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
-            <?php elseif ($p['icon']): ?>
-              <div class="icon"><?= e($p['icon']) ?></div>
-            <?php endif; ?>
-            <h3><?= e($p['name']) ?></h3>
+            <a href="?page=product&id=<?= (int)$p['id'] ?>">
+              <?php if ($p['image']): ?>
+                <img class="pimg" loading="lazy" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+              <?php else: ?>
+                <div class="icon-wrap"><?= icon('cart', 'ic ic-xl') ?></div>
+              <?php endif; ?>
+              <h3><?= e($p['name']) ?></h3>
+            </a>
             <?php if ($p['description']): ?><div class="desc"><?= e(mb_substr($p['description'], 0, 60)) ?></div><?php endif; ?>
             <div>
               <span class="price"><?= e($p['price']) ?>$</span>
               <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
             </div>
-            <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>)">🛒 طلب شراء</button>
+            <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>)"><?= icon('cart', 'ic ic-sm') ?>طلب شراء</button>
           </div>
         <?php endforeach; ?>
       </div>
     <?php endif; ?>
+    <?php
+    break;
+
+case 'product':
+    if (!$seoProduct) {
+        echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>المنتج غير موجود أو غير متاح.<br><a href="?" class="btn btn-primary" style="margin-top:14px;display:inline-block">عودة للرئيسية</a></div>';
+        break;
+    }
+    $p = $seoProduct;
+    ?>
+    <div class="breadcrumb" style="padding:14px 18px;font-size:13px;color:var(--muted)">
+      <a href="?">الرئيسية</a> / <span><?= e($p['name']) ?></span>
+    </div>
+    <div class="product-detail">
+      <?php if ($p['image']): ?>
+        <img class="pd-img" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+      <?php else: ?>
+        <div class="pd-img icon-wrap" style="display:flex;align-items:center;justify-content:center"><?= icon('cart', 'ic ic-xl') ?></div>
+      <?php endif; ?>
+      <div class="pd-info">
+        <?php if ($p['tag']): ?><span class="tag" style="position:static;display:inline-block;margin-bottom:8px"><?= e($p['tag']) ?></span><?php endif; ?>
+        <h1><?= e($p['name']) ?></h1>
+        <div class="pd-price"><span class="price"><?= e($p['price']) ?>$</span><?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?></div>
+        <?php if ($p['description']): ?><p class="pd-desc"><?= nl2br(e($p['description'])) ?></p><?php endif; ?>
+        <button class="btn btn-primary buy" style="width:100%" onclick="buyProduct(<?= (int)$p['id'] ?>)"><?= icon('cart', 'ic-sm') ?>طلب شراء</button>
+      </div>
+    </div>
     <?php
     break;
 
@@ -941,11 +1249,11 @@ case 'earn':
     $max = (int)setting('captcha_max_per_day', 40);
     ?>
     <div class="admin-box" style="margin-top:18px">
-      <h2>🪙 اكسب عملات Yassota</h2>
+      <h2><?= icon('coin', 'ic') ?>اكسب عملات Yassota</h2>
       <p style="color:var(--muted);margin:10px 0">أدخل الرقم الظاهر بالأسفل بشكل صحيح لتحصل على <?= e(setting('captcha_reward')) ?> عملة. (<?= $done ?>/<?= $max ?> اليوم)</p>
       <div id="captchaBox" style="font-size:32px;font-weight:800;letter-spacing:8px;background:#11152a;border-radius:12px;padding:18px;text-align:center;margin:14px 0">----</div>
       <input type="text" id="captchaAnswer" placeholder="أدخل الرقم هنا" style="width:100%;padding:12px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff;text-align:center;font-size:18px">
-      <button class="btn btn-success" style="width:100%;margin-top:12px" onclick="submitCaptcha()">✅ تحقق واحصل على العملات</button>
+      <button class="btn btn-success" style="width:100%;margin-top:12px" onclick="submitCaptcha()"><?= icon('check', 'ic ic-sm') ?>تحقق واحصل على العملات</button>
     </div>
     <?php
     break;
@@ -955,7 +1263,7 @@ case 'tasks':
     $tasks = db()->query("SELECT * FROM tasks WHERE active=1")->fetchAll();
     $day = date('Y-m-d');
     ?>
-    <div class="section-title">📋 المهام اليومية</div>
+    <div class="section-title"><?= icon('tasks', 'ic') ?>المهام اليومية</div>
     <div class="admin-box">
     <?php if (!$tasks): ?>
       <div class="empty">لا توجد مهام حالياً.</div>
@@ -968,10 +1276,10 @@ case 'tasks':
       <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #232a45">
         <div>
           <strong><?= e($t['title']) ?></strong>
-          <div style="color:var(--muted);font-size:12px">⏱️ <?= (int)$t['seconds'] ?> ثانية · +<?= (int)$t['reward'] ?> عملة</div>
+          <div style="color:var(--muted);font-size:12px;display:flex;align-items:center;gap:4px"><?= icon('clock', 'ic-sm') ?><?= (int)$t['seconds'] ?> ثانية · +<?= (int)$t['reward'] ?> عملة</div>
         </div>
         <?php if ($done): ?>
-          <span class="badge approved">✅ مكتملة</span>
+          <span class="badge approved"><?= icon('check', 'ic-sm') ?>مكتملة</span>
         <?php else: ?>
           <button class="btn btn-primary" onclick="startTask(<?= (int)$t['id'] ?>, '<?= e($t['url']) ?>', <?= (int)$t['seconds'] ?>)">ابدأ</button>
         <?php endif; ?>
@@ -985,35 +1293,76 @@ case 'wallet':
     if (!$user) { echo '<div class="empty">سجّل الدخول لعرض محفظتك.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     $wallets = db()->query("SELECT * FROM wallets WHERE active=1")->fetchAll();
     $usd = points_to_usd($user['points']);
-    $minw = setting('min_withdraw_usd', 25);
+    $minw = (float)setting('min_withdraw_usd', 25);
+    $progress = $minw > 0 ? min(100, round($usd / $minw * 100)) : 100;
+    $canWithdraw = $usd >= $minw;
+    $log = db()->prepare("SELECT * FROM earn_logs WHERE user_id=? ORDER BY id DESC LIMIT 12");
+    $log->execute([$user['id']]);
+    $logs = $log->fetchAll();
+    $sourceLabel = ['welcome' => 'هدية الترحيب', 'captcha' => 'كابتشا', 'task' => 'مهمة', 'topup' => 'شحن رصيد', 'refund' => 'استرجاع', 'admin' => 'الإدارة', 'withdraw' => 'سحب'];
     ?>
+    <div class="wallet-balance-card">
+      <div class="wbc-top">
+        <span class="wbc-label"><?= icon('wallet', 'ic-sm') ?>محفظتي</span>
+        <span class="wbc-rate">سعر العملة: <?= e(setting('points_rate', 0.001)) ?>$</span>
+      </div>
+      <div class="wbc-amount"><?= icon('coins', 'ic ic-xl') ?><span><?= number_format((int)$user['points']) ?></span><small>عملة</small></div>
+      <div class="wbc-usd">≈ <strong><?= $usd ?>$</strong></div>
+      <div class="wbc-progress">
+        <div class="wbc-progress-bar"><div class="wbc-progress-fill" style="width:<?= $progress ?>%"></div></div>
+        <span class="wbc-progress-txt"><?= $canWithdraw ? icon('check', 'ic-sm') . 'يمكنك السحب الآن' : 'الحد الأدنى للسحب: ' . e($minw) . '$ (' . $progress . '%)' ?></span>
+      </div>
+    </div>
+
     <div class="admin-box">
-      <h2>💳 محفظتي</h2>
-      <p style="font-size:22px;margin:10px 0">💰 <?= (int)$user['points'] ?> عملة ≈ <strong><?= $usd ?>$</strong></p>
-      <p style="color:var(--muted)">الحد الأدنى للسحب: <?= e($minw) ?>$</p>
-      <hr style="border-color:#232a45;margin:14px 0">
-      <h3>🏦 طريقة السحب الخاصة بك</h3>
+      <h3><?= icon('bank', 'ic') ?>طريقة السحب الخاصة بك</h3>
       <select id="wType">
         <option value="usdt" <?= $user['wallet_type'] === 'usdt' ? 'selected' : '' ?>>USDT (TRC20)</option>
         <option value="sham" <?= $user['wallet_type'] === 'sham' ? 'selected' : '' ?>>الشام كاش</option>
       </select>
       <input id="wAddr" value="<?= e($user['wallet_address']) ?>" placeholder="عنوان المحفظة / رقم الحساب">
-      <button class="btn btn-primary" onclick="saveWallet()">حفظ المحفظة</button>
-      <button class="btn btn-success" style="margin-top:8px;width:100%" onclick="requestWithdraw()">💸 طلب سحب الرصيد كامل</button>
+      <button class="btn btn-primary" onclick="saveWallet()"><?= icon('check', 'ic-sm') ?>حفظ المحفظة</button>
+      <button class="btn btn-success" style="margin-top:8px;width:100%" onclick="requestWithdraw()" <?= $canWithdraw ? '' : 'disabled' ?>><?= icon('send', 'ic-sm') ?>طلب سحب الرصيد كامل</button>
     </div>
+
     <div class="admin-box">
-      <h3>➕ شحن الرصيد</h3>
+      <h3><?= icon('plus', 'ic') ?>شحن الرصيد</h3>
       <p style="color:var(--muted);font-size:13px;margin-bottom:10px">حوّل المبلغ إلى إحدى المحافظ التالية ثم أرسل طلب التحقق:</p>
       <?php foreach ($wallets as $w): ?>
-        <div style="background:#11152a;border-radius:10px;padding:10px;margin-bottom:8px">
-          <strong><?= $w['type'] === 'usdt' ? '💎 USDT' : '📱 الشام كاش' ?> — <?= e($w['label']) ?></strong>
-          <div style="font-family:monospace;word-break:break-all"><?= e($w['address']) ?></div>
+        <div class="topup-method">
+          <div class="topup-method-head">
+            <strong><?= icon($w['type'] === 'usdt' ? 'coins' : 'wallet', 'ic-sm') ?><?= $w['type'] === 'usdt' ? 'USDT (TRC20)' : 'الشام كاش' ?> — <?= e($w['label']) ?></strong>
+          </div>
+          <div class="topup-method-addr">
+            <code><?= e($w['address']) ?></code>
+            <button type="button" class="btn-copy" onclick="copyAddr(this)" data-addr="<?= e($w['address']) ?>"><?= icon('copy', 'ic-sm') ?></button>
+          </div>
         </div>
       <?php endforeach; ?>
       <select id="topupWallet"><?php foreach ($wallets as $w): ?><option value="<?= (int)$w['id'] ?>"><?= e($w['label']) ?></option><?php endforeach; ?></select>
       <input id="topupAmount" type="number" placeholder="المبلغ بالدولار">
       <input id="topupNote" placeholder="ملاحظة / رقم العملية (اختياري)">
-      <button class="btn btn-primary" onclick="requestTopup()">إرسال طلب الشحن</button>
+      <button class="btn btn-primary" onclick="requestTopup()"><?= icon('send', 'ic-sm') ?>إرسال طلب الشحن</button>
+    </div>
+
+    <div class="admin-box">
+      <h3><?= icon('history', 'ic') ?>سجل العمليات</h3>
+      <?php if (!$logs): ?>
+        <div class="empty" style="padding:20px 0">لا توجد عمليات بعد.</div>
+      <?php else: ?>
+        <div class="tx-list">
+          <?php foreach ($logs as $l): $pos = $l['amount'] >= 0; ?>
+            <div class="tx-row">
+              <div class="tx-icon <?= $pos ? 'pos' : 'neg' ?>"><?= icon($pos ? 'plus' : 'minus', 'ic-sm') ?></div>
+              <div class="tx-info">
+                <strong><?= e($sourceLabel[$l['source']] ?? $l['source']) ?></strong>
+                <span><?= e($l['description']) ?></span>
+              </div>
+              <div class="tx-amount <?= $pos ? 'pos' : 'neg' ?>"><?= $pos ? '+' : '' ?><?= (int)$l['amount'] ?></div>
+            </div>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
     </div>
     <?php
     break;
@@ -1024,12 +1373,12 @@ case 'orders':
     $st->execute([$user['id']]);
     $orders = $st->fetchAll();
     ?>
-    <div class="section-title">📦 طلباتي</div>
+    <div class="section-title"><?= icon('orders', 'ic') ?>طلباتي</div>
     <div class="admin-box">
     <?php if (!$orders): ?><div class="empty">لا توجد طلبات بعد.</div><?php endif; ?>
     <?php foreach ($orders as $o): ?>
-      <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #232a45">
-        <div><?= e($o['icon']) ?> <?= e($o['name']) ?> — <?= e($o['price']) ?>$</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #232a45">
+        <div style="display:flex;align-items:center;gap:8px"><?= icon('cart', 'ic-sm') ?><?= e($o['name']) ?> — <?= e($o['price']) ?>$</div>
         <span class="badge <?= e($o['status']) ?>"><?= e($o['status']) ?></span>
       </div>
     <?php endforeach; ?>
@@ -1049,9 +1398,9 @@ case 'welcome':
     $dest = is_admin() ? '?page=admin' : '?';
     ?>
     <div class="admin-box" style="margin-top:40px;text-align:center;padding:40px 20px">
-      <div style="font-size:48px;margin-bottom:10px">🎉</div>
+      <div style="margin-bottom:10px;color:var(--accent2)"><?= icon('rocket', 'ic ic-xl') ?></div>
       <h2>أهلاً بك، <?= e($user['name'] ?: $user['username']) ?>!</h2>
-      <p style="color:var(--muted);margin:14px 0">تم إنشاء حسابك بنجاح، وحصلت على هدية ترحيبية: <strong style="color:var(--accent2)">+<?= $bonus ?> عملة Yassota</strong> 🎁</p>
+      <p style="color:var(--muted);margin:14px 0">تم إنشاء حسابك بنجاح، وحصلت على هدية ترحيبية: <strong style="color:var(--accent2)">+<?= $bonus ?> عملة Yassota</strong> <?= icon('gift', 'ic-sm') ?></p>
       <p style="color:var(--muted);font-size:13px">سيتم تحويلك للصفحة الرئيسية بعد لحظات...</p>
       <a href="<?= e($dest) ?>" class="btn btn-primary" style="margin-top:16px;display:inline-block">انتقل الآن</a>
     </div>
@@ -1064,8 +1413,8 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
-        <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= $label ?></a>
+      <?php foreach (['dashboard'=>['chart','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+        <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
 
@@ -1077,16 +1426,16 @@ case 'admin':
         $pending_withdraws = db()->query("SELECT COUNT(*) c FROM withdraw_requests WHERE status='pending'")->fetch()['c'];
         $points_total = db()->query("SELECT COALESCE(SUM(points),0) s FROM users")->fetch()['s'];
     ?>
+      <div class="formrow">
+        <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_count ?></div><div class="lbl">المستخدمون</div></div></div>
+        <div class="stat-card"><?= icon('cart', 'ic') ?><div><div class="num"><?= $products_count ?></div><div class="lbl">المنتجات</div></div></div>
+        <div class="stat-card"><?= icon('orders', 'ic') ?><div><div class="num"><?= $pending_orders ?></div><div class="lbl">طلبات معلّقة</div></div></div>
+        <div class="stat-card"><?= icon('coins', 'ic') ?><div><div class="num"><?= $pending_topups ?></div><div class="lbl">شحن معلّق</div></div></div>
+        <div class="stat-card"><?= icon('send', 'ic') ?><div><div class="num"><?= $pending_withdraws ?></div><div class="lbl">سحب معلّق</div></div></div>
+        <div class="stat-card"><?= icon('coin', 'ic') ?><div><div class="num"><?= number_format($points_total) ?></div><div class="lbl">عملات بالتداول</div></div></div>
+      </div>
       <div class="admin-box">
-        <div class="formrow">
-          <div>👥 المستخدمون<br><strong style="font-size:22px"><?= $users_count ?></strong></div>
-          <div>🛍️ المنتجات<br><strong style="font-size:22px"><?= $products_count ?></strong></div>
-          <div>📦 طلبات معلّقة<br><strong style="font-size:22px"><?= $pending_orders ?></strong></div>
-          <div>💵 شحن معلّق<br><strong style="font-size:22px"><?= $pending_topups ?></strong></div>
-          <div>💸 سحب معلّق<br><strong style="font-size:22px"><?= $pending_withdraws ?></strong></div>
-          <div>🪙 عملات بالتداول<br><strong style="font-size:22px"><?= number_format($points_total) ?></strong></div>
-        </div>
-        <p style="color:var(--muted);font-size:13px">⚖️ نسبة الربح الحالية: <?= e(setting('profit_split_admin')) ?>% للإدارة / <?= e(setting('profit_split_user')) ?>% للمستخدم — عدّلها من تبويب الإعدادات بحسب عوائد MoneyTag الفعلية.</p>
+        <p style="color:var(--muted);font-size:13px">نسبة الربح الحالية: <?= e(setting('profit_split_admin')) ?>% للإدارة / <?= e(setting('profit_split_user')) ?>% للمستخدم — عدّلها من تبويب الإعدادات بحسب عوائد MoneyTag الفعلية.</p>
       </div>
 
     <?php elseif ($tab === 'products'):
@@ -1094,26 +1443,29 @@ case 'admin':
         $products = db()->query("SELECT * FROM products ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
-        <h3>➕ إضافة / تعديل منتج</h3>
-        <form method="post" action="?action=admin_save_product">
+        <h3><?= icon('plus', 'ic') ?>إضافة / تعديل منتج</h3>
+        <form method="post" action="?action=admin_save_product" enctype="multipart/form-data">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <input type="hidden" name="id" id="pid">
           <div class="formrow">
             <input name="name" id="pname" placeholder="اسم المنتج" required>
-            <input name="icon" id="picon" placeholder="إيقونة (emoji) اختياري">
-            <input name="image" id="pimage" placeholder="رابط صورة (اختياري)">
             <input name="price" id="pprice" type="number" step="0.01" placeholder="السعر $" required>
             <input name="old_price" id="poldprice" type="number" step="0.01" placeholder="السعر قبل الخصم (اختياري)">
             <input name="tag" id="ptag" placeholder="وسم مثل: جديد / خصم">
             <select name="category_id"><option value="">بدون قسم</option><?php foreach ($cats as $c): ?><option value="<?= (int)$c['id'] ?>"><?= e($c['name']) ?></option><?php endforeach; ?></select>
           </div>
+          <div class="upload-row">
+            <input type="text" name="image" id="pimage" placeholder="رابط صورة المنتج (أو ارفع ملفاً)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" name="image_file" accept="image/*" style="display:none" onchange="uploadInto(this,'pimage')"></label>
+          </div>
           <textarea name="description" id="pdesc" placeholder="الوصف" rows="3"></textarea>
-          <button class="btn btn-primary">💾 حفظ المنتج</button>
+          <textarea name="meta_description" id="pmeta" placeholder="وصف SEO مختصر للمحرّكات (اختياري)" rows="2"></textarea>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ المنتج</button>
         </form>
         <form method="post" action="?action=admin_save_category" style="margin-top:10px;display:flex;gap:8px">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <input name="name" placeholder="اسم قسم جديد" style="flex:1">
-          <button class="btn btn-ghost">➕ قسم</button>
+          <button class="btn btn-ghost"><?= icon('plus', 'ic-sm') ?>قسم</button>
         </form>
       </div>
       <div class="admin-box">
@@ -1121,14 +1473,14 @@ case 'admin':
           <tr><th>المنتج</th><th>السعر</th><th>الوسم</th><th></th></tr>
           <?php foreach ($products as $p): ?>
           <tr>
-            <td><?= e($p['icon']) ?> <?= e($p['name']) ?></td>
+            <td><?= e($p['name']) ?></td>
             <td><?= e($p['price']) ?>$</td>
             <td><?= e($p['tag']) ?></td>
             <td>
               <form method="post" action="?action=admin_delete_product" style="display:inline">
                 <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                 <input type="hidden" name="id" value="<?= (int)$p['id'] ?>">
-                <button class="btn btn-danger" onclick="return confirm('حذف المنتج؟')">🗑️</button>
+                <button class="btn btn-danger" onclick="return confirm('حذف المنتج؟')"><?= icon('trash', 'ic-sm') ?></button>
               </form>
             </td>
           </tr>
@@ -1151,8 +1503,8 @@ case 'admin':
               <form method="post" action="?action=admin_order_decision" style="display:flex;gap:4px">
                 <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                 <input type="hidden" name="id" value="<?= (int)$o['id'] ?>">
-                <button name="decision" value="approve" class="btn btn-success">✅</button>
-                <button name="decision" value="reject" class="btn btn-danger">❌</button>
+                <button name="decision" value="approve" class="btn btn-success"><?= icon('check', 'ic-sm') ?></button>
+                <button name="decision" value="reject" class="btn btn-danger"><?= icon('x', 'ic-sm') ?></button>
               </form>
               <?php endif; ?>
             </td>
@@ -1176,8 +1528,8 @@ case 'admin':
               <form method="post" action="?action=admin_topup_decision" style="display:flex;gap:4px">
                 <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                 <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <button name="decision" value="approve" class="btn btn-success">✅</button>
-                <button name="decision" value="reject" class="btn btn-danger">❌</button>
+                <button name="decision" value="approve" class="btn btn-success"><?= icon('check', 'ic-sm') ?></button>
+                <button name="decision" value="reject" class="btn btn-danger"><?= icon('x', 'ic-sm') ?></button>
               </form>
               <?php endif; ?>
             </td>
@@ -1202,8 +1554,8 @@ case 'admin':
               <form method="post" action="?action=admin_withdraw_decision" style="display:flex;gap:4px">
                 <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                 <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <button name="decision" value="approve" class="btn btn-success">✅</button>
-                <button name="decision" value="reject" class="btn btn-danger">❌</button>
+                <button name="decision" value="approve" class="btn btn-success"><?= icon('check', 'ic-sm') ?></button>
+                <button name="decision" value="reject" class="btn btn-danger"><?= icon('x', 'ic-sm') ?></button>
               </form>
               <?php endif; ?>
             </td>
@@ -1216,7 +1568,7 @@ case 'admin':
         $wallets = db()->query("SELECT * FROM wallets ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
-        <h3>➕ إضافة محفظة استقبال</h3>
+        <h3><?= icon('plus', 'ic') ?>إضافة محفظة استقبال</h3>
         <form method="post" action="?action=admin_save_wallet" class="formrow">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <select name="type"><option value="usdt">USDT (TRC20)</option><option value="sham">الشام كاش</option></select>
@@ -1230,12 +1582,12 @@ case 'admin':
           <tr><th>النوع</th><th>الاسم</th><th>العنوان</th><th>الحالة</th><th></th></tr>
           <?php foreach ($wallets as $w): ?>
           <tr>
-            <td><?= $w['type'] === 'usdt' ? '💎 USDT' : '📱 شام كاش' ?></td><td><?= e($w['label']) ?></td>
+            <td><?= icon($w['type'] === 'usdt' ? 'coins' : 'wallet', 'ic-sm') ?><?= $w['type'] === 'usdt' ? 'USDT' : 'شام كاش' ?></td><td><?= e($w['label']) ?></td>
             <td style="font-family:monospace"><?= e($w['address']) ?></td>
-            <td><?= $w['active'] ? '🟢' : '⏸️' ?></td>
+            <td><span class="icon-badge <?= $w['active'] ? 'ok' : 'no' ?>"><?= icon($w['active'] ? 'check' : 'x', 'ic-sm') ?></span></td>
             <td>
-              <form method="post" action="?action=admin_toggle_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-ghost">تبديل</button></form>
-              <form method="post" action="?action=admin_delete_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-danger">🗑️</button></form>
+              <form method="post" action="?action=admin_toggle_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form>
+              <form method="post" action="?action=admin_delete_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
             </td>
           </tr>
           <?php endforeach; ?>
@@ -1246,7 +1598,7 @@ case 'admin':
         $tasks = db()->query("SELECT * FROM tasks ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
-        <h3>➕ إضافة مهمة (مثل: زيارة رابط لمدة معينة)</h3>
+        <h3><?= icon('plus', 'ic') ?>إضافة مهمة (مثل: زيارة رابط لمدة معينة)</h3>
         <form method="post" action="?action=admin_save_task" class="formrow">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <input name="title" placeholder="عنوان المهمة" required>
@@ -1262,8 +1614,8 @@ case 'admin':
           <?php foreach ($tasks as $t): ?>
           <tr>
             <td><?= e($t['title']) ?></td><td><?= (int)$t['seconds'] ?>s</td><td><?= (int)$t['reward'] ?></td>
-            <td><?= $t['active'] ? '🟢' : '⏸️' ?></td>
-            <td><form method="post" action="?action=admin_toggle_task" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$t['id'] ?>"><button class="btn btn-ghost">تبديل</button></form></td>
+            <td><span class="icon-badge <?= $t['active'] ? 'ok' : 'no' ?>"><?= icon($t['active'] ? 'check' : 'x', 'ic-sm') ?></span></td>
+            <td><form method="post" action="?action=admin_toggle_task" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$t['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form></td>
           </tr>
           <?php endforeach; ?>
         </table>
@@ -1273,11 +1625,14 @@ case 'admin':
         $banners = db()->query("SELECT * FROM banners ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
-        <form method="post" action="?action=admin_save_banner" class="formrow">
+        <form method="post" action="?action=admin_save_banner" class="formrow" enctype="multipart/form-data">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input name="image" placeholder="رابط صورة البنر" required>
+          <div class="upload-row" style="grid-column:1/-1">
+            <input type="text" name="image" id="bimage" placeholder="رابط صورة البنر (أو ارفع ملفاً)" required>
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" name="image_file" accept="image/*" style="display:none" onchange="uploadInto(this,'bimage')"></label>
+          </div>
           <input name="link" placeholder="رابط عند الضغط (اختياري)">
-          <button class="btn btn-primary">إضافة بنر</button>
+          <button class="btn btn-primary"><?= icon('plus', 'ic-sm') ?>إضافة بنر</button>
         </form>
       </div>
       <div class="admin-box">
@@ -1285,31 +1640,35 @@ case 'admin':
         <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
           <img src="<?= e($b['image']) ?>" style="width:80px;height:40px;object-fit:cover;border-radius:6px">
           <span style="flex:1"><?= e($b['link']) ?></span>
-          <form method="post" action="?action=admin_delete_banner"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-danger">🗑️</button></form>
+          <form method="post" action="?action=admin_delete_banner"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
         </div>
         <?php endforeach; ?>
       </div>
 
     <?php elseif ($tab === 'pages'):
-        $privacy = db()->query("SELECT content FROM pages WHERE slug='privacy'")->fetch();
-        $terms = db()->query("SELECT content FROM pages WHERE slug='terms'")->fetch();
+        $privacy = db()->query("SELECT * FROM pages WHERE slug='privacy'")->fetch();
+        $terms = db()->query("SELECT * FROM pages WHERE slug='terms'")->fetch();
     ?>
       <div class="admin-box">
-        <h3>🔒 سياسة الخصوصية</h3>
+        <h3><?= icon('lock', 'ic') ?>سياسة الخصوصية</h3>
         <form method="post" action="?action=admin_save_page">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <input type="hidden" name="slug" value="privacy">
+          <input name="meta_title" placeholder="عنوان SEO (يظهر في نتائج البحث)" value="<?= e($privacy['meta_title'] ?? '') ?>">
+          <input name="meta_description" placeholder="وصف SEO مختصر" value="<?= e($privacy['meta_description'] ?? '') ?>">
           <textarea name="content" rows="6"><?= e($privacy['content'] ?? '') ?></textarea>
-          <button class="btn btn-primary">حفظ</button>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
         </form>
       </div>
       <div class="admin-box">
-        <h3>📜 شروط الاستخدام</h3>
+        <h3><?= icon('doc', 'ic') ?>شروط الاستخدام</h3>
         <form method="post" action="?action=admin_save_page">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <input type="hidden" name="slug" value="terms">
+          <input name="meta_title" placeholder="عنوان SEO (يظهر في نتائج البحث)" value="<?= e($terms['meta_title'] ?? '') ?>">
+          <input name="meta_description" placeholder="وصف SEO مختصر" value="<?= e($terms['meta_description'] ?? '') ?>">
           <textarea name="content" rows="6"><?= e($terms['content'] ?? '') ?></textarea>
-          <button class="btn btn-primary">حفظ</button>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
         </form>
       </div>
 
@@ -1322,7 +1681,7 @@ case 'admin':
           <?php foreach ($users as $u): ?>
           <tr>
             <td><?= e($u['name']) ?></td><td><?= e($u['email']) ?></td><td><?= (int)$u['points'] ?></td>
-            <td><?= e($u['role']) ?></td><td><?= $u['is_banned'] ? '🚫' : '🟢' ?></td>
+            <td><?= e($u['role']) ?></td><td><?= icon($u['is_banned'] ? 'x' : 'check', 'ic-sm') ?></td>
             <td style="display:flex;gap:4px;flex-wrap:wrap">
               <form method="post" action="?action=admin_user_action"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$u['id'] ?>"><input type="hidden" name="op" value="<?= $u['is_banned'] ? 'unban' : 'ban' ?>"><button class="btn btn-ghost"><?= $u['is_banned'] ? 'رفع حظر' : 'حظر' ?></button></form>
               <form method="post" action="?action=admin_user_action" style="display:flex;gap:4px"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$u['id'] ?>"><input type="hidden" name="op" value="addpoints"><input type="number" name="points" placeholder="عملات" style="width:80px;padding:4px"><button class="btn btn-primary">إضافة</button></form>
@@ -1339,7 +1698,13 @@ case 'admin':
           <label>اسم الموقع<input name="site_name" value="<?= e(setting('site_name')) ?>"></label>
           <label>الوصف (SEO)<input name="site_description" value="<?= e(setting('site_description')) ?>"></label>
           <label>كلمات مفتاحية<input name="site_keywords" value="<?= e(setting('site_keywords')) ?>"></label>
-          <label>رابط الشعار<input name="logo_url" value="<?= e(setting('logo_url')) ?>"></label>
+          <label>شعار الموقع
+            <div class="upload-row">
+              <input type="text" name="logo_url" id="logoUrl" value="<?= e(setting('logo_url')) ?>">
+              <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" id="logoFile" accept="image/*" style="display:none" onchange="uploadInto(this,'logoUrl')"></label>
+              <?php if ($logo): ?><img class="preview" src="<?= e($logo) ?>"><?php endif; ?>
+            </div>
+          </label>
           <label>عنوان البنر<input name="banner_title" value="<?= e(setting('banner_title')) ?>"></label>
           <label>وصف البنر<input name="banner_subtitle" value="<?= e(setting('banner_subtitle')) ?>"></label>
           <label>سعر النقطة بالدولار<input name="points_rate" value="<?= e(setting('points_rate')) ?>"></label>
@@ -1350,10 +1715,10 @@ case 'admin':
           <label>نسبة ربح الإدارة %<input name="profit_split_admin" value="<?= e(setting('profit_split_admin')) ?>"></label>
           <label>نسبة ربح المستخدم %<input name="profit_split_user" value="<?= e(setting('profit_split_user')) ?>"></label>
         </form>
-        <button class="btn btn-primary" form="" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()">💾 حفظ الإعدادات</button>
+        <button class="btn btn-primary" form="" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()"><?= icon('check', 'ic-sm') ?>حفظ الإعدادات</button>
         <hr style="border-color:#232a45;margin:18px 0">
         <p style="color:var(--muted);font-size:13px">
-          ℹ️ بيانات قاعدة البيانات وبوت تيليجرام وGoogle OAuth وMoneyTag تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي.
+          بيانات قاعدة البيانات وبوت تيليجرام وGoogle OAuth وMoneyTag تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي.
         </p>
       </div>
     <?php endif; ?>
@@ -1368,11 +1733,11 @@ default:
 </div>
 
 <div class="bottom-nav">
-  <a href="?" class="<?= $page === 'home' ? 'active' : '' ?>"><span class="bi">🏠</span>الرئيسية</a>
-  <a href="?page=earn" class="<?= $page === 'earn' ? 'active' : '' ?>"><span class="bi">🪙</span>اكسب</a>
-  <a href="?page=tasks" class="<?= $page === 'tasks' ? 'active' : '' ?>"><span class="bi">📋</span>مهام</a>
-  <a href="?page=wallet" class="<?= $page === 'wallet' ? 'active' : '' ?>"><span class="bi">💳</span>محفظتي</a>
-  <a href="?page=orders" class="<?= $page === 'orders' ? 'active' : '' ?>"><span class="bi">📦</span>طلباتي</a>
+  <a href="?" class="<?= $page === 'home' ? 'active' : '' ?>"><?= icon('home', 'ic') ?>الرئيسية</a>
+  <a href="?page=earn" class="<?= $page === 'earn' ? 'active' : '' ?>"><?= icon('coin', 'ic') ?>اكسب</a>
+  <a href="?page=tasks" class="<?= $page === 'tasks' ? 'active' : '' ?>"><?= icon('tasks', 'ic') ?>مهام</a>
+  <a href="?page=wallet" class="<?= $page === 'wallet' ? 'active' : '' ?>"><?= icon('wallet', 'ic') ?>محفظتي</a>
+  <a href="?page=orders" class="<?= $page === 'orders' ? 'active' : '' ?>"><?= icon('orders', 'ic') ?>طلباتي</a>
 </div>
 
 <footer>© <?= date('Y') ?> <?= e($siteName) ?> — جميع الحقوق محفوظة</footer>
@@ -1380,7 +1745,7 @@ default:
 <?php if (!isset($_COOKIE['policy_accepted']) || $_COOKIE['policy_accepted'] !== setting('policy_version', '1')): ?>
 <div class="policy-modal" id="policyModal">
   <div class="policy-box">
-    <h2>👋 أهلاً بك</h2>
+    <h2><?= icon('shield', 'ic') ?>أهلاً بك</h2>
     <p style="margin:12px 0;color:var(--muted)">باستخدامك للموقع أنت توافق على <a href="?page=privacy" style="color:var(--accent2)">سياسة الخصوصية</a> و<a href="?page=terms" style="color:var(--accent2)">شروط الاستخدام</a>.</p>
     <button class="btn btn-primary" style="width:100%" onclick="acceptPolicy()">موافق وأستمر</button>
   </div>
@@ -1425,6 +1790,18 @@ async function post(action, data){
   data.append('csrf', CSRF);
   const r = await fetch('?action=' + action, { method: 'POST', body: data });
   return r.json();
+}
+async function uploadInto(input, targetId){
+  if (!input.files || !input.files[0]) return;
+  const d = new FormData();
+  d.append('file', input.files[0]);
+  d.append('field', targetId);
+  d.append('csrf', CSRF);
+  toast('جاري رفع الملف...');
+  const r = await fetch('?action=admin_upload', { method: 'POST', body: d });
+  const res = await r.json();
+  if (res.ok) { document.getElementById(targetId).value = res.url; toast('تم رفع الملف بنجاح'); }
+  else toast(res.msg || 'فشل رفع الملف.');
 }
 function buyProduct(id){
   if (!LOGGED_IN) return requireLogin();
@@ -1481,6 +1858,14 @@ function requestTopup(){
   d.append('amount', document.getElementById('topupAmount').value);
   d.append('note', document.getElementById('topupNote').value);
   post('api_request_topup', d).then(res => toast(res.msg));
+}
+function copyAddr(btn){
+  const addr = btn.getAttribute('data-addr');
+  navigator.clipboard.writeText(addr).then(() => {
+    btn.classList.add('copied');
+    toast('تم نسخ العنوان');
+    setTimeout(() => btn.classList.remove('copied'), 1500);
+  });
 }
 </script>
 </body>
