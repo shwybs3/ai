@@ -1,0 +1,5 @@
+config.php
+uploads/products/*
+!uploads/products/.gitkeep
+*.sqlite
+*.log
