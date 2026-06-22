@@ -24,6 +24,9 @@ define('GOOGLE_CLIENT_SECRET', '');
 define('BOT_TOKEN', '');
 define('OWNER_ID', '');
 
+// ===== Satofill API (مزامنة المنتجات) =====
+define('SATOFILL_API_TOKEN', '');
+
 // ===== MoneyTag =====
 define('MONEYTAG_SCRIPT', ''); // كود/سكربت الإعلانات الخاص بك
 

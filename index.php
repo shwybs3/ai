@@ -193,6 +193,12 @@ function migrate(): void
         url VARCHAR(500) NOT NULL,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS bot_broadcast_queue (
+        id $id,
+        product_id INT NOT NULL,
+        sent TINYINT NOT NULL DEFAULT 0,
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -220,6 +226,8 @@ function migrate(): void
     add_column_if_missing($pdo, 'categories', 'image', 'VARCHAR(500) NULL');
     add_column_if_missing($pdo, 'categories', 'color', 'VARCHAR(20) NULL');
     add_column_if_missing($pdo, 'users', 'telegram_id', 'VARCHAR(40) NULL');
+    add_column_if_missing($pdo, 'products', 'source', "VARCHAR(20) NULL");
+    add_column_if_missing($pdo, 'products', 'external_id', 'VARCHAR(60) NULL');
 
     // seed default settings
     $defaults = [
@@ -235,6 +243,8 @@ function migrate(): void
         'empty_products_text' => 'لا توجد منتجات حالياً، تابعنا قريباً',
         'theme_accent_color' => '#e6294b',
         'theme_accent2_color' => '#ff4d4d',
+        'satofill_markup_percent' => '15',
+        'satofill_api_base' => 'https://satofill.com/api',
         'points_rate' => '0.001',      // 1 نقطة = كم دولار
         'min_withdraw_usd' => '25',
         'captcha_reward' => '10',
@@ -281,6 +291,73 @@ function migrate(): void
         $pdo->prepare("INSERT INTO wallets (type, label, address, active) VALUES (?,?,?,0)")
             ->execute(['sham', 'الشام كاش (شحن المحفظة)', 'ضع رقم محفظتك من لوحة الإدارة']);
     }
+
+    $productCount = (int)$pdo->query("SELECT COUNT(*) c FROM products")->fetch()['c'];
+    if ($productCount === 0) {
+        $seedCats = ['الألعاب', 'بطاقات الهدايا', 'الاشتراكات', 'التطبيقات والخدمات', 'عام'];
+        $catIds = [];
+        foreach ($seedCats as $i => $cname) {
+            $pdo->prepare("INSERT INTO categories (name, sort_order) VALUES (?,?)")->execute([$cname, $i]);
+            $catIds[$cname] = $pdo->lastInsertId();
+        }
+        $seedProducts = [
+            // [name, icon, price, old_price, category]
+            ['شحن ببجي موبايل 60 UC', '🎮', 1.5, null, 'الألعاب'],
+            ['شحن ببجي موبايل 325 UC', '🎮', 7, 8, 'الألعاب'],
+            ['شحن ببجي موبايل 660 UC', '🎮', 14, 16, 'الألعاب'],
+            ['شحن فري فاير 100 جوهرة', '💎', 1.2, null, 'الألعاب'],
+            ['شحن فري فاير 520 جوهرة', '💎', 6, 7, 'الألعاب'],
+            ['شحن فورتنايت 1000 V-Bucks', '🎮', 9, null, 'الألعاب'],
+            ['شحن كول أوف ديوتي موبايل 80 CP', '🔫', 1.5, null, 'الألعاب'],
+            ['شحن ليج أوف ليجندز RP', '🎮', 5, null, 'الألعاب'],
+            ['شحن جواهر كلاش أوف كلانس', '💎', 4, 5, 'الألعاب'],
+            ['شحن نقاط فيفا موبايل', '⚽', 6, null, 'الألعاب'],
+            ['شحن روبلوكس 400 Robux', '🧩', 5, 6, 'الألعاب'],
+            ['شحن ماين كرافت كوينز', '⛏️', 3, null, 'الألعاب'],
+            ['شحن جواكر شدات', '♠️', 2, null, 'الألعاب'],
+            ['شحن سوبر سيل جواهر', '💎', 3, null, 'الألعاب'],
+            ['شحن جواهر متفرقة (عام)', '🎮', 2, null, 'الألعاب'],
+            ['بطاقة آيتونز 10$', '🍏', 11, null, 'بطاقات الهدايا'],
+            ['بطاقة آيتونز 25$', '🍏', 27, 30, 'بطاقات الهدايا'],
+            ['بطاقة جوجل بلاي 10$', '▶️', 11, null, 'بطاقات الهدايا'],
+            ['بطاقة جوجل بلاي 25$', '▶️', 27, 30, 'بطاقات الهدايا'],
+            ['بطاقة ستيم 10$', '🎮', 11, null, 'بطاقات الهدايا'],
+            ['بطاقة ستيم 20$', '🎮', 22, 25, 'بطاقات الهدايا'],
+            ['بطاقة أمازون 25$', '📦', 27, null, 'بطاقات الهدايا'],
+            ['بطاقة بلايستيشن 10$', '🎮', 11, null, 'بطاقات الهدايا'],
+            ['بطاقة إكس بوكس 10$', '🎮', 11, null, 'بطاقات الهدايا'],
+            ['بطاقة نتفليكس هدية', '🎬', 15, null, 'بطاقات الهدايا'],
+            ['اشتراك نتفليكس شهر', '🎬', 5, 6, 'الاشتراكات'],
+            ['اشتراك نتفليكس 3 أشهر', '🎬', 13, 16, 'الاشتراكات'],
+            ['اشتراك شاهد VIP شهر', '📺', 4, null, 'الاشتراكات'],
+            ['اشتراك سبوتيفاي بريميوم شهر', '🎵', 3, null, 'الاشتراكات'],
+            ['اشتراك يوتيوب بريميوم شهر', '▶️', 3, null, 'الاشتراكات'],
+            ['اشتراك ديزني بلس شهر', '🏰', 5, null, 'الاشتراكات'],
+            ['اشتراك كانفا برو شهر', '🎨', 4, null, 'الاشتراكات'],
+            ['اشتراك ChatGPT Plus شهر', '🤖', 20, null, 'الاشتراكات'],
+            ['اشتراك مايكروسوفت 365 شهر', '💼', 6, null, 'الاشتراكات'],
+            ['اشتراك آيكلود تخزين 50GB', '☁️', 1, null, 'الاشتراكات'],
+            ['شحن تيك توك كوينز', '🎵', 2, null, 'التطبيقات والخدمات'],
+            ['متابعين انستقرام 1000', '📷', 4, 5, 'التطبيقات والخدمات'],
+            ['اشتراك تيليجرام بريميوم شهر', '✈️', 4, null, 'التطبيقات والخدمات'],
+            ['اشتراك ديسكورد نيترو شهر', '🎮', 5, null, 'التطبيقات والخدمات'],
+            ['اشتراك زووم برو شهر', '📹', 7, null, 'التطبيقات والخدمات'],
+            ['حماية كاسبرسكي سنة', '🛡️', 15, 18, 'التطبيقات والخدمات'],
+            ['اشتراك VPN بريميوم شهر', '🔒', 3, null, 'التطبيقات والخدمات'],
+            ['اشتراك أدوبي فوتوشوب شهر', '🖌️', 10, null, 'التطبيقات والخدمات'],
+            ['اشتراك WPS Office بريميوم', '📄', 5, null, 'التطبيقات والخدمات'],
+            ['اشتراك Grammarly بريميوم', '✍️', 10, 12, 'التطبيقات والخدمات'],
+            ['شحن رصيد سيرياتيل 5$', '📱', 5.5, null, 'عام'],
+            ['شحن رصيد MTN سوريا 5$', '📱', 5.5, null, 'عام'],
+            ['بطاقة Visa افتراضية 10$', '💳', 11, null, 'عام'],
+            ['قسيمة شحن عام 5$', '🎁', 5.5, null, 'عام'],
+            ['قسيمة شحن عام 10$', '🎁', 11, 12, 'عام'],
+        ];
+        $ins = $pdo->prepare("INSERT INTO products (name, icon, price, old_price, category_id, status) VALUES (?,?,?,?,?,'active')");
+        foreach ($seedProducts as [$pname, $picon, $price, $oldPrice, $pcat]) {
+            $ins->execute([$pname, $picon, $price, $oldPrice, $catIds[$pcat] ?? null]);
+        }
+    }
 }
 migrate();
 
@@ -315,6 +392,7 @@ function icon(string $name, string $class = 'ic'): string
         'logout' => '<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M16 16l4-4-4-4M20 12H9"/>',
         'cart' => '<circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M3 4h2l2.2 11h10.6L20 7H6.3"/>',
         'check' => '<path d="M5 12.5 9.5 17 19 7"/>',
+        'refresh' => '<path d="M4 12a8 8 0 0 1 14-5.3L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-14 5.3L4 16"/><path d="M4 20v-4h4"/>',
         'x' => '<path d="M6 6l12 12M18 6 6 18"/>',
         'edit' => '<path d="M4 17.5 14.5 7l3 3L7 20.5H4z"/><path d="M13 8 16.5 4.5l3 3L16 11"/>',
         'trash' => '<path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m1 0-.8 12.2a2 2 0 0 1-2 1.8H10.8a2 2 0 0 1-2-1.8L8 7"/>',
@@ -423,32 +501,70 @@ function csrf_check(): void
     if (!$t || !hash_equals($_SESSION['csrf'] ?? '', $t)) { http_response_code(419); die('انتهت صلاحية الجلسة، أعد تحميل الصفحة.'); }
 }
 
-/* ---- Telegram helpers ---- */
-function tg_send(string $chatId, string $text, array $extra = []): void
+/* ---- Telegram ----
+   البوت أصبح عملية مستقلة تعمل على سيرفر VPS منفصل (telegram_bot.php)
+   ويستخدم فقط نفس قاعدة البيانات. هذا الملف لا يتصل بـ Telegram API مباشرة إطلاقاً؛
+   عند نشر منتج جديد يُكتب سجل في bot_broadcast_queue ليقرأه البوت ويبثه بنفسه. */
+
+/* ---- Satofill API: مزامنة كتالوج المنتجات مع تطبيق نسبة هامش ربح ---- */
+function satofill_fetch_catalog(): array
 {
-    if (!BOT_TOKEN) return;
-    $params = array_merge(['chat_id' => $chatId, 'text' => $text, 'parse_mode' => 'HTML'], $extra);
-    $ch = curl_init("https://api.telegram.org/bot" . BOT_TOKEN . "/sendMessage");
+    if (!defined('SATOFILL_API_TOKEN') || !SATOFILL_API_TOKEN) {
+        throw new RuntimeException('SATOFILL_API_TOKEN غير مُعرّف في config.php');
+    }
+    $base = rtrim(setting('satofill_api_base', 'https://satofill.com/api'), '/');
+    $ch = curl_init($base . '/products');
     curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $params,
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . SATOFILL_API_TOKEN,
+            'Accept: application/json',
+        ],
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 5,
+        CURLOPT_TIMEOUT => 20,
     ]);
-    curl_exec($ch);
+    $res = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
     curl_close($ch);
+    if ($res === false || $code >= 400) {
+        throw new RuntimeException("فشل الاتصال بـ Satofill (HTTP $code)");
+    }
+    $data = json_decode($res, true);
+    if (!is_array($data)) throw new RuntimeException('استجابة غير صالحة من Satofill');
+    // الواجهة قد تُغلّف القائمة داخل data/products/items حسب توثيق المزود
+    foreach (['data', 'products', 'items'] as $k) {
+        if (isset($data[$k]) && is_array($data[$k])) { $data = $data[$k]; break; }
+    }
+    return $data;
 }
-function tg_broadcast_product(array $product): void
+
+function satofill_sync_products(): int
 {
-    if (!BOT_TOKEN) return;
-    $chats = db()->query("SELECT chat_id FROM telegram_users")->fetchAll();
-    $text = "🆕 <b>منتج جديد!</b>\n\n"
-        . ($product['icon'] ? $product['icon'] . ' ' : '') . "<b>" . e($product['name']) . "</b>\n"
-        . "💵 السعر: <b>{$product['price']}$</b>\n"
-        . ($product['description'] ? e(mb_substr($product['description'], 0, 200)) . "\n" : "")
-        . "\n🔗 " . SITE_URL;
-    foreach ($chats as $c) tg_send($c['chat_id'], $text);
-    if (OWNER_ID) tg_send(OWNER_ID, "📢 تم بث المنتج لعدد " . count($chats) . " محادثة.");
+    $items = satofill_fetch_catalog();
+    $markup = (float)setting('satofill_markup_percent', 15);
+    $pdo = db();
+    $count = 0;
+    foreach ($items as $item) {
+        $extId = (string)($item['id'] ?? $item['product_id'] ?? '');
+        if ($extId === '') continue;
+        $name = trim((string)($item['name'] ?? $item['title'] ?? ''));
+        if ($name === '') continue;
+        $cost = (float)($item['price'] ?? $item['cost'] ?? 0);
+        $price = round($cost * (1 + $markup / 100), 2);
+        $image = (string)($item['image'] ?? $item['thumbnail'] ?? $item['icon_url'] ?? '');
+
+        $st = $pdo->prepare("SELECT id FROM products WHERE source='satofill' AND external_id=?");
+        $st->execute([$extId]);
+        $existing = $st->fetch();
+        if ($existing) {
+            $pdo->prepare("UPDATE products SET name=?, price=?, image=? WHERE id=?")
+                ->execute([$name, $price, $image, $existing['id']]);
+        } else {
+            $pdo->prepare("INSERT INTO products (name, price, image, source, external_id, status) VALUES (?,?,?,?,?,'active')")
+                ->execute([$name, $price, $image, 'satofill', $extId]);
+        }
+        $count++;
+    }
+    return $count;
 }
 
 /* ======================================================================
@@ -709,8 +825,8 @@ function handle_login(): void
 $action = $_GET['action'] ?? '';
 $page = $_GET['page'] ?? 'home';
 
-// ملاحظة: استقبال أوامر بوت تيليجرام الكاملة (القوائم/الأرباح/المحفظة) يتم في telegram_bot.php
-// هذا الملف فقط يستخدم tg_broadcast_product() للبث عند نشر منتج جديد.
+// ملاحظة: بوت تيليجرام (القوائم/الأرباح/المحفظة) يعمل كعملية مستقلة بالكامل عبر telegram_bot.php
+// على سيرفر منفصل، ويتواصل مع هذا الموقع فقط من خلال قاعدة البيانات المشتركة (لا استدعاء API مباشر هنا).
 
 if ($action === 'google_callback') {
     google_handle_callback($_GET['code'] ?? '');
@@ -1033,15 +1149,15 @@ if ($action && str_starts_with($action, 'admin_')) {
             $metaDesc = trim($_POST['meta_description'] ?? '');
             $tag = trim($_POST['tag'] ?? '');
             $image = trim($_POST['image'] ?? '');
+            $picon = trim($_POST['icon'] ?? '');
             if ($id) {
-                db()->prepare("UPDATE products SET name=?, price=?, old_price=?, category_id=?, description=?, meta_description=?, tag=?, image=? WHERE id=?")
-                    ->execute([$name, $price, $old_price, $cat, $desc, $metaDesc, $tag, $image, $id]);
+                db()->prepare("UPDATE products SET name=?, price=?, old_price=?, category_id=?, description=?, meta_description=?, tag=?, image=?, icon=? WHERE id=?")
+                    ->execute([$name, $price, $old_price, $cat, $desc, $metaDesc, $tag, $image, $picon, $id]);
             } else {
-                db()->prepare("INSERT INTO products (name, price, old_price, category_id, description, meta_description, tag, image) VALUES (?,?,?,?,?,?,?,?)")
-                    ->execute([$name, $price, $old_price, $cat, $desc, $metaDesc, $tag, $image]);
+                db()->prepare("INSERT INTO products (name, price, old_price, category_id, description, meta_description, tag, image, icon) VALUES (?,?,?,?,?,?,?,?,?)")
+                    ->execute([$name, $price, $old_price, $cat, $desc, $metaDesc, $tag, $image, $picon]);
                 $id = db()->lastInsertId();
-                $st = db()->prepare("SELECT * FROM products WHERE id=?"); $st->execute([$id]);
-                tg_broadcast_product($st->fetch());
+                db()->prepare("INSERT INTO bot_broadcast_queue (product_id) VALUES (?)")->execute([$id]);
             }
             flash('تم حفظ المنتج بنجاح.');
             redirect('?page=admin&tab=products');
@@ -1066,6 +1182,15 @@ if ($action && str_starts_with($action, 'admin_')) {
         case 'admin_delete_category':
             db()->prepare("DELETE FROM categories WHERE id=?")->execute([(int)$_POST['id']]);
             flash('تم حذف القسم.');
+            redirect('?page=admin&tab=products');
+
+        case 'admin_satofill_sync':
+            try {
+                $n = satofill_sync_products();
+                flash("تمت مزامنة $n منتج من Satofill بنجاح.");
+            } catch (Throwable $e) {
+                flash('فشلت المزامنة مع Satofill: ' . $e->getMessage());
+            }
             redirect('?page=admin&tab=products');
 
         case 'admin_order_decision':
@@ -1382,6 +1507,7 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .bottom-nav a.active .ic{color:var(--accent2)}
 .admin-tabs a{display:inline-flex;align-items:center;gap:6px}
 .card .icon-wrap{width:56px;height:56px;flex-shrink:0;border-radius:14px;background:#1d1014;display:flex;align-items:center;justify-content:center;margin-bottom:10px;color:var(--accent2)}
+.card .icon-wrap.emoji-icon{font-size:28px;line-height:1}
 .icon-wrap .ic{flex-shrink:0}
 .card img.pimg{display:block;flex-shrink:0}
 .brand .ic{color:var(--accent2)}
@@ -1785,6 +1911,8 @@ case 'home':
           <a href="?page=product&id=<?= (int)$p['id'] ?>">
             <?php if ($p['image']): ?>
               <img class="pimg" loading="lazy" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+            <?php elseif (!empty($p['icon'])): ?>
+              <div class="icon-wrap emoji-icon"><?= e($p['icon']) ?></div>
             <?php else: ?>
               <div class="icon-wrap"><?= icon('cart', 'ic ic-xl') ?></div>
             <?php endif; ?>
@@ -1898,6 +2026,8 @@ case 'product':
     <div class="product-detail">
       <?php if ($p['image']): ?>
         <img class="pd-img" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+      <?php elseif (!empty($p['icon'])): ?>
+        <div class="pd-img icon-wrap" style="display:flex;align-items:center;justify-content:center;font-size:64px"><?= e($p['icon']) ?></div>
       <?php else: ?>
         <div class="pd-img icon-wrap" style="display:flex;align-items:center;justify-content:center"><?= icon('cart', 'ic ic-xl') ?></div>
       <?php endif; ?>
@@ -2151,6 +2281,7 @@ case 'admin':
             <input name="price" id="pprice" type="number" step="0.01" placeholder="السعر $" required>
             <input name="old_price" id="poldprice" type="number" step="0.01" placeholder="السعر قبل الخصم (اختياري)">
             <input name="tag" id="ptag" placeholder="وسم مثل: جديد / خصم">
+            <input name="icon" id="picon" placeholder="أيقونة إيموجي (مثل 🎮)" maxlength="10">
             <select name="category_id"><option value="">بدون قسم</option><?php foreach ($cats as $c): ?><option value="<?= (int)$c['id'] ?>"><?= e($c['name']) ?></option><?php endforeach; ?></select>
           </div>
           <div class="upload-row">
@@ -2196,14 +2327,24 @@ case 'admin':
         </table>
       </div>
       <div class="admin-box">
+        <h3><?= icon('cart', 'ic') ?>مزامنة Satofill</h3>
+        <p style="opacity:.7;font-size:13px">يجلب كتالوج المنتجات من Satofill ويضيف نسبة ربح <?= e(setting('satofill_markup_percent', 15)) ?>% على السعر، قابلة للتعديل من تبويب الإعدادات.</p>
+        <form method="post" action="?action=admin_satofill_sync">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <button class="btn btn-primary"><?= icon('refresh', 'ic-sm') ?>مزامنة الآن</button>
+        </form>
+      </div>
+      <div class="admin-box">
         <table>
-          <tr><th>المنتج</th><th>السعر</th><th>الوسم</th><th></th></tr>
+          <tr><th>الأيقونة</th><th>المنتج</th><th>السعر</th><th>الوسم</th><th></th></tr>
           <?php foreach ($products as $p): ?>
           <tr>
+            <td><?= e($p['icon']) ?></td>
             <td><?= e($p['name']) ?></td>
             <td><?= e($p['price']) ?>$</td>
             <td><?= e($p['tag']) ?></td>
-            <td>
+            <td style="display:flex;gap:6px">
+              <button class="btn btn-ghost" type="button" onclick='fillProductForm(<?= json_encode($p, JSON_UNESCAPED_UNICODE) ?>)'><?= icon('edit', 'ic-sm') ?></button>
               <form method="post" action="?action=admin_delete_product" style="display:inline">
                 <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                 <input type="hidden" name="id" value="<?= (int)$p['id'] ?>">
@@ -2214,6 +2355,21 @@ case 'admin':
           <?php endforeach; ?>
         </table>
       </div>
+      <script>
+      function fillProductForm(p) {
+        document.getElementById('pid').value = p.id;
+        document.getElementById('pname').value = p.name || '';
+        document.getElementById('pprice').value = p.price || '';
+        document.getElementById('poldprice').value = p.old_price || '';
+        document.getElementById('ptag').value = p.tag || '';
+        document.getElementById('picon').value = p.icon || '';
+        document.getElementById('pimage').value = p.image || '';
+        document.getElementById('pdesc').value = p.description || '';
+        document.getElementById('pmeta').value = p.meta_description || '';
+        document.querySelector('select[name="category_id"]').value = p.category_id || '';
+        document.querySelector('.admin-box h3').scrollIntoView({behavior:'smooth'});
+      }
+      </script>
 
     <?php elseif ($tab === 'orders'):
         $orders = db()->query("SELECT o.*, u.name uname, p.name pname FROM orders o JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id ORDER BY o.id DESC")->fetchAll();
@@ -2499,6 +2655,7 @@ case 'admin':
           <label>نص أسفل الصفحة (الفوتر، اتركه فارغاً للنص الافتراضي)<input name="footer_text" value="<?= e(setting('footer_text')) ?>" placeholder="© 2026 Yassota — جميع الحقوق محفوظة"></label>
           <label>اللون الأساسي للموقع<input type="color" name="theme_accent_color" value="<?= e(setting('theme_accent_color')) ?>"></label>
           <label>لون التمييز الثانوي<input type="color" name="theme_accent2_color" value="<?= e(setting('theme_accent2_color')) ?>"></label>
+          <label>نسبة هامش ربح Satofill %<input type="number" step="0.1" name="satofill_markup_percent" value="<?= e(setting('satofill_markup_percent', 15)) ?>"></label>
           <label>تفعيل الإعلانات (عند ضغط زر فقط)
             <select name="ad_enabled">
               <option value="1" <?= setting('ad_enabled') === '1' ? 'selected' : '' ?>>مفعّلة</option>

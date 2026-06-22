@@ -64,6 +64,9 @@ function migrate_bot(): void
         wallet_type VARCHAR(20) NOT NULL, wallet_address VARCHAR(190) NOT NULL, status VARCHAR(20) NOT NULL DEFAULT 'pending',
         created_at $ts
     )$engine");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS bot_broadcast_queue (
+        id $id, product_id INT NOT NULL, sent TINYINT NOT NULL DEFAULT 0, created_at $ts
+    )$engine");
 
     // أعمدة إضافية على telegram_users — تُضاف فقط إن لم تكن موجودة
     $existing = [];
@@ -152,6 +155,34 @@ function add_points(string $chatId, int $amount): void
     db()->prepare("UPDATE telegram_users SET points = points + ? WHERE chat_id = ?")->execute([$amount, $chatId]);
 }
 function is_owner(string $chatId): bool { return OWNER_ID && (string)OWNER_ID === $chatId; }
+
+/* ---------------------------------------------------------------------
+   بث المنتجات الجديدة (يعمل عبر استدعاء دوري Cron من سيرفر VPS الخاص بالبوت)
+   مثال إعداد Cron: * * * * * curl -s "https://YOURDOMAIN/telegram_bot.php?cron=broadcast" >/dev/null
+   هذا الملف يقرأ فقط من bot_broadcast_queue (التي يكتبها الموقع عند نشر منتج) ولا يتلقى أي
+   استدعاء مباشر من index.php — التواصل بينهما يتم فقط عبر قاعدة البيانات المشتركة.
+   --------------------------------------------------------------------- */
+if (($_GET['cron'] ?? '') === 'broadcast') {
+    process_broadcast_queue();
+    echo 'ok'; exit;
+}
+
+function process_broadcast_queue(): void
+{
+    $rows = db()->query("SELECT q.id qid, p.* FROM bot_broadcast_queue q JOIN products p ON p.id = q.product_id WHERE q.sent = 0 ORDER BY q.id ASC LIMIT 20")->fetchAll();
+    if (!$rows) return;
+    $chats = db()->query("SELECT chat_id FROM telegram_users")->fetchAll();
+    foreach ($rows as $p) {
+        $text = "🆕 <b>منتج جديد!</b>\n\n"
+            . ($p['icon'] ? $p['icon'] . ' ' : '') . "<b>" . e_($p['name']) . "</b>\n"
+            . "💵 السعر: <b>{$p['price']}$</b>\n"
+            . ($p['description'] ? e_(mb_substr($p['description'], 0, 200)) . "\n" : "")
+            . "\n🔗 " . SITE_URL;
+        foreach ($chats as $c) tg_send($c['chat_id'], $text);
+        if (OWNER_ID) tg_send((string)OWNER_ID, "📢 تم بث المنتج \"{$p['name']}\" لعدد " . count($chats) . " محادثة.");
+        db()->prepare("UPDATE bot_broadcast_queue SET sent = 1 WHERE id = ?")->execute([$p['qid']]);
+    }
+}
 
 /* ---------------------------------------------------------------------
    Update intake
