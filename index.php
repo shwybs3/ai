@@ -1677,8 +1677,8 @@ if ($action === 'admin_test_openrouter') {
     csrf_check();
     header('Content-Type: application/json; charset=utf-8');
     $r = openrouter_chat('قل "تم الاتصال بنجاح" فقط بدون أي إضافات.');
-    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
-    echo json_encode(['ok' => true, 'msg' => 'الاتصال يعمل بنجاح: ' . trim($r['text'])]);
+    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']], JSON_INVALID_UTF8_SUBSTITUTE); exit; }
+    echo json_encode(['ok' => true, 'msg' => 'الاتصال يعمل بنجاح: ' . trim($r['text'])], JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
 
@@ -1692,7 +1692,7 @@ if ($action === 'admin_ai_generate') {
     $prompt = "اكتب لمنتج إلكتروني اسمه \"$name\" بسعر $price دولار، وصفاً تسويقياً جذاباً بالعربية (3-4 جمل)، ووصف SEO قصير (جملة واحدة، أقل من 150 حرفاً). "
         . "أعد الإجابة بصيغة JSON فقط بدون أي نص إضافي بهذا الشكل: {\"description\":\"...\",\"meta_description\":\"...\"}";
     $r = openrouter_chat($prompt);
-    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
+    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']], JSON_INVALID_UTF8_SUBSTITUTE); exit; }
     $text = trim($r['text']);
     $text = preg_replace('/^```json|```$/m', '', $text);
     $json = json_decode(trim($text), true);
@@ -1710,7 +1710,7 @@ if ($action === 'admin_ai_generate') {
             $out['image_error'] = $imgRes['msg'];
         }
     }
-    echo json_encode($out);
+    echo json_encode($out, JSON_INVALID_UTF8_SUBSTITUTE);
     exit;
 }
 
@@ -4120,8 +4120,12 @@ function applyThemePreset(val){
 }
 async function post(action, data){
   data.append('csrf', CSRF);
-  const r = await fetch('?action=' + action, { method: 'POST', body: data });
-  return r.json();
+  try {
+    const r = await fetch('?action=' + action, { method: 'POST', body: data });
+    return await r.json();
+  } catch (e) {
+    return { ok: false, msg: 'انتهت صلاحية الجلسة أو تعذّر الاتصال، يرجى تحديث الصفحة والمحاولة مجدداً.' };
+  }
 }
 async function uploadInto(input, targetId){
   if (!input.files || !input.files[0]) return;
@@ -4130,10 +4134,14 @@ async function uploadInto(input, targetId){
   d.append('field', targetId);
   d.append('csrf', CSRF);
   toast('جاري رفع الملف...');
-  const r = await fetch('?action=admin_upload', { method: 'POST', body: d });
-  const res = await r.json();
-  if (res.ok) { document.getElementById(targetId).value = res.url; toast('تم رفع الملف بنجاح'); }
-  else toast(res.msg || 'فشل رفع الملف.');
+  try {
+    const r = await fetch('?action=admin_upload', { method: 'POST', body: d });
+    const res = await r.json();
+    if (res.ok) { document.getElementById(targetId).value = res.url; toast('تم رفع الملف بنجاح'); }
+    else toast(res.msg || 'فشل رفع الملف.');
+  } catch (e) {
+    toast('انتهت صلاحية الجلسة أو تعذّر الاتصال، يرجى تحديث الصفحة والمحاولة مجدداً.');
+  }
 }
 let buyProductId = null;
 let buyProductPrice = 0;
@@ -4355,7 +4363,10 @@ function requestTopup(){
 function testOpenRouter(){
   toast('جاري الاختبار...');
   const d = new FormData(); d.append('csrf', CSRF);
-  fetch('?action=admin_test_openrouter', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
+  fetch('?action=admin_test_openrouter', { method: 'POST', body: d })
+    .then(r => r.json())
+    .then(res => toast(res.msg))
+    .catch(() => toast('فشل الاختبار: انتهت صلاحية الجلسة أو تعذّر الاتصال، يرجى تحديث الصفحة.'));
 }
 function aiGenerateProduct(){
   const name = document.getElementById('pname').value.trim();
@@ -4363,13 +4374,16 @@ function aiGenerateProduct(){
   if (!name) return toast('أدخل اسم المنتج أولاً.');
   toast('جاري التوليد بالذكاء الاصطناعي...');
   const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('price', price); d.append('gen_image', '1');
-  fetch('?action=admin_ai_generate', { method: 'POST', body: d }).then(r => r.json()).then(res => {
-    if (!res.ok) return toast(res.msg);
-    document.getElementById('pdesc').value = res.description || '';
-    if (res.meta_description) document.getElementById('pmeta').value = res.meta_description;
-    if (res.image) document.getElementById('pimage').value = res.image;
-    toast(res.image ? 'تم توليد الوصف والصورة وSEO بنجاح' : 'تم توليد الوصف وSEO' + (res.image_error ? ' (تعذر توليد الصورة: ' + res.image_error + ')' : ''));
-  });
+  fetch('?action=admin_ai_generate', { method: 'POST', body: d })
+    .then(r => r.json())
+    .then(res => {
+      if (!res.ok) return toast(res.msg);
+      document.getElementById('pdesc').value = res.description || '';
+      if (res.meta_description) document.getElementById('pmeta').value = res.meta_description;
+      if (res.image) document.getElementById('pimage').value = res.image;
+      toast(res.image ? 'تم توليد الوصف والصورة وSEO بنجاح' : 'تم توليد الوصف وSEO' + (res.image_error ? ' (تعذر توليد الصورة: ' + res.image_error + ')' : ''));
+    })
+    .catch(() => toast('فشل التوليد: انتهت صلاحية الجلسة أو تعذّر الاتصال، يرجى تحديث الصفحة.'));
 }
 function copyAddr(btn){
   const addr = btn.getAttribute('data-addr');
