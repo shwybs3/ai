@@ -256,6 +256,19 @@ function migrate(): void
     add_column_if_missing($pdo, 'users', 'referred_by', 'INT NULL');
     add_column_if_missing($pdo, 'users', 'last_bonus_date', 'VARCHAR(10) NULL');
     add_column_if_missing($pdo, 'orders', 'coupon_code', 'VARCHAR(40) NULL');
+    add_column_if_missing($pdo, 'users', 'bio', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'users', 'bonus_bio_claimed', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'bonus_profile_claimed', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'last_spin_date', 'VARCHAR(10) NULL');
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS product_suggestions (
+        id " . (DB_DRIVER === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INT AUTO_INCREMENT PRIMARY KEY') . ",
+        user_id INT NOT NULL,
+        title VARCHAR(190) NOT NULL,
+        details VARCHAR(500) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_at " . (DB_DRIVER === 'sqlite' ? "TEXT DEFAULT (datetime('now'))" : "DATETIME DEFAULT CURRENT_TIMESTAMP") . "
+    )");
 
     // seed default settings
     $defaults = [
@@ -283,6 +296,12 @@ function migrate(): void
         'profit_split_admin' => '95',
         'profit_split_user' => '5',
         'policy_version' => '1',
+        'bio_bonus_points' => '100',
+        'profile_complete_bonus_points' => '350',
+        'spin_reward_min' => '5',
+        'spin_reward_max' => '200',
+        'spin_max_per_day' => '1',
+        'live_ticker_enabled' => '1',
         'welcome_bonus_points' => '200',
         'ad_enabled' => '1',
         'ad_zone_id' => '11185011',
@@ -956,6 +975,52 @@ if ($action && str_starts_with($action, 'api_')) {
             db()->prepare("UPDATE users SET last_bonus_date = ? WHERE id = ?")->execute([$today, $u['id']]);
             echo json_encode(['ok' => true, 'msg' => "تم إضافة +{$amt} عملة!"]); exit;
 
+        case 'api_update_profile':
+            csrf_check();
+            $newName = trim($_POST['name'] ?? '');
+            $newUsername = preg_replace('/[^a-zA-Z0-9_]/', '', trim($_POST['username'] ?? ''));
+            $newBio = mb_substr(trim($_POST['bio'] ?? ''), 0, 255);
+            if ($newName === '' || $newUsername === '') { echo json_encode(['ok' => false, 'msg' => 'الاسم واسم المستخدم مطلوبان.']); exit; }
+            $st = db()->prepare("SELECT id FROM users WHERE username=? AND id<>?");
+            $st->execute([$newUsername, $u['id']]);
+            if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'اسم المستخدم هذا مستخدم من قبل.']); exit; }
+            db()->prepare("UPDATE users SET name=?, username=?, bio=? WHERE id=?")->execute([$newName, $newUsername, $newBio, $u['id']]);
+            $bonusMsg = '';
+            if ($newBio !== '' && !$u['bonus_bio_claimed']) {
+                $bonus = (int)setting('bio_bonus_points', 100);
+                add_points((int)$u['id'], $bonus, 'bio_bonus', 'إضافة نبذة شخصية');
+                db()->prepare("UPDATE users SET bonus_bio_claimed=1 WHERE id=?")->execute([$u['id']]);
+                $bonusMsg .= " +{$bonus} عملة (النبذة)";
+            }
+            $st = db()->prepare("SELECT bonus_profile_claimed FROM users WHERE id=?"); $st->execute([$u['id']]); $claimed = (int)$st->fetch()['bonus_profile_claimed'];
+            if (!$claimed && $newBio !== '' && $u['avatar']) {
+                $bonus2 = (int)setting('profile_complete_bonus_points', 350);
+                add_points((int)$u['id'], $bonus2, 'profile_complete_bonus', 'اكتمال الملف الشخصي');
+                db()->prepare("UPDATE users SET bonus_profile_claimed=1 WHERE id=?")->execute([$u['id']]);
+                $bonusMsg .= " +{$bonus2} عملة (اكتمال الملف)";
+            }
+            echo json_encode(['ok' => true, 'msg' => 'تم حفظ التعديلات.' . $bonusMsg]); exit;
+
+        case 'api_submit_suggestion':
+            csrf_check();
+            $title = trim($_POST['title'] ?? '');
+            $details = mb_substr(trim($_POST['details'] ?? ''), 0, 500);
+            if ($title === '') { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم المنتج المقترح.']); exit; }
+            db()->prepare("INSERT INTO product_suggestions (user_id, title, details) VALUES (?,?,?)")->execute([$u['id'], $title, $details]);
+            echo json_encode(['ok' => true, 'msg' => 'تم إرسال اقتراحك، شكراً لك!']); exit;
+
+        case 'api_spin_wheel':
+            csrf_check();
+            $today = date('Y-m-d');
+            $maxPerDay = (int)setting('spin_max_per_day', 1);
+            if ($maxPerDay > 0 && $u['last_spin_date'] === $today) { echo json_encode(['ok' => false, 'msg' => 'لقد استخدمت دورتك اليوم، عُد غداً.']); exit; }
+            $min = (int)setting('spin_reward_min', 5);
+            $max = (int)setting('spin_reward_max', 200);
+            $won = random_int($min, $max);
+            add_points((int)$u['id'], $won, 'spin', 'عجلة الحظ');
+            db()->prepare("UPDATE users SET last_spin_date=? WHERE id=?")->execute([$today, $u['id']]);
+            echo json_encode(['ok' => true, 'won' => $won, 'msg' => "ربحت {$won} عملة!"]); exit;
+
         case 'api_toggle_wishlist':
             csrf_check();
             $pid = (int)($_POST['product_id'] ?? 0);
@@ -1394,10 +1459,15 @@ if ($action && str_starts_with($action, 'admin_')) {
             db()->prepare("DELETE FROM tickers WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=banners');
 
+        case 'admin_suggestion_decision':
+            db()->prepare("UPDATE product_suggestions SET status=? WHERE id=?")->execute([$_POST['status'] === 'dismissed' ? 'dismissed' : 'reviewed', (int)$_POST['id']]);
+            redirect('?page=admin&tab=suggestions');
+
         case 'admin_save_settings':
             $redirectTab = preg_replace('/[^a-z_]/', '', $_POST['redirect_tab'] ?? 'settings') ?: 'settings';
             foreach ($_POST as $k => $v) {
                 if ($k === 'action' || $k === 'csrf' || $k === 'redirect_tab') continue;
+                if ($k === 'bot_token' && $v === '') continue; // حقل التوكن لا يُفرَّغ إذا تُرك خالياً
                 set_setting($k, $v);
             }
             flash('تم حفظ الإعدادات.');
@@ -1570,6 +1640,7 @@ a{color:inherit;text-decoration:none}
 .ticker-item{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text);font-weight:600}
 .ticker-item .ic{color:var(--accent2)}
 @keyframes tickerScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.live-ticker .ticker-badge{background:var(--accent)}
 .section-title{margin:28px 18px 12px;font-size:20px;font-weight:800;display:flex;align-items:center;gap:10px;position:relative}
 .section-title::before{content:"";width:5px;height:22px;border-radius:6px;background:linear-gradient(var(--accent),var(--accent2))}
 .section-title .ic{color:var(--accent2)}
@@ -1860,7 +1931,20 @@ input,textarea,select{font-family:inherit}
 .coin-pkg strong{font-size:14px}
 .coin-pkg span{font-size:10px;color:var(--muted)}
 @media (max-width:480px){.coin-pkgs{grid-template-columns:repeat(2,1fr)}}
-.btn:active{transform:scale(.96)}
+.btn-icon-only{padding:9px;aspect-ratio:1/1}
+.verified-badge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#1d9bf0;color:#fff;vertical-align:middle}
+.verified-badge svg{width:11px;height:11px}
+.profile-frame{position:relative;width:96px;height:96px;margin:0 auto;border-radius:50%;display:flex;align-items:center;justify-content:center}
+.profile-frame img,.profile-frame .ph{width:84px;height:84px;border-radius:50%;object-fit:cover;background:#341c22;display:flex;align-items:center;justify-content:center}
+.profile-frame::before{content:'';position:absolute;inset:0;border-radius:50%;border:3px solid var(--accent);animation:frameSpin 6s linear infinite}
+.profile-rank-bronze .profile-frame::before{border-color:#c97a3d}
+.profile-rank-silver .profile-frame::before{border-color:#c9d2da;box-shadow:0 0 12px rgba(201,210,218,.5)}
+.profile-rank-gold .profile-frame::before{border-color:#e6b800;box-shadow:0 0 14px rgba(230,184,0,.6)}
+.profile-rank-diamond .profile-frame::before{border-color:#36e0e0;box-shadow:0 0 16px rgba(54,224,224,.7)}
+@keyframes frameSpin{from{transform:rotate(0deg) scale(1)}50%{transform:rotate(180deg) scale(1.04)}to{transform:rotate(360deg) scale(1)}}
+.spin-wheel-wrap{display:flex;flex-direction:column;align-items:center;gap:20px;padding:20px 0}
+.spin-wheel{width:240px;height:240px;border-radius:50%;position:relative;background:conic-gradient(#e6294b 0deg 45deg,#ff8a3d 45deg 90deg,#ffd23d 90deg 135deg,#4dd6a3 135deg 180deg,#3da5ff 180deg 225deg,#a36dff 225deg 270deg,#ff5fa2 270deg 315deg,#6dffb0 315deg 360deg);transition:transform 2.4s cubic-bezier(.18,.9,.2,1);box-shadow:0 0 0 6px #1d0f14,0 0 30px rgba(0,0,0,.5)}
+.spin-wheel-pointer{position:absolute;top:-14px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:14px solid transparent;border-right:14px solid transparent;border-top:22px solid var(--accent);z-index:2}
 .card img.pimg{height:<?= (int)setting('product_image_height', 130) ?>px}
 .cat-tiles{grid-template-columns:repeat(auto-fill,minmax(<?= (int)setting('cat_tile_size', 140) ?>px,1fr))}
 .banner-carousel-slide img{height:<?= (int)setting('banner_height', 160) ?>px}
@@ -1979,7 +2063,7 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
       <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>"><?php else: ?><?= icon('user', 'ic ic-sm') ?><?php endif; ?>
       <span><?= e($user['name']) ?></span>
     </a>
-    <a href="?action=logout" class="btn btn-ghost"><?= icon('logout', 'ic ic-sm') ?>خروج</a>
+    <a href="?action=logout" class="btn btn-ghost btn-icon-only" title="تسجيل الخروج"><?= icon('logout', 'ic ic-sm') ?></a>
   <?php else: ?>
     <a href="?page=login" class="btn btn-primary"><?= icon('user', 'ic ic-sm') ?>تسجيل الدخول</a>
   <?php endif; ?>
@@ -1995,7 +2079,9 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
     <a href="?page=tasks"><?= icon('tasks') ?> المهام اليومية</a>
     <a href="?page=wallet"><?= icon('wallet') ?> محفظتي</a>
     <a href="?page=leaderboard"><?= icon('star') ?> المتصدّرون</a>
+    <a href="?page=spin"><?= icon('gift') ?> عجلة الحظ</a>
     <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
+    <a href="?page=suggest"><?= icon('megaphone') ?> اقترح منتجاً</a>
     <a href="?page=about"><?= icon('shield') ?> من نحن</a>
     <a href="?page=faq"><?= icon('doc') ?> الأسئلة الشائعة</a>
     <a href="?page=contact"><?= icon('send') ?> تواصل معنا</a>
@@ -2161,6 +2247,22 @@ case 'home':
       </div>
     </div>
     <?php endif; ?>
+    <?php if (setting('live_ticker_enabled', '1') === '1'):
+        $winners = db()->query("SELECT u.name, u.username, e.amount FROM earn_logs e JOIN users u ON u.id = e.user_id WHERE e.amount > 0 ORDER BY e.id DESC LIMIT 15")->fetchAll();
+    ?>
+    <?php if ($winners): ?>
+    <div class="ticker-bar live-ticker">
+      <span class="ticker-badge"><?= icon('coin', 'ic-sm') ?>مباشر</span>
+      <div class="ticker-track">
+        <div class="ticker-track-inner">
+          <?php foreach (array_merge($winners, $winners) as $w): ?>
+            <span class="ticker-item"><?= icon('coins', 'ic-sm') ?><?= e($w['name'] ?: $w['username']) ?> ربح <strong>+<?= (int)$w['amount'] ?></strong> عملة</span>
+          <?php endforeach; ?>
+        </div>
+      </div>
+    </div>
+    <?php endif; ?>
+    <?php endif; ?>
     <?php if ($banners): ?>
     <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
       <div class="banner-carousel-track">
@@ -2321,7 +2423,7 @@ case 'wallet':
     $log = db()->prepare("SELECT * FROM earn_logs WHERE user_id=? ORDER BY id DESC LIMIT 12");
     $log->execute([$user['id']]);
     $logs = $log->fetchAll();
-    $sourceLabel = ['welcome' => 'هدية الترحيب', 'captcha' => 'كابتشا', 'task' => 'مهمة', 'topup' => 'شحن رصيد', 'refund' => 'استرجاع', 'admin' => 'الإدارة', 'withdraw' => 'سحب', 'referral' => 'دعوة صديق', 'daily_bonus' => 'مكافأة يومية'];
+    $sourceLabel = ['welcome' => 'هدية الترحيب', 'captcha' => 'كابتشا', 'task' => 'مهمة', 'topup' => 'شحن رصيد', 'refund' => 'استرجاع', 'admin' => 'الإدارة', 'withdraw' => 'سحب', 'referral' => 'دعوة صديق', 'daily_bonus' => 'مكافأة يومية', 'bio_bonus' => 'مكافأة النبذة', 'profile_complete_bonus' => 'اكتمال الملف الشخصي', 'spin' => 'عجلة الحظ'];
     ?>
     <div class="wallet-balance-card">
       <div class="wbc-top">
@@ -2440,6 +2542,35 @@ case 'orders':
     <?php
     break;
 
+case 'spin':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لتجربة عجلة الحظ.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $spunToday = $user['last_spin_date'] === date('Y-m-d');
+    ?>
+    <div class="section-title"><?= icon('gift', 'ic') ?>عجلة الحظ</div>
+    <div class="admin-box spin-wheel-wrap">
+      <div style="position:relative">
+        <div class="spin-wheel-pointer"></div>
+        <div class="spin-wheel" id="spinWheelEl"></div>
+      </div>
+      <button class="btn btn-primary" id="spinBtn" style="font-size:16px;padding:14px 30px" onclick="spinWheel()" <?= $spunToday ? 'disabled' : '' ?>><?= icon('coins', 'ic-sm') ?><?= $spunToday ? 'عُد غداً للمحاولة مرة أخرى' : 'أدر العجلة الآن' ?></button>
+      <p style="color:var(--muted);font-size:13px">اربح بين <?= (int)setting('spin_reward_min', 5) ?> و <?= (int)setting('spin_reward_max', 200) ?> عملة، مرة واحدة يومياً.</p>
+    </div>
+    <?php
+    break;
+
+case 'suggest':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لإرسال اقتراح منتج.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    ?>
+    <div class="section-title"><?= icon('megaphone', 'ic') ?>اقترح منتجاً</div>
+    <div class="admin-box">
+      <p style="color:var(--muted);font-size:13px;margin-bottom:10px">لم تجد ما تبحث عنه؟ أرسل اقتراحك وستراجعه الإدارة.</p>
+      <input id="sugTitle" placeholder="اسم المنتج المقترح">
+      <textarea id="sugDetails" rows="4" placeholder="تفاصيل إضافية (اختياري)" style="width:100%;margin-top:8px;background:#1d0f14;border:1px solid #341c22;border-radius:10px;padding:10px;color:var(--text);font-family:inherit"></textarea>
+      <button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="submitSuggestion()"><?= icon('send', 'ic-sm') ?>إرسال الاقتراح</button>
+    </div>
+    <?php
+    break;
+
 case 'leaderboard':
     $top10 = db()->query("SELECT id, username, name, avatar, points FROM users WHERE is_banned=0 ORDER BY points DESC LIMIT 10")->fetchAll();
     $myRank = null;
@@ -2493,11 +2624,26 @@ case 'profile':
     $pAchievements[] = ['icon' => 'star', 'label' => 'مُقيّم نشط', 'on' => $pReviewCount >= 1];
     ?>
     <div class="section-title"><?= icon('user', 'ic') ?>ملفي الشخصي</div>
-    <div class="admin-box" style="text-align:center;padding:28px 16px">
-      <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>" style="width:90px;height:90px;border-radius:50%;object-fit:cover;border:3px solid var(--accent)"><?php else: ?><div style="width:90px;height:90px;border-radius:50%;background:#341c22;display:flex;align-items:center;justify-content:center;margin:0 auto"><?= icon('user', 'ic-lg') ?></div><?php endif; ?>
-      <h2 style="margin-top:12px"><?= e($user['name'] ?: $user['username']) ?></h2>
+    <div class="admin-box profile-rank-<?= e(mb_strtolower($pRank === 'ماسي' ? 'diamond' : ($pRank === 'ذهبي' ? 'gold' : ($pRank === 'فضي' ? 'silver' : 'bronze')))) ?>" style="text-align:center;padding:28px 16px">
+      <div class="profile-frame">
+        <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>"><?php else: ?><div class="ph"><?= icon('user', 'ic-lg') ?></div><?php endif; ?>
+      </div>
+      <h2 style="margin-top:12px"><?= e($user['name'] ?: $user['username']) ?><?php if (is_admin()): ?> <span class="verified-badge" title="حساب موثّق"><?= icon('check', 'ic-sm') ?></span><?php endif; ?></h2>
       <div style="color:var(--muted);font-size:13px">@<?= e($user['username']) ?></div>
+      <?php if ($user['bio']): ?><div style="margin-top:8px;font-size:13px;color:var(--muted)"><?= e($user['bio']) ?></div><?php endif; ?>
       <div style="margin-top:8px;font-size:18px"><?= $pRankIcon ?> رتبة <strong><?= $pRank ?></strong></div>
+    </div>
+    <div class="admin-box">
+      <h3 style="margin-bottom:10px"><?= icon('edit', 'ic-sm') ?>تعديل الملف الشخصي</h3>
+      <input id="editName" value="<?= e($user['name']) ?>" placeholder="الاسم الظاهر">
+      <input id="editUsername" value="<?= e($user['username']) ?>" placeholder="اسم المستخدم">
+      <input id="editBio" value="<?= e($user['bio']) ?>" placeholder="نبذة عنك (احصل على <?= (int)setting('bio_bonus_points', 100) ?> عملة)">
+      <button class="btn btn-primary" style="margin-top:8px;width:100%" onclick="saveProfile()"><?= icon('check', 'ic-sm') ?>حفظ التعديلات</button>
+      <?php if (!$user['avatar'] || !$user['bio']): ?><p style="font-size:12px;color:var(--muted);margin-top:6px">أكمل الصورة والنبذة لتحصل على <?= (int)setting('profile_complete_bonus_points', 350) ?> عملة إضافية.</p><?php endif; ?>
+    </div>
+    <div class="admin-box" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
+      <div><strong><?= icon('star', 'ic-sm') ?> عجلة الحظ</strong><div style="font-size:13px;color:var(--muted);margin-top:4px">جرّب حظك واربح عملات إضافية يومياً</div></div>
+      <a href="?page=spin" class="btn btn-success"><?= icon('coins', 'ic-sm') ?>أدر العجلة</a>
     </div>
     <div class="admin-box">
       <div class="profile-grid">
@@ -2561,7 +2707,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -2976,6 +3122,28 @@ case 'admin':
         </table>
       </div>
 
+    <?php elseif ($tab === 'suggestions'):
+        $suggestions = db()->query("SELECT s.*, u.name uname, u.username FROM product_suggestions s JOIN users u ON u.id=s.user_id ORDER BY s.id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <?php if (!$suggestions): ?><div class="empty">لا توجد اقتراحات بعد.</div><?php endif; ?>
+        <table>
+          <tr><th>المستخدم</th><th>الاقتراح</th><th>التفاصيل</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($suggestions as $s): ?>
+          <tr>
+            <td><?= e($s['uname'] ?: $s['username']) ?></td>
+            <td><?= e($s['title']) ?></td>
+            <td><?= e($s['details']) ?></td>
+            <td><?= e($s['status']) ?></td>
+            <td style="display:flex;gap:4px;flex-wrap:wrap">
+              <form method="post" action="?action=admin_suggestion_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$s['id'] ?>"><input type="hidden" name="status" value="reviewed"><button class="btn btn-ghost">تمت المراجعة</button></form>
+              <form method="post" action="?action=admin_suggestion_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$s['id'] ?>"><input type="hidden" name="status" value="dismissed"><button class="btn btn-ghost">رفض</button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
     <?php elseif ($tab === 'settings'): ?>
       <div class="admin-box">
         <form method="post" action="?action=admin_save_settings" class="formrow">
@@ -3014,9 +3182,15 @@ case 'admin':
             </select>
           </label>
           <label>رمز منطقة الإعلان (Zone ID)<input name="ad_zone_id" value="<?= e(setting('ad_zone_id')) ?>"></label>
+          <label>شريط أرباح المستخدمين المباشر (الرئيسية)
+            <select name="live_ticker_enabled">
+              <option value="1" <?= setting('live_ticker_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('live_ticker_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
           <label>تيليجرام خدمة العملاء<input name="support_telegram" value="<?= e(setting('support_telegram')) ?>" placeholder="@username"></label>
           <label>اسم بوت تيليجرام لتسجيل الدخول (بدون @)<input name="telegram_bot_username" value="<?= e(setting('telegram_bot_username')) ?>" placeholder="مثال: YassotaBot"></label>
-          <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="<?= e(setting('bot_token')) ?>" placeholder="من @BotFather"></label>
+          <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="" placeholder="<?= setting('bot_token') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'من @BotFather' ?>" autocomplete="off"></label>
           <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
           <label>مفتاح OpenRouter API<input type="password" name="openrouter_api_key" value="<?= e(setting('openrouter_api_key')) ?>" placeholder="sk-or-..."></label>
@@ -3250,6 +3424,45 @@ function toggleWishlist(id, btn){
   post('api_toggle_wishlist', d).then(res => {
     if (res.ok) btn.classList.toggle('active', res.added);
     else toast(res.msg || 'حدث خطأ');
+  });
+}
+function saveProfile(){
+  const d = new FormData();
+  d.append('name', document.getElementById('editName').value);
+  d.append('username', document.getElementById('editUsername').value);
+  d.append('bio', document.getElementById('editBio').value);
+  post('api_update_profile', d).then(res => {
+    toast(res.msg);
+    if (res.ok) setTimeout(() => location.reload(), 1200);
+  });
+}
+function submitSuggestion(){
+  const title = document.getElementById('sugTitle').value.trim();
+  if (!title) return toast('أدخل اسم المنتج المقترح.');
+  const d = new FormData();
+  d.append('title', title);
+  d.append('details', document.getElementById('sugDetails').value);
+  post('api_submit_suggestion', d).then(res => {
+    toast(res.msg);
+    if (res.ok) { document.getElementById('sugTitle').value = ''; document.getElementById('sugDetails').value = ''; }
+  });
+}
+function spinWheel(){
+  if (!LOGGED_IN) return requireLogin();
+  const btn = document.getElementById('spinBtn');
+  const wheel = document.getElementById('spinWheelEl');
+  if (btn) btn.disabled = true;
+  post('api_spin_wheel', new FormData()).then(res => {
+    if (wheel) {
+      const turns = 4 + Math.random();
+      wheel.style.transform = `rotate(${turns * 360}deg)`;
+    }
+    setTimeout(() => {
+      toast(res.msg);
+      if (btn) btn.disabled = !res.ok ? false : true;
+      if (res.ok) setTimeout(() => location.reload(), 1500);
+      else if (btn) btn.disabled = false;
+    }, 2600);
   });
 }
 function claimDailyBonus(){
