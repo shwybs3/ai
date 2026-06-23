@@ -385,6 +385,23 @@ function migrate(): void
         $pdo->prepare("INSERT INTO wallets (type, label, address, active) VALUES (?,?,?,0)")
             ->execute(['sham', 'الشام كاش (شحن المحفظة)', 'ضع رقم محفظتك من لوحة الإدارة']);
     }
+    // حذف صفوف محافظ فاسدة بالكامل (بلا نوع وبلا عنوان ظاهري)
+    $pdo->exec("DELETE FROM wallets WHERE (type IS NULL OR type='') AND (label IS NULL OR label='')");
+    // أي محفظة بعنوان فارغ أو لا تزال تحمل نص العنصر النائب الافتراضي يجب أن تكون معطّلة دائماً، بغض النظر عن حالتها السابقة
+    $pdo->prepare("UPDATE wallets SET active=0 WHERE active=1 AND (address IS NULL OR address='' OR address=?)")
+        ->execute(['ضع رقم محفظتك من لوحة الإدارة']);
+    // حذف التكرار التام (نفس النوع ونفس العنوان)، مع الاحتفاظ بالصف الأقدم فقط
+    $dupPairs = $pdo->query("SELECT type, address FROM wallets WHERE address IS NOT NULL AND address<>'' GROUP BY type, address HAVING COUNT(*) > 1")->fetchAll(PDO::FETCH_ASSOC);
+    foreach ($dupPairs as $pair) {
+        $st = $pdo->prepare("SELECT id FROM wallets WHERE type=? AND address=? ORDER BY id ASC");
+        $st->execute([$pair['type'], $pair['address']]);
+        $ids = $st->fetchAll(PDO::FETCH_COLUMN);
+        array_shift($ids);
+        if ($ids) {
+            $pdo->prepare("DELETE FROM wallets WHERE id IN (" . implode(',', array_fill(0, count($ids), '?')) . ")")
+                ->execute($ids);
+        }
+    }
     // تصحيح بيانات قديمة: إن وُجدت أكثر من محفظة مفعّلة لنفس وسيلة الدفع (مثل ظهور الشام كاش مرتين)، نُبقي الأحدث فقط مفعّلة
     $dupTypes = $pdo->query("SELECT type FROM wallets WHERE active=1 GROUP BY type HAVING COUNT(*) > 1")->fetchAll(PDO::FETCH_COLUMN);
     foreach ($dupTypes as $dupType) {
@@ -794,39 +811,48 @@ function satofill_fetch_catalog(): array
 // يُعاد ترميز الصورة بجودة مضغوطة وتُصغَّر أبعادها إذا تجاوزت الحد الأقصى، مع الحفاظ على نوع الملف.
 function compress_image_file(string $path, int $maxDim = 1280, int $quality = 75): void
 {
-    $info = @getimagesize($path);
-    if (!$info) return;
-    [$w, $h, $type] = $info;
-    $needsResize = $w > $maxDim || $h > $maxDim;
-    if ($type === IMAGETYPE_GIF && !$needsResize) return; // لا نعيد ترميز gif إلا عند الحاجة لتصغيره (حفاظاً على الحركة قدر الإمكان)
-    $src = match ($type) {
-        IMAGETYPE_JPEG => @imagecreatefromjpeg($path),
-        IMAGETYPE_PNG => @imagecreatefrompng($path),
-        IMAGETYPE_WEBP => function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($path) : null,
-        IMAGETYPE_GIF => @imagecreatefromgif($path),
-        default => null,
-    };
-    if (!$src) return;
-    if ($needsResize) {
-        $ratio = min($maxDim / $w, $maxDim / $h);
-        $nw = max(1, (int)round($w * $ratio));
-        $nh = max(1, (int)round($h * $ratio));
-        $dst = imagecreatetruecolor($nw, $nh);
-        if ($type === IMAGETYPE_PNG || $type === IMAGETYPE_GIF) {
-            imagealphablending($dst, false);
-            imagesavealpha($dst, true);
+    // الصور الكبيرة (مثل أيقونات التطبيقات عالية الدقة) قد تستهلك ذاكرة GD أكثر من الحد الافتراضي
+    // وتُجمّد الطلب؛ نرفع الحدود مؤقتاً هنا فقط ثم نعيدها كما كانت بعد الانتهاء.
+    $prevMemLimit = @ini_get('memory_limit');
+    @ini_set('memory_limit', '512M');
+    @set_time_limit(60);
+    try {
+        $info = @getimagesize($path);
+        if (!$info) return;
+        [$w, $h, $type] = $info;
+        $needsResize = $w > $maxDim || $h > $maxDim;
+        if ($type === IMAGETYPE_GIF && !$needsResize) return; // لا نعيد ترميز gif إلا عند الحاجة لتصغيره (حفاظاً على الحركة قدر الإمكان)
+        $src = match ($type) {
+            IMAGETYPE_JPEG => @imagecreatefromjpeg($path),
+            IMAGETYPE_PNG => @imagecreatefrompng($path),
+            IMAGETYPE_WEBP => function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($path) : null,
+            IMAGETYPE_GIF => @imagecreatefromgif($path),
+            default => null,
+        };
+        if (!$src) return;
+        if ($needsResize) {
+            $ratio = min($maxDim / $w, $maxDim / $h);
+            $nw = max(1, (int)round($w * $ratio));
+            $nh = max(1, (int)round($h * $ratio));
+            $dst = imagecreatetruecolor($nw, $nh);
+            if ($type === IMAGETYPE_PNG || $type === IMAGETYPE_GIF) {
+                imagealphablending($dst, false);
+                imagesavealpha($dst, true);
+            }
+            imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+            imagedestroy($src);
+            $src = $dst;
         }
-        imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+        switch ($type) {
+            case IMAGETYPE_JPEG: imagejpeg($src, $path, $quality); break;
+            case IMAGETYPE_PNG: imagepng($src, $path, 6); break;
+            case IMAGETYPE_WEBP: if (function_exists('imagewebp')) imagewebp($src, $path, $quality); break;
+            case IMAGETYPE_GIF: imagegif($src, $path); break;
+        }
         imagedestroy($src);
-        $src = $dst;
+    } finally {
+        if ($prevMemLimit !== false) @ini_set('memory_limit', $prevMemLimit);
     }
-    switch ($type) {
-        case IMAGETYPE_JPEG: imagejpeg($src, $path, $quality); break;
-        case IMAGETYPE_PNG: imagepng($src, $path, 6); break;
-        case IMAGETYPE_WEBP: if (function_exists('imagewebp')) imagewebp($src, $path, $quality); break;
-        case IMAGETYPE_GIF: imagegif($src, $path); break;
-    }
-    imagedestroy($src);
 }
 
 // تنزيل صورة المنتج من سيرفر المزوّد محلياً مرة واحدة عند المزامنة، حتى لا يضطر متصفح المستخدم
@@ -1841,6 +1867,19 @@ if ($action && str_starts_with($action, 'admin_')) {
             }
             flash('تم حفظ الإعدادات.');
             redirect('?page=admin&tab=' . $redirectTab);
+
+        case 'admin_clear_cache':
+            $cacheDir = __DIR__ . '/uploads/cache';
+            $cleared = 0;
+            if (is_dir($cacheDir)) {
+                foreach (glob($cacheDir . '/*') as $f) {
+                    if (is_file($f) && @unlink($f)) $cleared++;
+                }
+            }
+            if (function_exists('opcache_reset')) @opcache_reset();
+            clearstatcache();
+            flash("تم تفريغ الذاكرة المؤقتة بنجاح ($cleared ملف محذوف).");
+            redirect('?page=admin&tab=settings');
 
         case 'admin_save_page':
             $mTitle = trim($_POST['meta_title'] ?? '');
@@ -3745,6 +3784,10 @@ case 'admin':
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()"><?= icon('check', 'ic-sm') ?>حفظ الإعدادات</button>
           <button type="button" class="btn btn-ghost" onclick="testOpenRouter()"><?= icon('rocket', 'ic-sm') ?>اختبار الاتصال بـ OpenRouter</button>
+          <form method="post" action="?action=admin_clear_cache" style="display:inline">
+            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+            <button type="submit" class="btn btn-ghost"><?= icon('rocket', 'ic-sm') ?>تفريغ الذاكرة المؤقتة (Cache Clear)</button>
+          </form>
         </div>
         <hr style="border-color:#341c22;margin:18px 0">
         <h4 style="margin:0 0 8px">مفاتيح OpenRouter API (عدد غير محدود)</h4>
@@ -3762,7 +3805,7 @@ case 'admin':
             <tr>
               <td><?= e($ok['label'] ?: '—') ?></td>
               <td><code><?= e(substr($ok['api_key'], 0, 8)) ?>••••<?= e(substr($ok['api_key'], -4)) ?></code></td>
-              <td><?= $ok['active'] ? '<span style="color:#7fdc8f">مفعّل</span>' : '<span style="color:var(--muted)">معطّل</span>' ?></td>
+              <td><?= $ok['active'] ? '<span style="color:#22c55e">مفعّل</span>' : '<span style="color:var(--muted)">معطّل</span>' ?></td>
               <td style="color:var(--muted);font-size:12px"><?= e($ok['last_error'] ?: '—') ?></td>
               <td style="display:flex;gap:6px">
                 <form method="post" action="?action=admin_toggle_openrouter_key" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ok['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form>
@@ -3845,7 +3888,7 @@ function switchAuthTab(tab){
   if (rb) rb.classList.toggle('active', tab === 'register');
 }
 function requireLogin(){ openAuthModal(); return false; }
-window.addEventListener('load', () => {
+document.addEventListener('DOMContentLoaded', () => {
   const pl = document.getElementById('preloader');
   const bar = document.getElementById('plBar'), pct = document.getElementById('plPct');
   if (bar && pct) {
@@ -3973,12 +4016,12 @@ async function applyCoupon(){
   const res = await post('api_validate_coupon', d);
   if (res.ok) {
     buyAppliedCoupon = code;
-    msgEl.style.color = '#2ecc71';
+    msgEl.style.color = '#22c55e';
     msgEl.textContent = 'تم تطبيق خصم ' + res.discount_percent + '%';
     document.getElementById('buyFinalPrice').textContent = res.new_price + '$';
   } else {
     buyAppliedCoupon = null;
-    msgEl.style.color = '#e74c3c';
+    msgEl.style.color = 'var(--danger)';
     msgEl.textContent = res.msg || 'كود غير صالح';
     document.getElementById('buyFinalPrice').textContent = buyProductPrice + '$';
   }
