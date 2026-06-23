@@ -656,6 +656,45 @@ function satofill_fetch_catalog(): array
     return $data;
 }
 
+// ضغط/تصغير الصور المرفوعة لتقليل حجمها وتسريع تحميلها (السبب الرئيسي لتجمّد الموقع أثناء عرض الصور).
+// يُعاد ترميز الصورة بجودة مضغوطة وتُصغَّر أبعادها إذا تجاوزت الحد الأقصى، مع الحفاظ على نوع الملف.
+function compress_image_file(string $path, int $maxDim = 1280, int $quality = 75): void
+{
+    $info = @getimagesize($path);
+    if (!$info) return;
+    [$w, $h, $type] = $info;
+    $needsResize = $w > $maxDim || $h > $maxDim;
+    if ($type === IMAGETYPE_GIF && !$needsResize) return; // لا نعيد ترميز gif إلا عند الحاجة لتصغيره (حفاظاً على الحركة قدر الإمكان)
+    $src = match ($type) {
+        IMAGETYPE_JPEG => @imagecreatefromjpeg($path),
+        IMAGETYPE_PNG => @imagecreatefrompng($path),
+        IMAGETYPE_WEBP => function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($path) : null,
+        IMAGETYPE_GIF => @imagecreatefromgif($path),
+        default => null,
+    };
+    if (!$src) return;
+    if ($needsResize) {
+        $ratio = min($maxDim / $w, $maxDim / $h);
+        $nw = max(1, (int)round($w * $ratio));
+        $nh = max(1, (int)round($h * $ratio));
+        $dst = imagecreatetruecolor($nw, $nh);
+        if ($type === IMAGETYPE_PNG || $type === IMAGETYPE_GIF) {
+            imagealphablending($dst, false);
+            imagesavealpha($dst, true);
+        }
+        imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+        imagedestroy($src);
+        $src = $dst;
+    }
+    switch ($type) {
+        case IMAGETYPE_JPEG: imagejpeg($src, $path, $quality); break;
+        case IMAGETYPE_PNG: imagepng($src, $path, 6); break;
+        case IMAGETYPE_WEBP: if (function_exists('imagewebp')) imagewebp($src, $path, $quality); break;
+        case IMAGETYPE_GIF: imagegif($src, $path); break;
+    }
+    imagedestroy($src);
+}
+
 // تنزيل صورة المنتج من سيرفر المزوّد محلياً مرة واحدة عند المزامنة، حتى لا يضطر متصفح المستخدم
 // لتحميلها من سيرفر بطيء/بعيد كل مرة (هذا هو السبب الرئيسي لبطء ظهور صور المنتجات).
 function cache_remote_image(string $url): string
@@ -678,6 +717,7 @@ function cache_remote_image(string $url): string
     $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
     if (!isset($allowed[$mime])) { unlink($tmp); return $url; }
     rename($tmp, $destFile);
+    compress_image_file($destFile);
     return 'uploads/cache/' . $filename;
 }
 
@@ -1223,6 +1263,7 @@ if ($action && str_starts_with($action, 'api_')) {
             if (!is_dir($destDir)) mkdir($destDir, 0755, true);
             $filename = bin2hex(random_bytes(8)) . '.' . $allowed[$mime];
             move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
+            compress_image_file($destDir . '/' . $filename);
             echo json_encode(['ok' => true, 'url' => 'uploads/receipts/' . $filename]);
             exit;
 
@@ -1241,6 +1282,7 @@ if ($action && str_starts_with($action, 'api_')) {
             if (!is_dir($destDir)) mkdir($destDir, 0755, true);
             $filename = bin2hex(random_bytes(8)) . '.' . $allowed[$mime];
             move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
+            compress_image_file($destDir . '/' . $filename, 600, 80);
             $url = 'uploads/avatars/' . $filename;
             db()->prepare("UPDATE users SET avatar=? WHERE id=?")->execute([$url, $u['id']]);
             echo json_encode(['ok' => true, 'url' => $url, 'msg' => 'تم تحديث صورة الملف الشخصي.']);
@@ -1354,6 +1396,7 @@ if ($action === 'admin_upload') {
     if (!is_dir($destDir)) mkdir($destDir, 0755, true);
     $filename = bin2hex(random_bytes(8)) . '.' . $allowed[$mime];
     move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
+    compress_image_file($destDir . '/' . $filename, $dir === 'site' ? 400 : 1600, 78);
     $url = 'uploads/' . $dir . '/' . $filename;
     $admin = current_user();
     log_activity((int)$admin['id'], $admin['name'] ?: $admin['username'], $field, $f['name'], $url);
@@ -1409,6 +1452,7 @@ function openrouter_image(string $prompt): array
     if (!is_dir($destDir)) mkdir($destDir, 0755, true);
     $filename = bin2hex(random_bytes(8)) . '.' . $ext;
     file_put_contents($destDir . '/' . $filename, $bytes);
+    compress_image_file($destDir . '/' . $filename, 1280, 78);
     return ['ok' => true, 'url' => 'uploads/products/' . $filename];
 }
 
