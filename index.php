@@ -263,6 +263,35 @@ function migrate(): void
     add_column_if_missing($pdo, 'users', 'signup_fingerprint', 'VARCHAR(64) NULL');
     add_column_if_missing($pdo, 'users', 'referral_bonus_given', 'INT NOT NULL DEFAULT 0');
 
+    // فهارس على الأعمدة الأكثر استخداماً في الاستعلامات لتسريع تحميل الصفحات وتقليل تجمّد الموقع
+    $indexes = [
+        'idx_users_email' => ['users', 'email'],
+        'idx_users_username' => ['users', 'username'],
+        'idx_users_referred_by' => ['users', 'referred_by'],
+        'idx_products_category' => ['products', 'category_id'],
+        'idx_products_status' => ['products', 'status'],
+        'idx_orders_user' => ['orders', 'user_id'],
+        'idx_orders_product' => ['orders', 'product_id'],
+        'idx_orders_status' => ['orders', 'status'],
+        'idx_topups_user' => ['topup_requests', 'user_id'],
+        'idx_topups_status' => ['topup_requests', 'status'],
+        'idx_withdraws_user' => ['withdraw_requests', 'user_id'],
+        'idx_withdraws_status' => ['withdraw_requests', 'status'],
+        'idx_wallets_type_active' => ['wallets', 'type, active'],
+        'idx_earnlogs_user' => ['earn_logs', 'user_id'],
+        'idx_reviews_product' => ['reviews', 'product_id'],
+    ];
+    foreach ($indexes as $name => [$table, $cols]) {
+        try {
+            if (DB_DRIVER === 'sqlite') {
+                $pdo->exec("CREATE INDEX IF NOT EXISTS $name ON $table ($cols)");
+            } else {
+                $exists = $pdo->query("SHOW INDEX FROM $table WHERE Key_name = '$name'")->fetch();
+                if (!$exists) $pdo->exec("CREATE INDEX $name ON $table ($cols)");
+            }
+        } catch (Throwable $e) {}
+    }
+
     $pdo->exec("CREATE TABLE IF NOT EXISTS product_suggestions (
         id " . (DB_DRIVER === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INT AUTO_INCREMENT PRIMARY KEY') . ",
         user_id INT NOT NULL,
@@ -344,6 +373,18 @@ function migrate(): void
     if ($shamCount === 0) {
         $pdo->prepare("INSERT INTO wallets (type, label, address, active) VALUES (?,?,?,0)")
             ->execute(['sham', 'الشام كاش (شحن المحفظة)', 'ضع رقم محفظتك من لوحة الإدارة']);
+    }
+    // تصحيح بيانات قديمة: إن وُجدت أكثر من محفظة مفعّلة لنفس وسيلة الدفع (مثل ظهور الشام كاش مرتين)، نُبقي الأحدث فقط مفعّلة
+    $dupTypes = $pdo->query("SELECT type FROM wallets WHERE active=1 GROUP BY type HAVING COUNT(*) > 1")->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($dupTypes as $dupType) {
+        $st = $pdo->prepare("SELECT id FROM wallets WHERE type=? AND active=1 ORDER BY id DESC");
+        $st->execute([$dupType]);
+        $ids = $st->fetchAll(PDO::FETCH_COLUMN);
+        array_shift($ids);
+        if ($ids) {
+            $pdo->prepare("UPDATE wallets SET active=0 WHERE id IN (" . implode(',', array_fill(0, count($ids), '?')) . ")")
+                ->execute($ids);
+        }
     }
 
     $productCount = (int)$pdo->query("SELECT COUNT(*) c FROM products")->fetch()['c'];
@@ -469,6 +510,11 @@ function wallet_type_label(string $type): array
         'sham' => ['الشام كاش', 'wallet'],
         'binance' => ['Binance Pay', 'coins'],
         'crypto' => ['عملات مشفرة', 'coins'],
+        'payeer' => ['Payeer', 'wallet'],
+        'syriatel_cash' => ['سيرياتيل كاش', 'wallet'],
+        'mtn_cash' => ['MTN كاش', 'wallet'],
+        'bank_transfer' => ['حوالة بنكية', 'bank'],
+        'western_union' => ['ويسترن يونيون', 'bank'],
     ];
     return $map[$type] ?? [$type, 'wallet'];
 }
@@ -1586,13 +1632,21 @@ if ($action && str_starts_with($action, 'admin_')) {
             redirect('?page=admin&tab=withdraws');
 
         case 'admin_save_wallet':
+            // ضمان عدم تفعيل أكثر من محفظة واحدة لنفس وسيلة الدفع (مثل الشام كاش) في نفس الوقت
+            db()->prepare("UPDATE wallets SET active=0 WHERE type=?")->execute([$_POST['type']]);
             db()->prepare("INSERT INTO wallets (type, label, address) VALUES (?,?,?)")
                 ->execute([$_POST['type'], $_POST['label'], $_POST['address']]);
             flash('تمت إضافة المحفظة.');
             redirect('?page=admin&tab=wallets');
 
         case 'admin_toggle_wallet':
-            db()->prepare("UPDATE wallets SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
+            $wid = (int)$_POST['id'];
+            $st = db()->prepare("SELECT type, active FROM wallets WHERE id=?"); $st->execute([$wid]);
+            $row = $st->fetch();
+            if ($row && !$row['active']) {
+                db()->prepare("UPDATE wallets SET active=0 WHERE type=?")->execute([$row['type']]);
+            }
+            db()->prepare("UPDATE wallets SET active = 1 - active WHERE id=?")->execute([$wid]);
             redirect('?page=admin&tab=wallets');
 
         case 'admin_delete_wallet':
@@ -2649,6 +2703,11 @@ case 'wallet':
         <option value="sham" <?= $user['wallet_type'] === 'sham' ? 'selected' : '' ?>>الشام كاش (افتراضي)</option>
         <option value="usdt" <?= $user['wallet_type'] === 'usdt' ? 'selected' : '' ?>>USDT (TRC20)</option>
         <option value="binance" <?= $user['wallet_type'] === 'binance' ? 'selected' : '' ?>>Binance Pay</option>
+        <option value="payeer" <?= $user['wallet_type'] === 'payeer' ? 'selected' : '' ?>>Payeer</option>
+        <option value="syriatel_cash" <?= $user['wallet_type'] === 'syriatel_cash' ? 'selected' : '' ?>>سيرياتيل كاش</option>
+        <option value="mtn_cash" <?= $user['wallet_type'] === 'mtn_cash' ? 'selected' : '' ?>>MTN كاش</option>
+        <option value="bank_transfer" <?= $user['wallet_type'] === 'bank_transfer' ? 'selected' : '' ?>>حوالة بنكية</option>
+        <option value="western_union" <?= $user['wallet_type'] === 'western_union' ? 'selected' : '' ?>>ويسترن يونيون</option>
         <option value="crypto" <?= $user['wallet_type'] === 'crypto' ? 'selected' : '' ?>>عملة مشفرة أخرى</option>
       </select>
       <input id="wAddr" value="<?= e($user['wallet_address']) ?>" placeholder="عنوان المحفظة / رقم الحساب">
@@ -3133,7 +3192,7 @@ case 'admin':
         <h3><?= icon('plus', 'ic') ?>إضافة محفظة استقبال</h3>
         <form method="post" action="?action=admin_save_wallet" class="formrow">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <select name="type"><option value="usdt">USDT (TRC20)</option><option value="sham">الشام كاش</option><option value="binance">Binance Pay</option><option value="crypto">عملات مشفرة أخرى</option></select>
+          <select name="type"><option value="usdt">USDT (TRC20)</option><option value="sham">الشام كاش</option><option value="binance">Binance Pay</option><option value="payeer">Payeer</option><option value="syriatel_cash">سيرياتيل كاش</option><option value="mtn_cash">MTN كاش</option><option value="bank_transfer">حوالة بنكية</option><option value="western_union">ويسترن يونيون</option><option value="crypto">عملات مشفرة أخرى</option></select>
           <input name="label" placeholder="اسم/وصف">
           <input name="address" placeholder="العنوان / رقم المحفظة">
           <button class="btn btn-primary">حفظ</button>
