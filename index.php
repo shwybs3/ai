@@ -387,6 +387,35 @@ function migrate(): void
         }
     }
 
+    $bannerCount = (int)$pdo->query("SELECT COUNT(*) c FROM banners")->fetch()['c'];
+    if ($bannerCount === 0) {
+        $bannerDir = __DIR__ . '/uploads/banners';
+        if (!is_dir($bannerDir)) mkdir($bannerDir, 0755, true);
+        $bannerSeeds = [
+            ['تسوّق الآن واربح نقاطاً', '#e6294b', '#ff4d4d'],
+            ['اسحب أرباحك فوراً', '#1e63d6', '#3fa9f5'],
+            ['عروض حصرية كل يوم', '#1ea672', '#34d399'],
+        ];
+        foreach ($bannerSeeds as $i => [$text, $c1, $c2]) {
+            $w = 1200; $h = 360;
+            $im = imagecreatetruecolor($w, $h);
+            [$r1, $g1, $b1] = sscanf($c1, "#%02x%02x%02x");
+            [$r2, $g2, $b2] = sscanf($c2, "#%02x%02x%02x");
+            for ($x = 0; $x < $w; $x++) {
+                $ratio = $x / $w;
+                $col = imagecolorallocate($im, (int)($r1 + ($r2 - $r1) * $ratio), (int)($g1 + ($g2 - $g1) * $ratio), (int)($b1 + ($b2 - $b1) * $ratio));
+                imageline($im, $x, 0, $x, $h, $col);
+            }
+            $white = imagecolorallocate($im, 255, 255, 255);
+            imagestring($im, 5, 40, (int)($h / 2) - 8, $text, $white);
+            $filename = 'seed_banner_' . ($i + 1) . '.jpg';
+            imagejpeg($im, $bannerDir . '/' . $filename, 85);
+            imagedestroy($im);
+            $pdo->prepare("INSERT INTO banners (image, link, sort_order) VALUES (?,?,?)")
+                ->execute(['uploads/banners/' . $filename, null, $i]);
+        }
+    }
+
     $productCount = (int)$pdo->query("SELECT COUNT(*) c FROM products")->fetch()['c'];
     if ($productCount === 0) {
         $seedCats = ['الألعاب', 'بطاقات الهدايا', 'الاشتراكات', 'التطبيقات والخدمات', 'عام'];
@@ -490,6 +519,45 @@ function migrate(): void
     $exists = $pdo->prepare("SELECT 1 FROM products WHERE name = ?");
     $insReq = $pdo->prepare("INSERT INTO products (name, icon, price, old_price, category_id, status) VALUES (?,?,?,?,?,'active')");
     foreach ($highDemandProducts as [$pname, $picon, $price, $oldPrice, $pcat]) {
+        $exists->execute([$pname]);
+        if ($exists->fetch()) continue;
+        $insReq->execute([$pname, $picon, $price, $oldPrice, $reqCatIds[$pcat] ?? null]);
+    }
+
+    // تكملة كل قسم حتى يصل لحوالي 20 منتجاً (إضافة مرة واحدة فقط لكل منتج، حتى على موقع يعمل مسبقاً)
+    $catalogFillProducts = [
+        ['بطاقة Valorant Points 10$', '🎮', 11, null, 'بطاقات الهدايا'],
+        ['بطاقة فري فاير الذهبية', '💎', 6, null, 'بطاقات الهدايا'],
+        ['بطاقة Razer Gold 10$', '🎮', 11, null, 'بطاقات الهدايا'],
+        ['بطاقة Garena Shells', '🛡️', 6, null, 'بطاقات الهدايا'],
+        ['بطاقة eBay 25$', '🛒', 27, null, 'بطاقات الهدايا'],
+        ['بطاقة Walmart 25$', '🛒', 27, null, 'بطاقات الهدايا'],
+        ['بطاقة Target 25$', '🎯', 27, null, 'بطاقات الهدايا'],
+        ['بطاقة Roblox 25$', '🧩', 27, 30, 'بطاقات الهدايا'],
+        ['اشتراك Twitch Turbo شهر', '🎮', 9, null, 'الاشتراكات'],
+        ['اشتراك Hulu شهر', '🎬', 6, null, 'الاشتراكات'],
+        ['اشتراك HBO Max شهر', '🎬', 8, null, 'الاشتراكات'],
+        ['اشتراك Audible شهر', '🎧', 8, null, 'الاشتراكات'],
+        ['اشتراك NordVPN سنة', '🔒', 35, 40, 'الاشتراكات'],
+        ['شحن متابعين تويتر 1000', '🐦', 4, 5, 'التطبيقات والخدمات'],
+        ['شحن مشاهدات يوتيوب 1000', '▶️', 2, null, 'التطبيقات والخدمات'],
+        ['اشتراك Notion Plus شهر', '📝', 5, null, 'التطبيقات والخدمات'],
+        ['اشتراك Canva Teams شهر', '🎨', 8, null, 'التطبيقات والخدمات'],
+        ['شحن رصيد فودافون مصر', '📱', 5.5, null, 'عام'],
+        ['شحن رصيد أورنج مصر', '📱', 5.5, null, 'عام'],
+        ['شحن رصيد STC السعودية', '📱', 5.5, null, 'عام'],
+        ['شحن رصيد موبايلي السعودية', '📱', 5.5, null, 'عام'],
+        ['شحن رصيد زين السعودية', '📱', 5.5, null, 'عام'],
+        ['شحن رصيد دو الإمارات', '📱', 5.5, null, 'عام'],
+        ['شحن رصيد اتصالات الإمارات', '📱', 5.5, null, 'عام'],
+        ['شحن رصيد Ooredoo قطر', '📱', 5.5, null, 'عام'],
+        ['شحن رصيد Zain العراق', '📱', 5.5, null, 'عام'],
+        ['بطاقة Visa افتراضية 25$', '💳', 27, null, 'عام'],
+        ['بطاقة Visa افتراضية 50$', '💳', 53, 58, 'عام'],
+        ['قسيمة شحن عام 25$', '🎁', 27, null, 'عام'],
+        ['قسيمة شحن عام 50$', '🎁', 53, 58, 'عام'],
+    ];
+    foreach ($catalogFillProducts as [$pname, $picon, $price, $oldPrice, $pcat]) {
         $exists->execute([$pname]);
         if ($exists->fetch()) continue;
         $insReq->execute([$pname, $picon, $price, $oldPrice, $reqCatIds[$pcat] ?? null]);
@@ -3423,8 +3491,20 @@ case 'admin':
           <label>نص زر الشراء<input name="buy_button_text" value="<?= e(setting('buy_button_text')) ?>"></label>
           <label>نص عدم وجود منتجات<input name="empty_products_text" value="<?= e(setting('empty_products_text')) ?>"></label>
           <label>نص أسفل الصفحة (الفوتر، اتركه فارغاً للنص الافتراضي)<input name="footer_text" value="<?= e(setting('footer_text')) ?>" placeholder="© 2026 Yassota — جميع الحقوق محفوظة"></label>
-          <label>اللون الأساسي للموقع<input type="color" name="theme_accent_color" value="<?= e(setting('theme_accent_color')) ?>"></label>
-          <label>لون التمييز الثانوي<input type="color" name="theme_accent2_color" value="<?= e(setting('theme_accent2_color')) ?>"></label>
+          <label>ثيمات جاهزة (اختر ثيماً لتعبئة الألوان تلقائياً)
+            <select onchange="applyThemePreset(this.value)">
+              <option value="">— اختر ثيماً جاهزاً —</option>
+              <option value="#e6294b,#ff4d4d">كلاسيك أحمر</option>
+              <option value="#1e63d6,#3fa9f5">أزرق محيطي</option>
+              <option value="#1ea672,#34d399">أخضر طبيعي</option>
+              <option value="#7c3aed,#a855f7">بنفسجي ملكي</option>
+              <option value="#d97706,#fbbf24">برتقالي غروب</option>
+              <option value="#0f172a,#d4af37">أسود وذهبي</option>
+              <option value="#db2777,#f472b6">وردي نابض</option>
+            </select>
+          </label>
+          <label>اللون الأساسي للموقع<input type="color" id="themeAccentColor" name="theme_accent_color" value="<?= e(setting('theme_accent_color')) ?>"></label>
+          <label>لون التمييز الثانوي<input type="color" id="themeAccent2Color" name="theme_accent2_color" value="<?= e(setting('theme_accent2_color')) ?>"></label>
           <label>نسبة هامش ربح Satofill %<input type="number" step="0.1" name="satofill_markup_percent" value="<?= e(setting('satofill_markup_percent', 15)) ?>"></label>
           <label>تفعيل الإعلانات (عند ضغط زر فقط)
             <select name="ad_enabled">
@@ -3613,6 +3693,12 @@ function toast(msg){
 }
 function acceptPolicy(){
   fetch('?action=accept_policy').then(() => document.getElementById('policyModal').remove());
+}
+function applyThemePreset(val){
+  if (!val) return;
+  const [c1, c2] = val.split(',');
+  document.getElementById('themeAccentColor').value = c1;
+  document.getElementById('themeAccent2Color').value = c2;
 }
 async function post(action, data){
   data.append('csrf', CSRF);
