@@ -232,6 +232,21 @@ function migrate(): void
         last_error VARCHAR(255) NULL,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS providers (
+        id $id,
+        name VARCHAR(120) NOT NULL,
+        public_key VARCHAR(255) NULL,
+        private_key VARCHAR(255) NULL,
+        db_driver VARCHAR(20) NOT NULL DEFAULT 'mysql',
+        db_host VARCHAR(255) NULL,
+        db_port VARCHAR(10) NULL,
+        db_name VARCHAR(120) NULL,
+        db_user VARCHAR(120) NULL,
+        db_pass VARCHAR(255) NULL,
+        active TINYINT NOT NULL DEFAULT 1,
+        last_test_result VARCHAR(255) NULL,
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -1818,6 +1833,70 @@ if ($action && str_starts_with($action, 'admin_')) {
             db()->prepare("DELETE FROM openrouter_keys WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=settings');
 
+        case 'admin_save_provider':
+            $pName = trim((string)($_POST['name'] ?? ''));
+            if ($pName === '') { flash('اسم المزوّد مطلوب.'); redirect('?page=admin&tab=providers'); }
+            $pid = (int)($_POST['id'] ?? 0);
+            $publicKey = trim((string)($_POST['public_key'] ?? ''));
+            $privateKey = (string)($_POST['private_key'] ?? '');
+            $dbPass = (string)($_POST['db_pass'] ?? '');
+            $fields = [
+                'name' => $pName,
+                'public_key' => $publicKey,
+                'db_driver' => in_array($_POST['db_driver'] ?? '', ['mysql', 'pgsql', 'sqlite']) ? $_POST['db_driver'] : 'mysql',
+                'db_host' => trim((string)($_POST['db_host'] ?? '')),
+                'db_port' => trim((string)($_POST['db_port'] ?? '')),
+                'db_name' => trim((string)($_POST['db_name'] ?? '')),
+                'db_user' => trim((string)($_POST['db_user'] ?? '')),
+            ];
+            if ($pid > 0) {
+                $sets = [];
+                $vals = [];
+                foreach ($fields as $k => $v) { $sets[] = "$k=?"; $vals[] = $v; }
+                if ($privateKey !== '') { $sets[] = 'private_key=?'; $vals[] = $privateKey; }
+                if ($dbPass !== '') { $sets[] = 'db_pass=?'; $vals[] = $dbPass; }
+                $vals[] = $pid;
+                db()->prepare("UPDATE providers SET " . implode(',', $sets) . " WHERE id=?")->execute($vals);
+                flash('تم تحديث المزوّد.');
+            } else {
+                db()->prepare("INSERT INTO providers (name, public_key, private_key, db_driver, db_host, db_port, db_name, db_user, db_pass) VALUES (?,?,?,?,?,?,?,?,?)")
+                    ->execute([$fields['name'], $fields['public_key'], $privateKey, $fields['db_driver'], $fields['db_host'], $fields['db_port'], $fields['db_name'], $fields['db_user'], $dbPass]);
+                flash('تمت إضافة المزوّد.');
+            }
+            redirect('?page=admin&tab=providers');
+
+        case 'admin_toggle_provider':
+            db()->prepare("UPDATE providers SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=providers');
+
+        case 'admin_delete_provider':
+            db()->prepare("DELETE FROM providers WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=providers');
+
+        case 'admin_test_provider_connection':
+            $prov = db()->prepare("SELECT * FROM providers WHERE id=?");
+            $prov->execute([(int)$_POST['id']]);
+            $prov = $prov->fetch();
+            if (!$prov) { flash('المزوّد غير موجود.'); redirect('?page=admin&tab=providers'); }
+            $result = 'فشل: بيانات الاتصال ناقصة.';
+            if ($prov['db_host'] && $prov['db_name'] && $prov['db_user']) {
+                try {
+                    if ($prov['db_driver'] === 'sqlite') {
+                        new PDO('sqlite:' . $prov['db_name']);
+                    } else {
+                        $port = $prov['db_port'] ? ';port=' . $prov['db_port'] : '';
+                        $dsn = $prov['db_driver'] . ':host=' . $prov['db_host'] . $port . ';dbname=' . $prov['db_name'];
+                        new PDO($dsn, $prov['db_user'], (string)$prov['db_pass'], [PDO::ATTR_TIMEOUT => 5]);
+                    }
+                    $result = 'نجح الاتصال بنجاح ✓';
+                } catch (Throwable $e) {
+                    $result = 'فشل الاتصال: تحقق من بيانات الاعتماد والشبكة.';
+                }
+            }
+            db()->prepare("UPDATE providers SET last_test_result=? WHERE id=?")->execute([$result, (int)$prov['id']]);
+            flash($result);
+            redirect('?page=admin&tab=providers');
+
         case 'admin_save_home_sections':
             set_setting('home_sections_order', preg_replace('/[^a-z_,]/', '', $_POST['order'] ?? ''));
             set_setting('home_sections_hidden', preg_replace('/[^a-z_,]/', '', $_POST['hidden'] ?? ''));
@@ -3176,7 +3255,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'providers'=>['rocket','المزوّدون'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -3685,6 +3764,57 @@ case 'admin':
             </td>
           </tr>
           <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'providers'):
+        $providers = db()->query("SELECT * FROM providers ORDER BY id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h4 style="margin:0 0 8px">إضافة مزوّد جديد</h4>
+        <p style="color:var(--muted);font-size:13px;margin-top:0">كل مزوّد له مفتاح عام، مفتاح خاص، وبيانات اتصال بقاعدة بياناته الخارجية. الحقول الحساسة تبقى محفوظة ولا تُعرض كاملة بعد الحفظ.</p>
+        <form method="post" action="?action=admin_save_provider" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <label>اسم المزوّد<input name="name" placeholder="مثال: مزوّد المنتجات الثاني" required></label>
+          <label>المفتاح العام<input name="public_key" placeholder="public key"></label>
+          <label>المفتاح الخاص<input type="password" name="private_key" placeholder="private key" autocomplete="off"></label>
+          <label>نوع قاعدة البيانات
+            <select name="db_driver">
+              <option value="mysql">MySQL</option>
+              <option value="pgsql">PostgreSQL</option>
+              <option value="sqlite">SQLite</option>
+            </select>
+          </label>
+          <label>عنوان السيرفر (Host)<input name="db_host" placeholder="db.example.com"></label>
+          <label>المنفذ (Port، اختياري)<input name="db_port" placeholder="3306"></label>
+          <label>اسم قاعدة البيانات<input name="db_name" placeholder="provider_db"></label>
+          <label>مستخدم قاعدة البيانات<input name="db_user" placeholder="db_user"></label>
+          <label>كلمة مرور قاعدة البيانات<input type="password" name="db_pass" autocomplete="off"></label>
+          <button class="btn btn-primary"><?= icon('plus', 'ic-sm') ?>إضافة المزوّد</button>
+        </form>
+        <hr style="border-color:#341c22;margin:18px 0">
+        <h4 style="margin:0 0 8px">المزوّدون الحاليون</h4>
+        <table class="admin-table">
+          <thead><tr><th>الاسم</th><th>المفتاح العام</th><th>قاعدة البيانات</th><th>الحالة</th><th>آخر اختبار اتصال</th><th></th></tr></thead>
+          <tbody>
+          <?php foreach ($providers as $pv): ?>
+            <tr>
+              <td><?= e($pv['name']) ?></td>
+              <td><code><?= $pv['public_key'] ? e(substr($pv['public_key'], 0, 6)) . '••••' : '—' ?></code></td>
+              <td style="font-size:12px;color:var(--muted)"><?= e($pv['db_driver']) ?> · <?= e($pv['db_host'] ?: '—') ?> / <?= e($pv['db_name'] ?: '—') ?></td>
+              <td><?= $pv['active'] ? '<span style="color:#22c55e">مفعّل</span>' : '<span style="color:var(--muted)">معطّل</span>' ?></td>
+              <td style="font-size:12px;color:var(--muted)"><?= e($pv['last_test_result'] ?: '—') ?></td>
+              <td style="display:flex;gap:6px;flex-wrap:wrap">
+                <form method="post" action="?action=admin_test_provider_connection" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$pv['id'] ?>"><button class="btn btn-ghost"><?= icon('rocket', 'ic-sm') ?>اختبار الاتصال</button></form>
+                <form method="post" action="?action=admin_toggle_provider" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$pv['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form>
+                <form method="post" action="?action=admin_delete_provider" style="display:inline" onsubmit="return confirm('حذف هذا المزوّد؟')"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$pv['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+          <?php if (!$providers): ?>
+            <tr><td colspan="6" style="color:var(--muted)">لا يوجد مزوّدون مضافون بعد.</td></tr>
+          <?php endif; ?>
+          </tbody>
         </table>
       </div>
 
