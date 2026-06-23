@@ -365,18 +365,24 @@ function migrate(): void
         'support_telegram' => '@layos_he',
         'google_site_verification' => '',
         'openrouter_api_key' => '',
-        'openrouter_model' => 'meta-llama/llama-3.3-70b-instruct:free',
+        'openrouter_model' => 'openai/gpt-4o',
         'openrouter_image_model' => '',
         'product_image_height' => '130',
         'cat_tile_size' => '140',
         'telegram_bot_username' => '',
         'banner_interval' => '4000',
         'banner_height' => '160',
-        'home_sections_order' => 'hero,search,cat_tiles,cat_chips,carousel,ticker,live_ticker,products,soon',
+        'home_sections_order' => 'hero,search,carousel,cat_tiles,cat_chips,ticker,live_ticker,products,soon',
         'home_sections_hidden' => '',
+        'satofill_public_key' => '',
+        'satofill_private_key' => '',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
+    // إصلاح ترتيب الرئيسية القديم: نقل قائمة الأقسام تحت البنرات بدلاً من فوقها، فقط إذا لم يخصص الأدمن ترتيباً مختلفاً عن الافتراضي القديم
+    if (setting('home_sections_order') === 'hero,search,cat_tiles,cat_chips,carousel,ticker,live_ticker,products,soon') {
+        set_setting('home_sections_order', 'hero,search,carousel,cat_tiles,cat_chips,ticker,live_ticker,products,soon');
+    }
 
     $pagesSeed = [
         'privacy' => 'سياسة الخصوصية الخاصة بمنصة Yassota...',
@@ -794,14 +800,16 @@ function csrf_check(): void
 /* ---- Satofill API: مزامنة كتالوج المنتجات مع تطبيق نسبة هامش ربح ---- */
 function satofill_fetch_catalog(): array
 {
-    if (!defined('SATOFILL_API_TOKEN') || !SATOFILL_API_TOKEN) {
-        throw new RuntimeException('SATOFILL_API_TOKEN غير مُعرّف في config.php');
+    // المفتاح الخاص (التوكن) يُضبط من لوحة الإدارة (تبويب المنتجات)؛ يبقى دعم القيمة القديمة من config.php للتوافق الخلفي
+    $token = setting('satofill_private_key') ?: (defined('SATOFILL_API_TOKEN') ? SATOFILL_API_TOKEN : '');
+    if (!$token) {
+        throw new RuntimeException('لم يتم ضبط توكن Satofill (المفتاح الخاص) من لوحة الإدارة.');
     }
     $base = rtrim(setting('satofill_api_base', 'https://satofill.com/api'), '/');
     $ch = curl_init($base . '/products');
     curl_setopt_array($ch, [
         CURLOPT_HTTPHEADER => [
-            'Authorization: Bearer ' . SATOFILL_API_TOKEN,
+            'Authorization: Bearer ' . $token,
             'Accept: application/json',
         ],
         CURLOPT_RETURNTRANSFER => true,
@@ -1625,7 +1633,7 @@ function openrouter_request(array $payload): array
 
 function openrouter_chat(string $prompt): array
 {
-    $model = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
+    $model = setting('openrouter_model', 'openai/gpt-4o');
     $r = openrouter_request([
         'model' => $model,
         'messages' => [['role' => 'user', 'content' => $prompt]],
@@ -1942,6 +1950,7 @@ if ($action && str_starts_with($action, 'admin_')) {
             foreach ($_POST as $k => $v) {
                 if ($k === 'action' || $k === 'csrf' || $k === 'redirect_tab') continue;
                 if ($k === 'bot_token' && $v === '') continue; // حقل التوكن لا يُفرَّغ إذا تُرك خالياً
+                if ($k === 'satofill_private_key' && $v === '') continue; // مفتاح Satofill الخاص لا يُفرَّغ إذا تُرك خالياً
                 set_setting($k, $v);
             }
             flash('تم حفظ الإعدادات.');
@@ -3362,6 +3371,13 @@ case 'admin':
       <div class="admin-box">
         <h3><?= icon('cart', 'ic') ?>مزامنة Satofill</h3>
         <p style="opacity:.7;font-size:13px">يجلب كتالوج المنتجات من Satofill ويضيف نسبة ربح <?= e(setting('satofill_markup_percent', 15)) ?>% على السعر، قابلة للتعديل من تبويب الإعدادات.</p>
+        <form method="post" action="?action=admin_save_settings" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="redirect_tab" value="products">
+          <label>مفتاح Satofill العام (Public Key)<input name="satofill_public_key" value="<?= e(setting('satofill_public_key')) ?>" placeholder="public key"></label>
+          <label>توكن Satofill الخاص (Private Token)<input type="password" name="satofill_private_key" value="" placeholder="<?= setting('satofill_private_key') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'private token' ?>" autocomplete="off"></label>
+          <button class="btn btn-ghost"><?= icon('check', 'ic-sm') ?>حفظ مفاتيح Satofill</button>
+        </form>
         <form method="post" action="?action=admin_satofill_sync">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <button class="btn btn-primary"><?= icon('refresh', 'ic-sm') ?>مزامنة الآن</button>
