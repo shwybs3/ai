@@ -477,6 +477,12 @@ function set_setting(string $k, $v): void
     $st->execute([$k, $v, $v]);
 }
 
+// تُضبط من لوحة تحكم الموقع وتُخزَّن في قاعدة البيانات حتى يقرأهما بوت تيليجرام
+// المستقل (telegram_bot.php) من سيرفر VPS آخر يشارك نفس القاعدة، مع الرجوع
+// لقيم config.php كخيار احتياطي فقط.
+function bot_token(): string { return setting('bot_token') ?: (defined('BOT_TOKEN') ? BOT_TOKEN : ''); }
+function owner_id(): string { return setting('owner_id') ?: (defined('OWNER_ID') ? (string)OWNER_ID : ''); }
+
 function log_activity(int $adminId, string $adminName, string $field, string $filename, string $url): void
 {
     db()->prepare("INSERT INTO activity_log (admin_id, admin_name, field, filename, url) VALUES (?,?,?,?,?)")
@@ -762,7 +768,7 @@ function google_handle_callback(string $code): void
 
 function telegram_handle_login(): void
 {
-    if (!BOT_TOKEN) { flash('تسجيل الدخول بتيليجرام غير مفعّل حالياً.', 'error'); redirect('?page=login'); }
+    if (!bot_token()) { flash('تسجيل الدخول بتيليجرام غير مفعّل حالياً.', 'error'); redirect('?page=login'); }
     $data = $_POST;
     $hash = $data['hash'] ?? '';
     unset($data['hash']);
@@ -772,7 +778,7 @@ function telegram_handle_login(): void
     foreach ($data as $k => $v) $checkArr[] = $k . '=' . $v;
     sort($checkArr);
     $checkString = implode("\n", $checkArr);
-    $secretKey = hash('sha256', BOT_TOKEN, true);
+    $secretKey = hash('sha256', bot_token(), true);
     $computedHash = hash_hmac('sha256', $checkString, $secretKey);
 
     if (!hash_equals($computedHash, $hash)) { flash('تعذّر التحقق من حساب تيليجرام.', 'error'); redirect('?page=login'); }
@@ -1641,6 +1647,19 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .search-bar button{width:44px;border-radius:12px;border:1px solid #3a1c23;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .star-rating{display:flex;gap:2px;color:var(--accent2)}
 .star-rating .ic{width:16px;height:16px}
+.profile-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.profile-stat{display:flex;flex-direction:column;align-items:center;gap:6px;background:#1d0f14;border:1px solid #341c22;border-radius:14px;padding:14px 8px;text-align:center}
+.profile-stat strong{font-size:18px}
+.profile-stat span{color:var(--muted);font-size:12px}
+.profile-info-row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #341c22;font-size:13px}
+.profile-info-row:last-child{border-bottom:none}
+.profile-info-row span{color:var(--muted)}
+.achv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.achv-badge{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;background:#1d0f14;border:1px solid #341c22;color:var(--muted);font-size:13px;opacity:.5}
+.achv-badge.on{opacity:1;color:var(--text);border-color:var(--accent);background:rgba(230,41,75,.1)}
+.achv-badge.on .ic{color:var(--accent2)}
+.balance-pill-sm{display:flex;align-items:center;gap:5px;background:#1d0f14;border:1px solid #341c22;border-radius:20px;padding:6px 12px;font-size:13px;font-weight:700;color:var(--accent2)}
+@media (max-width:480px){.profile-grid{grid-template-columns:repeat(2,1fr)}.achv-grid{grid-template-columns:1fr}}
 .icon-wrap .ic{flex-shrink:0}
 .card img.pimg{display:block;flex-shrink:0}
 .brand .ic{color:var(--accent2)}
@@ -1809,6 +1828,39 @@ input,textarea,select{font-family:inherit}
 @keyframes shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
 
 @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}
+@media (max-width:640px){
+  .admin-box{margin:0 8px 14px;padding:14px;border-radius:14px}
+  .admin-tabs{padding:10px 8px;gap:6px}
+  .admin-tabs a{padding:7px 10px;font-size:12px}
+  .formrow{grid-template-columns:1fr 1fr;gap:8px}
+  .formrow input,.formrow select,.formrow textarea{font-size:13px}
+  table{font-size:11.5px}
+  table th,table td{padding:6px 4px;white-space:nowrap}
+  .stat-card{padding:12px}
+  .stat-card .num{font-size:18px}
+  .section-title{padding:14px 10px 6px;font-size:16px}
+  .btn{padding:9px 14px;font-size:13px}
+  .user-chip span{display:none}
+  .balance-pill-sm{font-size:12px;padding:5px 9px}
+}
+@media (max-width:380px){.formrow{grid-template-columns:1fr}}
+.lb-list{display:flex;flex-direction:column;gap:8px;margin:0 18px 20px}
+.lb-row{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid #341c22;border-radius:14px;padding:12px 14px;animation:fadeUp .5s var(--ease) both}
+.lb-row.lb-rank-1{background:linear-gradient(90deg,rgba(255,194,51,.18),var(--card));border-color:#ffc233}
+.lb-row.lb-rank-2{background:linear-gradient(90deg,rgba(192,192,192,.14),var(--card));border-color:#bdbdbd}
+.lb-row.lb-rank-3{background:linear-gradient(90deg,rgba(205,127,50,.14),var(--card));border-color:#cd7f32}
+.lb-pos{font-size:20px;width:34px;text-align:center;font-weight:800}
+.lb-avatar{width:42px;height:42px;border-radius:50%;object-fit:cover;flex-shrink:0}
+.lb-avatar-ph{display:flex;align-items:center;justify-content:center;background:#341c22}
+.lb-name{flex:1;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb-points{display:flex;align-items:center;gap:5px;color:var(--accent2);font-weight:800;flex-shrink:0}
+.coin-pkgs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+.coin-pkg{display:flex;flex-direction:column;align-items:center;gap:3px;background:#1d0f14;border:1px solid #341c22;border-radius:12px;padding:10px 4px;cursor:pointer;color:var(--text);transition:.2s var(--ease)}
+.coin-pkg:hover{border-color:var(--accent);transform:translateY(-2px)}
+.coin-pkg strong{font-size:14px}
+.coin-pkg span{font-size:10px;color:var(--muted)}
+@media (max-width:480px){.coin-pkgs{grid-template-columns:repeat(2,1fr)}}
+.btn:active{transform:scale(.96)}
 .card img.pimg{height:<?= (int)setting('product_image_height', 130) ?>px}
 .cat-tiles{grid-template-columns:repeat(auto-fill,minmax(<?= (int)setting('cat_tile_size', 140) ?>px,1fr))}
 .banner-carousel-slide img{height:<?= (int)setting('banner_height', 160) ?>px}
@@ -1922,10 +1974,11 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
   <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><?= icon('rocket', 'ic ic-lg') ?><?php endif; ?> <?= e($siteName) ?></a>
   <div class="grow"></div>
   <?php if ($user): ?>
-    <div class="user-chip">
+    <div class="balance-pill-sm"><?= icon('coins', 'ic-sm') ?><?= points_to_usd((int)$user['points']) ?>$</div>
+    <a href="?page=profile" class="user-chip">
       <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>"><?php else: ?><?= icon('user', 'ic ic-sm') ?><?php endif; ?>
       <span><?= e($user['name']) ?></span>
-    </div>
+    </a>
     <a href="?action=logout" class="btn btn-ghost"><?= icon('logout', 'ic ic-sm') ?>خروج</a>
   <?php else: ?>
     <a href="?page=login" class="btn btn-primary"><?= icon('user', 'ic ic-sm') ?>تسجيل الدخول</a>
@@ -1937,11 +1990,14 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
   <div class="sb-head"><strong><?= icon('hat', 'ic-sm') ?> <?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()"><?= icon('close', 'ic') ?></button></div>
   <nav>
     <a href="?"><?= icon('home') ?> الرئيسية</a>
+    <?php if ($user): ?><a href="?page=profile"><?= icon('user') ?> ملفي الشخصي</a><?php endif; ?>
     <a href="?page=earn"><?= icon('coin') ?> اكسب عملات (كابتشا)</a>
     <a href="?page=tasks"><?= icon('tasks') ?> المهام اليومية</a>
     <a href="?page=wallet"><?= icon('wallet') ?> محفظتي</a>
+    <a href="?page=leaderboard"><?= icon('star') ?> المتصدّرون</a>
     <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
     <a href="?page=about"><?= icon('shield') ?> من نحن</a>
+    <a href="?page=faq"><?= icon('doc') ?> الأسئلة الشائعة</a>
     <a href="?page=contact"><?= icon('send') ?> تواصل معنا</a>
     <a href="?page=privacy"><?= icon('lock') ?> سياسة الخصوصية</a>
     <a href="?page=terms"><?= icon('doc') ?> شروط الاستخدام</a>
@@ -2328,9 +2384,19 @@ case 'wallet':
         </div>
       <?php endforeach; ?>
       <select id="topupWallet"><?php foreach ($wallets as $w): ?><option value="<?= (int)$w['id'] ?>"><?= e($w['label']) ?></option><?php endforeach; ?></select>
+      <div class="coin-pkgs">
+        <?php foreach ([5, 10, 25, 50] as $amt): $coinsFor = $amt > 0 ? round($amt / (float)setting('points_rate', 0.001)) : 0; ?>
+          <button type="button" class="coin-pkg" onclick="document.getElementById('topupAmount').value='<?= $amt ?>'"><?= icon('coins', 'ic-sm') ?><strong>$<?= $amt ?></strong><span><?= number_format($coinsFor) ?> عملة</span></button>
+        <?php endforeach; ?>
+      </div>
       <input id="topupAmount" type="number" placeholder="المبلغ بالدولار">
       <input id="topupNote" placeholder="ملاحظة / رقم العملية (اختياري)">
       <button class="btn btn-primary" onclick="requestTopup()"><?= icon('send', 'ic-sm') ?>إرسال طلب الشحن</button>
+    </div>
+
+    <div class="admin-box">
+      <h3><?= icon('users', 'ic') ?>أعلى المتصدّرين</h3>
+      <a href="?page=leaderboard" class="btn btn-ghost" style="width:100%;justify-content:center"><?= icon('star', 'ic-sm') ?>عرض قائمة المتصدّرين</a>
     </div>
 
     <div class="admin-box">
@@ -2370,6 +2436,92 @@ case 'orders':
         <span class="badge <?= e($o['status']) ?>"><?= e($o['status']) ?></span>
       </div>
     <?php endforeach; ?>
+    </div>
+    <?php
+    break;
+
+case 'leaderboard':
+    $top10 = db()->query("SELECT id, username, name, avatar, points FROM users WHERE is_banned=0 ORDER BY points DESC LIMIT 10")->fetchAll();
+    $myRank = null;
+    if ($user) {
+        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE points > ? AND is_banned=0");
+        $st->execute([(int)$user['points']]);
+        $myRank = (int)$st->fetch()['c'] + 1;
+    }
+    $medals = ['🥇', '🥈', '🥉'];
+    ?>
+    <div class="section-title"><?= icon('star', 'ic') ?>أعلى المتصدّرين</div>
+    <?php if ($user): ?>
+    <div class="admin-box" style="text-align:center;background:linear-gradient(135deg,var(--accent),var(--accent2))">
+      <div style="font-size:13px;opacity:.9">ترتيبك الحالي</div>
+      <div style="font-size:28px;font-weight:800">#<?= $myRank ?></div>
+    </div>
+    <?php endif; ?>
+    <div class="lb-list">
+      <?php foreach ($top10 as $i => $row): $rank = $i + 1; ?>
+        <div class="lb-row lb-rank-<?= $rank ?>" style="animation-delay:<?= $i * 60 ?>ms">
+          <div class="lb-pos"><?= $medals[$i] ?? $rank ?></div>
+          <?php if ($row['avatar']): ?><img class="lb-avatar" src="<?= e($row['avatar']) ?>"><?php else: ?><div class="lb-avatar lb-avatar-ph"><?= icon('user', 'ic-sm') ?></div><?php endif; ?>
+          <div class="lb-name"><?= e($row['name'] ?: $row['username']) ?></div>
+          <div class="lb-points"><?= icon('coins', 'ic-sm') ?><?= number_format((int)$row['points']) ?></div>
+        </div>
+      <?php endforeach; ?>
+      <?php if (!$top10): ?><div class="empty">لا يوجد مستخدمون حتى الآن.</div><?php endif; ?>
+    </div>
+    <?php
+    break;
+
+case 'profile':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض ملفك الشخصي.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $pPoints = (int)$user['points'];
+    $pUsd = points_to_usd($pPoints);
+    $st = db()->prepare("SELECT COUNT(*) c FROM orders WHERE user_id=? AND status='approved'"); $st->execute([$user['id']]); $pApprovedOrders = (int)$st->fetch()['c'];
+    $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by=?"); $st->execute([$user['id']]); $pReferrals = (int)$st->fetch()['c'];
+    $st = db()->prepare("SELECT COUNT(*) c FROM earn_logs WHERE user_id=? AND source='captcha'"); $st->execute([$user['id']]); $pCaptchaCount = (int)$st->fetch()['c'];
+    $st = db()->prepare("SELECT COUNT(*) c FROM earn_logs WHERE user_id=? AND source='task'"); $st->execute([$user['id']]); $pTaskCount = (int)$st->fetch()['c'];
+    $st = db()->prepare("SELECT COUNT(*) c FROM reviews WHERE user_id=?"); $st->execute([$user['id']]); $pReviewCount = (int)$st->fetch()['c'];
+    if ($pPoints >= 5000) { $pRank = 'ماسي'; $pRankIcon = '💎'; }
+    elseif ($pPoints >= 2000) { $pRank = 'ذهبي'; $pRankIcon = '🥇'; }
+    elseif ($pPoints >= 500) { $pRank = 'فضي'; $pRankIcon = '🥈'; }
+    else { $pRank = 'برونزي'; $pRankIcon = '🥉'; }
+    $pAchievements = [];
+    $pAchievements[] = ['icon' => 'check', 'label' => 'عضو مسجّل', 'on' => true];
+    $pAchievements[] = ['icon' => 'cart', 'label' => 'أول عملية شراء', 'on' => $pApprovedOrders >= 1];
+    $pAchievements[] = ['icon' => 'send', 'label' => 'مُحيل نشط (3+ دعوات)', 'on' => $pReferrals >= 3];
+    $pAchievements[] = ['icon' => 'coin', 'label' => 'محارب الكابتشا (50+)', 'on' => $pCaptchaCount >= 50];
+    $pAchievements[] = ['icon' => 'tasks', 'label' => 'منجز مهام (10+)', 'on' => $pTaskCount >= 10];
+    $pAchievements[] = ['icon' => 'star', 'label' => 'مُقيّم نشط', 'on' => $pReviewCount >= 1];
+    ?>
+    <div class="section-title"><?= icon('user', 'ic') ?>ملفي الشخصي</div>
+    <div class="admin-box" style="text-align:center;padding:28px 16px">
+      <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>" style="width:90px;height:90px;border-radius:50%;object-fit:cover;border:3px solid var(--accent)"><?php else: ?><div style="width:90px;height:90px;border-radius:50%;background:#341c22;display:flex;align-items:center;justify-content:center;margin:0 auto"><?= icon('user', 'ic-lg') ?></div><?php endif; ?>
+      <h2 style="margin-top:12px"><?= e($user['name'] ?: $user['username']) ?></h2>
+      <div style="color:var(--muted);font-size:13px">@<?= e($user['username']) ?></div>
+      <div style="margin-top:8px;font-size:18px"><?= $pRankIcon ?> رتبة <strong><?= $pRank ?></strong></div>
+    </div>
+    <div class="admin-box">
+      <div class="profile-grid">
+        <div class="profile-stat"><?= icon('coins', 'ic-sm') ?><div><strong><?= $pPoints ?></strong><span>نقطة (<?= $pUsd ?>$)</span></div></div>
+        <div class="profile-stat"><?= icon('cart', 'ic-sm') ?><div><strong><?= $pApprovedOrders ?></strong><span>طلب مكتمل</span></div></div>
+        <div class="profile-stat"><?= icon('send', 'ic-sm') ?><div><strong><?= $pReferrals ?></strong><span>إحالة ناجحة</span></div></div>
+        <div class="profile-stat"><?= icon('star', 'ic-sm') ?><div><strong><?= $pReviewCount ?></strong><span>تقييم</span></div></div>
+      </div>
+    </div>
+    <div class="admin-box">
+      <h3 style="margin-bottom:10px"><?= icon('shield', 'ic-sm') ?>المعلومات</h3>
+      <div class="profile-info-row"><span>البريد الإلكتروني</span><strong><?= e($user['email'] ?: '—') ?></strong></div>
+      <div class="profile-info-row"><span>آيدي الحساب</span><strong>#<?= (int)$user['id'] ?></strong></div>
+      <?php if (!empty($user['telegram_id'])): ?><div class="profile-info-row"><span>آيدي تيليجرام</span><strong><?= e($user['telegram_id']) ?></strong></div><?php endif; ?>
+      <div class="profile-info-row"><span>عضو منذ</span><strong><?= e(substr($user['created_at'] ?? '', 0, 10)) ?></strong></div>
+      <div class="profile-info-row"><span>رابط الإحالة</span><strong style="word-break:break-all"><?= e(SITE_URL . '/?ref=' . $user['referral_code']) ?></strong></div>
+    </div>
+    <div class="admin-box">
+      <h3 style="margin-bottom:10px"><?= icon('gift', 'ic-sm') ?>الإنجازات</h3>
+      <div class="achv-grid">
+        <?php foreach ($pAchievements as $a): ?>
+          <div class="achv-badge<?= $a['on'] ? ' on' : '' ?>"><?= icon($a['icon'], 'ic-sm') ?><span><?= e($a['label']) ?></span></div>
+        <?php endforeach; ?>
+      </div>
     </div>
     <?php
     break;
@@ -2864,6 +3016,8 @@ case 'admin':
           <label>رمز منطقة الإعلان (Zone ID)<input name="ad_zone_id" value="<?= e(setting('ad_zone_id')) ?>"></label>
           <label>تيليجرام خدمة العملاء<input name="support_telegram" value="<?= e(setting('support_telegram')) ?>" placeholder="@username"></label>
           <label>اسم بوت تيليجرام لتسجيل الدخول (بدون @)<input name="telegram_bot_username" value="<?= e(setting('telegram_bot_username')) ?>" placeholder="مثال: YassotaBot"></label>
+          <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="<?= e(setting('bot_token')) ?>" placeholder="من @BotFather"></label>
+          <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
           <label>مفتاح OpenRouter API<input type="password" name="openrouter_api_key" value="<?= e(setting('openrouter_api_key')) ?>" placeholder="sk-or-..."></label>
           <label>موديل OpenRouter<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
@@ -2889,7 +3043,7 @@ case 'admin':
         </div>
         <hr style="border-color:#341c22;margin:18px 0">
         <p style="color:var(--muted);font-size:13px">
-          بيانات قاعدة البيانات وبوت تيليجرام وGoogle OAuth تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي. مفتاح OpenRouter مجاني ويمكن الحصول عليه من openrouter.ai، ويدعم آلاف الموديلات المجانية والمدفوعة لتوليد الوصف وSEO تلقائياً للمنتجات. لتفعيل تسجيل الدخول بتيليجرام: أنشئ بوتاً عبر @BotFather، ضع <code>BOT_TOKEN</code> الخاص به في <code>config.php</code>، واكتب اسم المستخدم للبوت (بدون @) في الحقل أعلاه — كما يجب ضبط دومين الموقع للبوت عبر أمر <code>/setdomain</code> في @BotFather.
+          بيانات قاعدة البيانات وGoogle OAuth تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). توكن البوت وآيدي المالك يتم ضبطهما من الحقلين أعلاه فقط — يقرأهما بوت تيليجرام (<code>telegram_bot.php</code>) مباشرة من قاعدة البيانات حتى لو كان يعمل على سيرفر VPS مستقل تماماً عن هذا الموقع. باقي إعدادات البوت (الرسائل الجماعية، مكافأة الكابتشا، الحد الأدنى للسحب) تُضبط من داخل البوت نفسه بإرسال أمر <code>/admin</code> له (للمالك فقط). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي. مفتاح OpenRouter مجاني ويمكن الحصول عليه من openrouter.ai، ويدعم آلاف الموديلات المجانية والمدفوعة لتوليد الوصف وSEO تلقائياً للمنتجات. لتفعيل تسجيل الدخول بتيليجرام: أنشئ بوتاً عبر @BotFather، ضع توكنه في الحقل أعلاه، واكتب اسم المستخدم للبوت (بدون @) في الحقل المخصص — كما يجب ضبط دومين الموقع للبوت عبر أمر <code>/setdomain</code> في @BotFather.
         </p>
       </div>
     <?php endif; ?>
