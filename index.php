@@ -223,6 +223,15 @@ function migrate(): void
         comment TEXT NULL,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS openrouter_keys (
+        id $id,
+        label VARCHAR(120) NULL,
+        api_key VARCHAR(255) NOT NULL,
+        active TINYINT NOT NULL DEFAULT 1,
+        sort_order INT NOT NULL DEFAULT 0,
+        last_error VARCHAR(255) NULL,
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -413,6 +422,15 @@ function migrate(): void
             imagedestroy($im);
             $pdo->prepare("INSERT INTO banners (image, link, sort_order) VALUES (?,?,?)")
                 ->execute(['uploads/banners/' . $filename, null, $i]);
+        }
+    }
+
+    // ترحيل مفتاح OpenRouter الفردي القديم إلى نظام المفاتيح المتعددة الجديد (مرة واحدة فقط)
+    $oldOrKey = (string)$pdo->query("SELECT v FROM settings WHERE k='openrouter_api_key'")->fetchColumn();
+    if ($oldOrKey !== '') {
+        $orKeysCount = (int)$pdo->query("SELECT COUNT(*) c FROM openrouter_keys")->fetch()['c'];
+        if ($orKeysCount === 0) {
+            $pdo->prepare("INSERT INTO openrouter_keys (label, api_key) VALUES (?,?)")->execute(['مفتاح مستورد', $oldOrKey]);
         }
     }
 
@@ -1519,45 +1537,78 @@ if ($action === 'admin_upload') {
 }
 
 /* ---- OpenRouter AI helpers (admin) ---- */
+function openrouter_active_keys(): array
+{
+    global $pdo;
+    return $pdo->query("SELECT * FROM openrouter_keys WHERE active=1 ORDER BY sort_order ASC, id ASC")->fetchAll();
+}
+
+function openrouter_mark_error(int $keyId, string $msg): void
+{
+    global $pdo;
+    $pdo->prepare("UPDATE openrouter_keys SET last_error=? WHERE id=?")->execute([mb_substr($msg, 0, 255), $keyId]);
+}
+
+/**
+ * يجري الطلب عبر كل المفاتيح النشطة بالتتابع (round-robin بحسب sort_order) حتى ينجح أحدها،
+ * لتفادي توقف الخدمة بالكامل إذا انتهى حد استخدام مفتاح واحد أو تعطّل.
+ */
+function openrouter_request(array $payload): array
+{
+    $keys = openrouter_active_keys();
+    if (!$keys) {
+        // توافق مع الإصدار القديم: مفتاح واحد في الإعدادات
+        $legacy = setting('openrouter_api_key');
+        if (!$legacy) return ['ok' => false, 'msg' => 'لم يتم ضبط أي مفتاح OpenRouter من الإعدادات.'];
+        $keys = [['id' => 0, 'api_key' => $legacy]];
+    }
+    $lastErr = 'تعذر الاتصال بـ OpenRouter.';
+    foreach ($keys as $k) {
+        $res = http_post_json('https://openrouter.ai/api/v1/chat/completions', $payload, [
+            'Authorization: Bearer ' . $k['api_key'],
+            'HTTP-Referer: ' . (defined('SITE_URL') ? SITE_URL : 'https://yassota.com'),
+        ]);
+        $data = json_decode((string)$res['body'], true);
+        $hasContent = !empty($data['choices'][0]['message']['content']) || !empty($data['choices'][0]['message']['images']);
+        if ($hasContent) return ['ok' => true, 'data' => $data];
+        $lastErr = $res['error'] ?: ($data['error']['message'] ?? 'استجابة غير متوقعة من OpenRouter (HTTP ' . $res['code'] . ')');
+        if (!empty($k['id'])) openrouter_mark_error((int)$k['id'], $lastErr);
+        // أخطاء المصادقة/الحصة تستدعي تجربة المفتاح التالي، غير ذلك (مثل خطأ بالموديل) لا فائدة من التكرار
+        $code = (int)($res['code'] ?? 0);
+        if (!in_array($code, [401, 402, 403, 429, 0], true)) break;
+    }
+    return ['ok' => false, 'msg' => $lastErr];
+}
+
 function openrouter_chat(string $prompt): array
 {
-    $key = setting('openrouter_api_key');
     $model = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
-    if (!$key) return ['ok' => false, 'msg' => 'لم يتم ضبط مفتاح OpenRouter من الإعدادات.'];
-    $res = http_post_json('https://openrouter.ai/api/v1/chat/completions', [
+    $r = openrouter_request([
         'model' => $model,
         'messages' => [['role' => 'user', 'content' => $prompt]],
-    ], [
-        'Authorization: Bearer ' . $key,
-        'HTTP-Referer: ' . (defined('SITE_URL') ? SITE_URL : 'https://yassota.com'),
     ]);
-    $data = json_decode((string)$res['body'], true);
+    if (!$r['ok']) return $r;
+    $data = $r['data'];
     if (empty($data['choices'][0]['message']['content'])) {
-        $err = $res['error'] ?: ($data['error']['message'] ?? 'استجابة غير متوقعة من OpenRouter (HTTP ' . $res['code'] . ')');
-        return ['ok' => false, 'msg' => $err];
+        return ['ok' => false, 'msg' => $data['error']['message'] ?? 'استجابة غير متوقعة من OpenRouter.'];
     }
     return ['ok' => true, 'text' => $data['choices'][0]['message']['content']];
 }
 
 function openrouter_image(string $prompt): array
 {
-    $key = setting('openrouter_api_key');
     $model = setting('openrouter_image_model');
-    if (!$key) return ['ok' => false, 'msg' => 'لم يتم ضبط مفتاح OpenRouter من الإعدادات.'];
     if (!$model) return ['ok' => false, 'msg' => 'لم يتم ضبط موديل توليد الصور من الإعدادات.'];
-    $res = http_post_json('https://openrouter.ai/api/v1/chat/completions', [
+    $r = openrouter_request([
         'model' => $model,
         'modalities' => ['image', 'text'],
         'messages' => [['role' => 'user', 'content' => $prompt]],
-    ], [
-        'Authorization: Bearer ' . $key,
-        'HTTP-Referer: ' . (defined('SITE_URL') ? SITE_URL : 'https://yassota.com'),
     ]);
-    $data = json_decode((string)$res['body'], true);
+    if (!$r['ok']) return $r;
+    $data = $r['data'];
     $dataUri = $data['choices'][0]['message']['images'][0]['image_url']['url'] ?? null;
     if (!$dataUri || !preg_match('#^data:image/(\w+);base64,(.+)$#', $dataUri, $m)) {
-        $err = $res['error'] ?: ($data['error']['message'] ?? 'لم يُرجع الموديل صورة (تأكد أن الموديل يدعم توليد الصور).');
-        return ['ok' => false, 'msg' => $err];
+        return ['ok' => false, 'msg' => $data['error']['message'] ?? 'لم يُرجع الموديل صورة (تأكد أن الموديل يدعم توليد الصور).'];
     }
     $ext = $m[1] === 'jpeg' ? 'jpg' : $m[1];
     $bytes = base64_decode($m[2]);
@@ -1720,6 +1771,24 @@ if ($action && str_starts_with($action, 'admin_')) {
         case 'admin_delete_wallet':
             db()->prepare("DELETE FROM wallets WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=wallets');
+
+        case 'admin_save_openrouter_key':
+            $apiKey = trim((string)($_POST['api_key'] ?? ''));
+            if ($apiKey !== '') {
+                $maxOrd = (int)db()->query("SELECT COALESCE(MAX(sort_order),0) m FROM openrouter_keys")->fetch()['m'];
+                db()->prepare("INSERT INTO openrouter_keys (label, api_key, sort_order) VALUES (?,?,?)")
+                    ->execute([trim((string)($_POST['label'] ?? '')) ?: null, $apiKey, $maxOrd + 1]);
+                flash('تمت إضافة المفتاح.');
+            }
+            redirect('?page=admin&tab=settings');
+
+        case 'admin_toggle_openrouter_key':
+            db()->prepare("UPDATE openrouter_keys SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=settings');
+
+        case 'admin_delete_openrouter_key':
+            db()->prepare("DELETE FROM openrouter_keys WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=settings');
 
         case 'admin_save_task':
             db()->prepare("INSERT INTO tasks (title, url, seconds, reward) VALUES (?,?,?,?)")
@@ -3524,21 +3593,35 @@ case 'admin':
           <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="" placeholder="<?= setting('bot_token') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'من @BotFather' ?>" autocomplete="off"></label>
           <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
-          <label>مفتاح OpenRouter API<input type="password" name="openrouter_api_key" value="<?= e(setting('openrouter_api_key')) ?>" placeholder="sk-or-..."></label>
           <label>موديل OpenRouter<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
             <datalist id="orModels">
               <option value="meta-llama/llama-3.3-70b-instruct:free">
+              <option value="meta-llama/llama-3.1-8b-instruct:free">
               <option value="google/gemini-2.0-flash-exp:free">
+              <option value="google/gemma-2-9b-it:free">
               <option value="deepseek/deepseek-chat:free">
+              <option value="deepseek/deepseek-r1:free">
               <option value="mistralai/mistral-7b-instruct:free">
+              <option value="mistralai/mistral-nemo:free">
+              <option value="qwen/qwen-2.5-72b-instruct:free">
+              <option value="microsoft/phi-3-medium-128k-instruct:free">
               <option value="openai/gpt-4o-mini">
+              <option value="openai/gpt-4o">
+              <option value="openai/gpt-4.1-mini">
               <option value="anthropic/claude-3.5-haiku">
+              <option value="anthropic/claude-3.5-sonnet">
+              <option value="anthropic/claude-3.7-sonnet">
+              <option value="google/gemini-2.5-flash">
+              <option value="google/gemini-2.5-pro">
+              <option value="deepseek/deepseek-chat-v3">
+              <option value="x-ai/grok-2-1212">
             </datalist>
           </label>
           <label>موديل توليد الصور (اختياري)<input name="openrouter_image_model" value="<?= e(setting('openrouter_image_model')) ?>" list="orImageModels" placeholder="مثال: google/gemini-2.5-flash-image-preview">
             <datalist id="orImageModels">
               <option value="google/gemini-2.5-flash-image-preview">
               <option value="google/gemini-2.0-flash-exp:free">
+              <option value="openai/gpt-4o">
             </datalist>
           </label>
         </form>
@@ -3546,6 +3629,35 @@ case 'admin':
           <button class="btn btn-primary" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()"><?= icon('check', 'ic-sm') ?>حفظ الإعدادات</button>
           <button type="button" class="btn btn-ghost" onclick="testOpenRouter()"><?= icon('rocket', 'ic-sm') ?>اختبار الاتصال بـ OpenRouter</button>
         </div>
+        <hr style="border-color:#341c22;margin:18px 0">
+        <h4 style="margin:0 0 8px">مفاتيح OpenRouter API (عدد غير محدود)</h4>
+        <p style="color:var(--muted);font-size:13px;margin-top:0">يمكنك إضافة أكثر من مفتاح. عند استهلاك حد مفتاح أو تعطّله يجرّب النظام المفتاح التالي تلقائياً.</p>
+        <form method="post" action="?action=admin_save_openrouter_key" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <label>تسمية (اختياري)<input name="label" placeholder="مثال: حساب رئيسي"></label>
+          <label>مفتاح API<input type="password" name="api_key" placeholder="sk-or-..." required></label>
+          <button class="btn btn-primary"><?= icon('plus', 'ic-sm') ?>إضافة مفتاح</button>
+        </form>
+        <table class="admin-table" style="margin-top:10px">
+          <thead><tr><th>التسمية</th><th>المفتاح</th><th>الحالة</th><th>آخر خطأ</th><th></th></tr></thead>
+          <tbody>
+          <?php foreach (db()->query("SELECT * FROM openrouter_keys ORDER BY sort_order ASC, id ASC")->fetchAll() as $ok): ?>
+            <tr>
+              <td><?= e($ok['label'] ?: '—') ?></td>
+              <td><code><?= e(substr($ok['api_key'], 0, 8)) ?>••••<?= e(substr($ok['api_key'], -4)) ?></code></td>
+              <td><?= $ok['active'] ? '<span style="color:#7fdc8f">مفعّل</span>' : '<span style="color:var(--muted)">معطّل</span>' ?></td>
+              <td style="color:var(--muted);font-size:12px"><?= e($ok['last_error'] ?: '—') ?></td>
+              <td style="display:flex;gap:6px">
+                <form method="post" action="?action=admin_toggle_openrouter_key" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ok['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form>
+                <form method="post" action="?action=admin_delete_openrouter_key" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ok['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+          <?php if (!db()->query("SELECT COUNT(*) c FROM openrouter_keys")->fetch()['c']): ?>
+            <tr><td colspan="5" style="color:var(--muted)">لا توجد مفاتيح مضافة بعد.</td></tr>
+          <?php endif; ?>
+          </tbody>
+        </table>
         <hr style="border-color:#341c22;margin:18px 0">
         <p style="color:var(--muted);font-size:13px">
           بيانات قاعدة البيانات وGoogle OAuth تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). توكن البوت وآيدي المالك يتم ضبطهما من الحقلين أعلاه فقط — يقرأهما بوت تيليجرام (<code>telegram_bot.php</code>) مباشرة من قاعدة البيانات حتى لو كان يعمل على سيرفر VPS مستقل تماماً عن هذا الموقع. باقي إعدادات البوت (الرسائل الجماعية، مكافأة الكابتشا، الحد الأدنى للسحب) تُضبط من داخل البوت نفسه بإرسال أمر <code>/admin</code> له (للمالك فقط). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي. مفتاح OpenRouter مجاني ويمكن الحصول عليه من openrouter.ai، ويدعم آلاف الموديلات المجانية والمدفوعة لتوليد الوصف وSEO تلقائياً للمنتجات. لتفعيل تسجيل الدخول بتيليجرام: أنشئ بوتاً عبر @BotFather، ضع توكنه في الحقل أعلاه، واكتب اسم المستخدم للبوت (بدون @) في الحقل المخصص — كما يجب ضبط دومين الموقع للبوت عبر أمر <code>/setdomain</code> في @BotFather.
