@@ -2150,6 +2150,13 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .balance-pill{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#2a151b,#2e161d);border:1px solid #3a1c23;border-radius:30px;padding:10px 16px;margin-bottom:16px;font-size:14px;color:var(--muted)}
 .balance-pill strong{color:var(--accent2)}
 .buy-modal label{display:block;font-size:13px;color:var(--muted);margin-bottom:10px}
+.buy-extra{background:#1d1014;border:1px solid #3a1c23;border-radius:10px;margin-bottom:10px;overflow:hidden}
+.buy-extra summary{cursor:pointer;padding:10px 12px;font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;list-style:none}
+.buy-extra summary::-webkit-details-marker{display:none}
+.buy-extra[open] summary{border-bottom:1px solid #3a1c23}
+.buy-extra label,.buy-extra .topup-method{margin:10px 12px}
+.buy-extra .topup-method:last-of-type{margin-bottom:6px}
+.buy-extra a{margin:0 12px 10px}
 .upload-box{position:relative;border:2px dashed #3a1c23;border-radius:var(--radius,12px);background:#1d1014;padding:18px 14px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:6px}
 .upload-box:hover,.upload-box.dragover{border-color:var(--accent2);background:#221318}
 .upload-box input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
@@ -2460,32 +2467,13 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
 <div class="modal-bg" id="buyModal" style="display:none">
   <div class="modal buy-modal">
     <h2><?= icon('cart', 'ic') ?>تأكيد طلب الشراء</h2>
-    <div class="balance-pill"><?= icon('coins', 'ic-sm') ?>رصيدك المتاح: <strong id="buyBalance"><?= e($userUsdBalance) ?>$</strong></div>
+    <div class="balance-pill"><?= icon('coins', 'ic-sm') ?>رصيدك المتاح: <strong id="buyBalance"><?= e($userUsdBalance) ?>$</strong> · السعر: <strong id="buyFinalPrice">0$</strong></div>
 
     <label>الآيدي <span style="color:var(--danger)">*</span>
       <input type="text" id="buyAccountId" placeholder="أدخل الآيدي / الحساب الخاص بالطلب" required>
     </label>
 
-    <?php if ($activeWallets): ?>
-    <div class="topup-hint">
-      <p style="color:var(--muted);font-size:13px;margin-bottom:8px"><?= icon('bank', 'ic-sm') ?>لشحن رصيدك، أرسل المبلغ إلى أحد المحافظ التالية ثم أرفق صورة الإيصال:</p>
-      <?php foreach ($activeWallets as $w): ?>
-        <div class="topup-method">
-          <div class="topup-method-head">
-            <?php [$wTypeLbl, $wTypeIcon] = wallet_type_label($w['type']); ?>
-            <strong><?= icon($wTypeIcon, 'ic-sm') ?><?= e($w['label']) ?> (<?= e($wTypeLbl) ?>)</strong>
-          </div>
-          <div class="topup-method-addr">
-            <code><?= e($w['address']) ?></code>
-            <button type="button" class="btn-copy" onclick="copyAddr(this)" data-addr="<?= e($w['address']) ?>"><?= icon('copy', 'ic-sm') ?></button>
-          </div>
-        </div>
-      <?php endforeach; ?>
-      <a href="?page=wallet" class="btn btn-ghost" style="width:100%;margin-top:6px;text-align:center;display:block"><?= icon('send', 'ic-sm') ?>إرسال طلب شحن من صفحة المحفظة</a>
-    </div>
-    <?php endif; ?>
-
-    <label>صورة الإيصال <span style="color:var(--danger)">*</span> (إجبارية)
+    <label>صورة الإيصال <span style="color:var(--danger)">*</span>
       <div class="upload-box" id="buyReceiptBox">
         <div class="upload-box-empty">
           <?= icon('upload', 'ic') ?>
@@ -2501,18 +2489,40 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
       </div>
     </label>
 
-    <label>رقم العملية (اختياري)
-      <input type="text" id="buyTxNote" placeholder="رقم العملية / المرجع إن وجد">
-    </label>
-
-    <label>كود الخصم (اختياري)
-      <div class="upload-row">
-        <input type="text" id="buyCouponCode" placeholder="أدخل كود الخصم إن وجد">
-        <button type="button" class="btn btn-ghost" onclick="applyCoupon()">تطبيق</button>
+    <?php if ($activeWallets): ?>
+    <details class="buy-extra">
+      <summary><?= icon('bank', 'ic-sm') ?>طرق الشحن المتاحة</summary>
+      <div class="topup-hint">
+        <?php foreach ($activeWallets as $w): ?>
+          <div class="topup-method">
+            <div class="topup-method-head">
+              <?php [$wTypeLbl, $wTypeIcon] = wallet_type_label($w['type']); ?>
+              <strong><?= icon($wTypeIcon, 'ic-sm') ?><?= e($w['label']) ?> (<?= e($wTypeLbl) ?>)</strong>
+            </div>
+            <div class="topup-method-addr">
+              <code><?= e($w['address']) ?></code>
+              <button type="button" class="btn-copy" onclick="copyAddr(this)" data-addr="<?= e($w['address']) ?>"><?= icon('copy', 'ic-sm') ?></button>
+            </div>
+          </div>
+        <?php endforeach; ?>
+        <a href="?page=wallet" class="btn btn-ghost" style="width:100%;margin-top:6px;text-align:center;display:block"><?= icon('send', 'ic-sm') ?>إرسال طلب شحن من صفحة المحفظة</a>
       </div>
-      <div id="buyCouponMsg" style="font-size:13px;margin-top:4px"></div>
-    </label>
-    <div class="balance-pill"><?= icon('cart', 'ic-sm') ?>السعر النهائي: <strong id="buyFinalPrice">0$</strong></div>
+    </details>
+    <?php endif; ?>
+
+    <details class="buy-extra">
+      <summary><?= icon('coins', 'ic-sm') ?>رقم عملية / كود خصم (اختياري)</summary>
+      <label>رقم العملية
+        <input type="text" id="buyTxNote" placeholder="رقم العملية / المرجع إن وجد">
+      </label>
+      <label>كود الخصم
+        <div class="upload-row">
+          <input type="text" id="buyCouponCode" placeholder="أدخل كود الخصم إن وجد">
+          <button type="button" class="btn btn-ghost" onclick="applyCoupon()">تطبيق</button>
+        </div>
+        <div id="buyCouponMsg" style="font-size:13px;margin-top:4px"></div>
+      </label>
+    </details>
 
     <div style="display:flex;gap:10px;margin-top:14px">
       <button type="button" class="btn btn-primary" style="flex:1" id="buySubmitBtn" onclick="submitBuyRequest()"><?= icon('check', 'ic-sm') ?>تأكيد الطلب</button>
