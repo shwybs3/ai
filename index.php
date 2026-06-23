@@ -412,6 +412,47 @@ function migrate(): void
             $ins->execute([$pname, $picon, $price, $oldPrice, $catIds[$pcat] ?? null]);
         }
     }
+
+    // منتجات مطلوبة بكثرة (تُضاف مرة واحدة فقط لكل منتج، ولا تُكرَّر حتى على موقع يعمل مسبقاً)
+    $reqCatNames = ['الألعاب', 'بطاقات الهدايا', 'الاشتراكات', 'التطبيقات والخدمات', 'عام'];
+    $reqCatIds = [];
+    foreach ($reqCatNames as $cn) {
+        $st = $pdo->prepare("SELECT id FROM categories WHERE name = ?");
+        $st->execute([$cn]);
+        $row = $st->fetch();
+        if ($row) { $reqCatIds[$cn] = $row['id']; continue; }
+        $pdo->prepare("INSERT INTO categories (name, sort_order) VALUES (?, 99)")->execute([$cn]);
+        $reqCatIds[$cn] = $pdo->lastInsertId();
+    }
+    $highDemandProducts = [
+        ['شحن ببجي موبايل 1800 UC', '🎮', 38, 42, 'الألعاب'],
+        ['شحن ببجي موبايل 3850 UC', '🎮', 76, 85, 'الألعاب'],
+        ['شحن فري فاير 1080 جوهرة', '💎', 12, 14, 'الألعاب'],
+        ['نجوم تيليجرام Telegram Stars', '✈️', 4, null, 'الألعاب'],
+        ['شحن جواهر جواكر 100 ألف', '♠️', 6, null, 'الألعاب'],
+        ['اشتراك بلايستيشن بلس شهر', '🎮', 12, 14, 'الاشتراكات'],
+        ['اشتراك Xbox Game Pass Ultimate شهر', '🎮', 14, 16, 'الاشتراكات'],
+        ['اشتراك أمازون برايم شهر', '📦', 7, null, 'الاشتراكات'],
+        ['اشتراك سبوتيفاي عائلي شهر', '🎵', 8, 10, 'الاشتراكات'],
+        ['اشتراك يوتيوب بريميوم عائلي', '▶️', 9, 11, 'الاشتراكات'],
+        ['اشتراك آبل ميوزك شهر', '🎵', 4, null, 'الاشتراكات'],
+        ['اشتراك ديسكورد نيترو سنة', '🎮', 45, 50, 'التطبيقات والخدمات'],
+        ['متابعين تيك توك 1000', '🎵', 4, 5, 'التطبيقات والخدمات'],
+        ['لايكات انستقرام 1000', '📷', 2, null, 'التطبيقات والخدمات'],
+        ['اشتراك X (تويتر) بريميوم شهر', '🐦', 8, null, 'التطبيقات والخدمات'],
+        ['اشتراك LinkedIn بريميوم شهر', '💼', 12, null, 'التطبيقات والخدمات'],
+        ['اشتراك Duolingo Super شهر', '🦉', 5, null, 'التطبيقات والخدمات'],
+        ['بطاقة Google Play 50$', '▶️', 53, 58, 'بطاقات الهدايا'],
+        ['بطاقة ستيم 50$', '🎮', 53, 58, 'بطاقات الهدايا'],
+        ['شحن رصيد سيرياتيل 10$', '📱', 10.5, null, 'عام'],
+    ];
+    $exists = $pdo->prepare("SELECT 1 FROM products WHERE name = ?");
+    $insReq = $pdo->prepare("INSERT INTO products (name, icon, price, old_price, category_id, status) VALUES (?,?,?,?,?,'active')");
+    foreach ($highDemandProducts as [$pname, $picon, $price, $oldPrice, $pcat]) {
+        $exists->execute([$pname]);
+        if ($exists->fetch()) continue;
+        $insReq->execute([$pname, $picon, $price, $oldPrice, $reqCatIds[$pcat] ?? null]);
+    }
 }
 migrate();
 
@@ -1158,6 +1199,26 @@ if ($action && str_starts_with($action, 'api_')) {
             $filename = bin2hex(random_bytes(8)) . '.' . $allowed[$mime];
             move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
             echo json_encode(['ok' => true, 'url' => 'uploads/receipts/' . $filename]);
+            exit;
+
+        case 'api_upload_avatar':
+            csrf_check();
+            if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+                echo json_encode(['ok' => false, 'msg' => 'فشل رفع الصورة.']); exit;
+            }
+            $f = $_FILES['file'];
+            $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+            $mime = mime_content_type($f['tmp_name']);
+            if (!isset($allowed[$mime]) || $f['size'] > 5 * 1024 * 1024) {
+                echo json_encode(['ok' => false, 'msg' => 'الملف يجب أن يكون صورة (jpg/png/webp/gif) أصغر من 5MB.']); exit;
+            }
+            $destDir = __DIR__ . '/uploads/avatars';
+            if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+            $filename = bin2hex(random_bytes(8)) . '.' . $allowed[$mime];
+            move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
+            $url = 'uploads/avatars/' . $filename;
+            db()->prepare("UPDATE users SET avatar=? WHERE id=?")->execute([$url, $u['id']]);
+            echo json_encode(['ok' => true, 'url' => $url, 'msg' => 'تم تحديث صورة الملف الشخصي.']);
             exit;
 
         case 'api_solve_captcha':
@@ -1984,6 +2045,8 @@ input,textarea,select{font-family:inherit}
 .profile-rank-silver .profile-frame::before{border-color:#c9d2da;box-shadow:0 0 12px rgba(201,210,218,.5)}
 .profile-rank-gold .profile-frame::before{border-color:#e6b800;box-shadow:0 0 14px rgba(230,184,0,.6)}
 .profile-rank-diamond .profile-frame::before{border-color:#36e0e0;box-shadow:0 0 16px rgba(54,224,224,.7)}
+.avatar-edit-btn{position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;border:2px solid var(--bg);cursor:pointer;z-index:2}
+.avatar-edit-btn svg{width:13px;height:13px}
 @keyframes frameSpin{from{transform:rotate(0deg) scale(1)}50%{transform:rotate(180deg) scale(1.04)}to{transform:rotate(360deg) scale(1)}}
 .spin-wheel-wrap{display:flex;flex-direction:column;align-items:center;gap:20px;padding:20px 0}
 .spin-wheel{width:240px;height:240px;border-radius:50%;position:relative;background:conic-gradient(#e6294b 0deg 45deg,#ff8a3d 45deg 90deg,#ffd23d 90deg 135deg,#4dd6a3 135deg 180deg,#3da5ff 180deg 225deg,#a36dff 225deg 270deg,#ff5fa2 270deg 315deg,#6dffb0 315deg 360deg);transition:transform 2.4s cubic-bezier(.18,.9,.2,1);box-shadow:0 0 0 6px #1d0f14,0 0 30px rgba(0,0,0,.5)}
@@ -2682,7 +2745,9 @@ case 'profile':
     <div class="section-title"><?= icon('user', 'ic') ?>ملفي الشخصي</div>
     <div class="admin-box profile-rank-<?= e(mb_strtolower($pRank === 'ماسي' ? 'diamond' : ($pRank === 'ذهبي' ? 'gold' : ($pRank === 'فضي' ? 'silver' : 'bronze')))) ?>" style="text-align:center;padding:28px 16px">
       <div class="profile-frame">
-        <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>"><?php else: ?><div class="ph"><?= icon('user', 'ic-lg') ?></div><?php endif; ?>
+        <?php if ($user['avatar']): ?><img id="avatarPreview" src="<?= e($user['avatar']) ?>"><?php else: ?><div class="ph" id="avatarPreview"><?= icon('user', 'ic-lg') ?></div><?php endif; ?>
+        <button type="button" class="avatar-edit-btn" title="تغيير الصورة" onclick="document.getElementById('avatarFileInput').click()"><?= icon('edit', 'ic-sm') ?></button>
+        <input type="file" id="avatarFileInput" accept="image/*" style="display:none" onchange="uploadAvatar(this.files[0])">
       </div>
       <h2 style="margin-top:12px"><?= e($user['name'] ?: $user['username']) ?><?php if (is_admin()): ?> <span class="verified-badge" title="حساب موثّق"><?= icon('check', 'ic-sm') ?></span><?php endif; ?></h2>
       <div style="color:var(--muted);font-size:13px">@<?= e($user['username']) ?></div>
@@ -3491,6 +3556,19 @@ function saveProfile(){
   post('api_update_profile', d).then(res => {
     toast(res.msg);
     if (res.ok) setTimeout(() => location.reload(), 1200);
+  });
+}
+function uploadAvatar(file){
+  if (!file) return;
+  const d = new FormData();
+  d.append('file', file);
+  post('api_upload_avatar', d).then(res => {
+    toast(res.msg || (res.ok ? 'تم تحديث الصورة.' : 'فشل رفع الصورة.'));
+    if (res.ok && res.url) {
+      const el = document.getElementById('avatarPreview');
+      if (el && el.tagName === 'IMG') el.src = res.url;
+      else setTimeout(() => location.reload(), 800);
+    }
   });
 }
 function submitSuggestion(){
