@@ -1,5 +1,6 @@
-# ملفات قاعدة البيانات تُنشأ تلقائياً عند التشغيل
 yassota.sqlite
 yassota.sqlite-wal
 yassota.sqlite-shm
 *.log
+uploads/*
+!uploads/.gitkeep
