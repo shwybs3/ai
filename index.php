@@ -50,6 +50,12 @@ function add_column_if_missing(PDO $pdo, string $table, string $col, string $def
 
 function migrate(): void
 {
+    // إعادة فحص/إنشاء الجداول وضبط الإعدادات الافتراضية على كل طلب يضيف عشرات الاستعلامات الزائدة
+    // ويُبطّئ الموقع بشكل كبير خصوصاً مع قاعدة بيانات بعيدة؛ نكتفي بتنفيذه فعلياً مرة كل دقيقتين كحد أقصى.
+    $marker = __DIR__ . '/uploads/cache/.migrated';
+    if (is_file($marker) && (time() - filemtime($marker)) < 120) return;
+    @touch($marker);
+
     $pdo = db();
     $engine = DB_DRIVER === 'sqlite' ? '' : ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
     $id = DB_DRIVER === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INT AUTO_INCREMENT PRIMARY KEY';
@@ -345,6 +351,7 @@ function migrate(): void
         'daily_bonus_points' => '20',
         'points_rate' => '0.001',      // 1 نقطة = كم دولار
         'min_withdraw_usd' => '25',
+        'auto_approve_withdraw' => '0',
         'captcha_reward' => '10',
         'captcha_max_per_day' => '40',
         'task_max_per_day' => '10',
@@ -361,11 +368,12 @@ function migrate(): void
         'referral_referred_cut_points' => '50',
         'welcome_bonus_points' => '200',
         'ad_enabled' => '1',
+        'entry_ad_enabled' => '1',
         'ad_zone_id' => '11185011',
         'support_telegram' => '@layos_he',
         'google_site_verification' => '',
         'openrouter_api_key' => '',
-        'openrouter_model' => 'openai/gpt-4o',
+        'openrouter_model' => 'meta-llama/llama-3.3-70b-instruct:free',
         'openrouter_image_model' => '',
         'product_image_height' => '130',
         'cat_tile_size' => '140',
@@ -1484,6 +1492,26 @@ if ($action && str_starts_with($action, 'api_')) {
             if ($count >= $max) { echo json_encode(['ok' => false, 'msg' => 'وصلت للحد اليومي من الكابتشا.']); exit; }
             if (!$expected || $answer !== $expected) { echo json_encode(['ok' => false, 'msg' => 'الرقم غير صحيح، حاول مجدداً.']); exit; }
             unset($_SESSION['captcha_code']);
+            // لا تُمنح المكافأة فوراً؛ يجب الانتظار/مشاهدة الإعلان أولاً عبر api_claim_captcha_reward
+            $_SESSION['captcha_verified_at'] = time();
+            $adWillShow = setting('ad_enabled', '1') === '1' && setting('ad_zone_id', '') !== '';
+            echo json_encode(['ok' => true, 'msg' => 'صحيح! انتظر قليلاً للحصول على المكافأة.', 'ad_will_show' => $adWillShow, 'wait_seconds' => 5]);
+            exit;
+
+        case 'api_claim_captcha_reward':
+            csrf_check();
+            $verifiedAt = $_SESSION['captcha_verified_at'] ?? null;
+            if (!$verifiedAt || (time() - $verifiedAt) < 5 || (time() - $verifiedAt) > 120) {
+                echo json_encode(['ok' => false, 'msg' => 'يجب إكمال الانتظار أولاً.']); exit;
+            }
+            unset($_SESSION['captcha_verified_at']);
+            $day = date('Y-m-d');
+            $st = db()->prepare("SELECT * FROM captcha_logs WHERE user_id=? AND day=?");
+            $st->execute([$u['id'], $day]);
+            $log = $st->fetch();
+            $count = $log['count'] ?? 0;
+            $max = (int)setting('captcha_max_per_day', 40);
+            if ($count >= $max) { echo json_encode(['ok' => false, 'msg' => 'وصلت للحد اليومي من الكابتشا.']); exit; }
             $reward = (int)setting('captcha_reward', 10);
             add_points($u['id'], $reward, 'captcha', 'إنجاز كابتشا');
             if ($log) db()->prepare("UPDATE captcha_logs SET count=count+1 WHERE id=?")->execute([$log['id']]);
@@ -1543,10 +1571,12 @@ if ($action && str_starts_with($action, 'api_')) {
             $usd = points_to_usd($u['points']);
             if ($usd < $min) { echo json_encode(['ok' => false, 'msg' => "الحد الأدنى للسحب {$min}$"]); exit; }
             if (!$u['wallet_address']) { echo json_encode(['ok' => false, 'msg' => 'أضف محفظتك أولاً.']); exit; }
-            db()->prepare("INSERT INTO withdraw_requests (user_id, amount_points, amount_usd, wallet_type, wallet_address) VALUES (?,?,?,?,?)")
-                ->execute([$u['id'], $u['points'], $usd, $u['wallet_type'], $u['wallet_address']]);
+            $autoApprove = setting('auto_approve_withdraw', '0') === '1';
+            $wstatus = $autoApprove ? 'approved' : 'pending';
+            db()->prepare("INSERT INTO withdraw_requests (user_id, amount_points, amount_usd, wallet_type, wallet_address, status) VALUES (?,?,?,?,?,?)")
+                ->execute([$u['id'], $u['points'], $usd, $u['wallet_type'], $u['wallet_address'], $wstatus]);
             db()->prepare("UPDATE users SET points = 0 WHERE id = ?")->execute([$u['id']]);
-            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب السحب.']);
+            echo json_encode(['ok' => true, 'msg' => $autoApprove ? 'تم تحويل المبلغ فوراً.' : 'تم إرسال طلب السحب، بانتظار مراجعة الإدارة.']);
             exit;
 
         default:
@@ -1633,7 +1663,7 @@ function openrouter_request(array $payload): array
 
 function openrouter_chat(string $prompt): array
 {
-    $model = setting('openrouter_model', 'openai/gpt-4o');
+    $model = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
     $r = openrouter_request([
         'model' => $model,
         'messages' => [['role' => 'user', 'content' => $prompt]],
@@ -2174,6 +2204,9 @@ a{color:inherit;text-decoration:none}
 .modal h2{margin-bottom:14px;display:flex;align-items:center;gap:8px}
 .modal input,.modal textarea,.modal select{width:100%;padding:12px;border-radius:12px;border:1px solid #3a1c23;background:#1d0f14;color:var(--text);margin-bottom:10px;font-family:inherit;font-size:14px;transition:border-color .2s,box-shadow .2s}
 .modal input:focus,.modal textarea:focus,.modal select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(230,41,75,.2)}
+.ad-gate-x{position:absolute;top:12px;left:12px;width:32px;height:32px;border-radius:50%;border:1px solid #3a1c25;background:#1d0f14;color:var(--text);cursor:pointer;font-size:14px}
+.ad-gate-x:disabled{opacity:.35;cursor:not-allowed}
+.ad-gate-timer{font-size:28px;font-weight:800;margin-top:6px}
 .toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%) translateY(20px);background:linear-gradient(135deg,#341c22,#3a1f29);padding:13px 22px;border-radius:30px;z-index:300;display:none;font-size:14px;font-weight:600;box-shadow:0 12px 30px rgba(0,0,0,.45);border:1px solid #4a2530}
 .toast.show{display:block;animation:toastIn .4s var(--ease) forwards}
 @keyframes toastIn{to{transform:translateX(-50%) translateY(0)}}
@@ -2663,6 +2696,16 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
       <button type="button" class="btn btn-primary" style="flex:1" id="buySubmitBtn" onclick="submitBuyRequest()"><?= icon('check', 'ic-sm') ?>تأكيد الطلب</button>
       <button type="button" class="btn btn-ghost" style="flex:1" onclick="closeBuyModal()">إلغاء</button>
     </div>
+  </div>
+</div>
+
+<div class="modal-bg" id="adGateModal" style="display:none">
+  <div class="modal ad-gate-modal" style="text-align:center;position:relative">
+    <button type="button" id="adGateClose" class="ad-gate-x" disabled onclick="closeAdGate()">✕</button>
+    <h2 style="justify-content:center"><?= icon('coin', 'ic') ?>انتظر قليلاً...</h2>
+    <div id="adGateMsg" style="color:var(--muted);margin:10px 0">جارٍ تحميل الإعلان...</div>
+    <div id="adGateSlot" style="min-height:60px;display:flex;align-items:center;justify-content:center"></div>
+    <div class="ad-gate-timer" id="adGateTimer">5</div>
   </div>
 </div>
 
@@ -3852,6 +3895,12 @@ case 'admin':
           <label>وصف البنر<input name="banner_subtitle" value="<?= e(setting('banner_subtitle')) ?>"></label>
           <label>سعر النقطة بالدولار<input name="points_rate" value="<?= e(setting('points_rate')) ?>"></label>
           <label>الحد الأدنى للسحب $<input name="min_withdraw_usd" value="<?= e(setting('min_withdraw_usd')) ?>"></label>
+          <label>السحب الفوري (بدون مراجعة الإدارة)
+            <select name="auto_approve_withdraw">
+              <option value="0" <?= setting('auto_approve_withdraw', '0') === '0' ? 'selected' : '' ?>>معطّل (مراجعة يدوية)</option>
+              <option value="1" <?= setting('auto_approve_withdraw', '0') === '1' ? 'selected' : '' ?>>مفعّل (سحب فوري تلقائي)</option>
+            </select>
+          </label>
           <label>مكافأة الكابتشا<input name="captcha_reward" value="<?= e(setting('captcha_reward')) ?>"></label>
           <label>أقصى كابتشا باليوم<input name="captcha_max_per_day" value="<?= e(setting('captcha_max_per_day')) ?>"></label>
           <label>أقصى مهام باليوم<input name="task_max_per_day" value="<?= e(setting('task_max_per_day')) ?>"></label>
@@ -3884,6 +3933,12 @@ case 'admin':
             </select>
           </label>
           <label>رمز منطقة الإعلان (Zone ID)<input name="ad_zone_id" value="<?= e(setting('ad_zone_id')) ?>"></label>
+          <label>إعلان فوري عند دخول الموقع (مرة كل جلسة، مع زر تخطي بعد ٥ ثواني)
+            <select name="entry_ad_enabled">
+              <option value="1" <?= setting('entry_ad_enabled', '1') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('entry_ad_enabled', '1') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
           <label>شريط أرباح المستخدمين المباشر (الرئيسية)
             <select name="live_ticker_enabled">
               <option value="1" <?= setting('live_ticker_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
@@ -4005,11 +4060,21 @@ default:
 
 <div class="toast" id="toast"></div>
 
+<?php
+$showEntryAd = false;
+if (!($page === 'login' && !$user) && setting('entry_ad_enabled', '1') === '1'
+    && setting('ad_enabled', '1') === '1' && setting('ad_zone_id', '') !== ''
+    && empty($_SESSION['entry_ad_shown'])) {
+    $showEntryAd = true;
+    $_SESSION['entry_ad_shown'] = true;
+}
+?>
 <script>
 const CSRF = "<?= csrf_token() ?>";
 const LOGGED_IN = <?= $user ? 'true' : 'false' ?>;
 const AD_ENABLED = <?= setting('ad_enabled', '1') === '1' ? 'true' : 'false' ?>;
 const AD_ZONE_ID = "<?= e(setting('ad_zone_id', '')) ?>";
+const SHOW_ENTRY_AD = <?= $showEntryAd ? 'true' : 'false' ?>;
 let __adLoaded = false;
 function loadAdNetworkOnce(){
   if (__adLoaded || !AD_ENABLED || !AD_ZONE_ID) return;
@@ -4321,11 +4386,52 @@ function submitCaptcha(){
   const ans = document.getElementById('captchaAnswer').value.trim();
   const d = new FormData(); d.append('answer', ans);
   post('api_solve_captcha', d).then(res => {
-    toast(res.msg);
     document.getElementById('captchaAnswer').value = '';
-    if (res.ok) loadCaptcha();
-  });
+    if (!res.ok) { toast(res.msg); return; }
+    openAdGate(res.ad_will_show, res.wait_seconds || 5, () => {
+      post('api_claim_captcha_reward', new FormData()).then(r2 => {
+        toast(r2.msg);
+        if (r2.ok) loadCaptcha();
+      }).catch(() => toast('تعذر الاتصال بالخادم، حاول مجدداً.'));
+    });
+  }).catch(() => toast('تعذر الاتصال بالخادم، حاول مجدداً.'));
 }
+
+let __adGateTimer = null;
+let __adGateOnDone = null;
+function openAdGate(adWillShow, seconds, onDone){
+  __adGateOnDone = onDone;
+  const modal = document.getElementById('adGateModal');
+  const msg = document.getElementById('adGateMsg');
+  const xBtn = document.getElementById('adGateClose');
+  const timerEl = document.getElementById('adGateTimer');
+  const slot = document.getElementById('adGateSlot');
+  msg.textContent = adWillShow ? 'جارٍ تحميل الإعلان...' : 'لا يوجد إعلان متاح حالياً، انتظر العداد للحصول على المكافأة.';
+  slot.innerHTML = '';
+  xBtn.disabled = true;
+  modal.style.display = 'flex';
+  if (adWillShow) loadAdNetworkOnce();
+  let remain = seconds;
+  timerEl.textContent = remain;
+  if (__adGateTimer) clearInterval(__adGateTimer);
+  __adGateTimer = setInterval(() => {
+    remain--;
+    timerEl.textContent = Math.max(remain, 0);
+    if (remain <= 0) {
+      clearInterval(__adGateTimer);
+      xBtn.disabled = false;
+      timerEl.textContent = '✓';
+    }
+  }, 1000);
+}
+function closeAdGate(){
+  document.getElementById('adGateModal').style.display = 'none';
+  if (__adGateTimer) clearInterval(__adGateTimer);
+  const cb = __adGateOnDone;
+  __adGateOnDone = null;
+  if (cb) cb();
+}
+if (SHOW_ENTRY_AD) document.addEventListener('DOMContentLoaded', () => openAdGate(true, 5, () => {}));
 function startTask(id, url, seconds){
   if (!LOGGED_IN) return requireLogin();
   window.open(url, '_blank');
