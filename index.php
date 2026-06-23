@@ -372,6 +372,9 @@ function migrate(): void
         'ad_zone_id' => '11185011',
         'support_telegram' => '@layos_he',
         'google_site_verification' => '',
+        'adsense_enabled' => '0',
+        'adsense_publisher_id' => '',
+        'ads_txt_content' => '',
         'openrouter_api_key' => '',
         'openrouter_model' => 'meta-llama/llama-3.3-70b-instruct:free',
         'openrouter_image_model' => '',
@@ -627,6 +630,25 @@ function migrate(): void
         $exists->execute([$pname]);
         if ($exists->fetch()) continue;
         $insReq->execute([$pname, $picon, $price, $oldPrice, $reqCatIds[$pcat] ?? null]);
+    }
+
+    // إضافة دفعة بداية من المهام (٣٠ مهمة، الإدارة يمكنها تعديل/حذف/تعطيل أي منها أو إضافة المزيد لاحقاً)
+    // فقط إذا كان جدول المهام فارغاً بالكامل (لا نكرر الإضافة كل مرة)
+    if (!$pdo->query("SELECT COUNT(*) c FROM tasks")->fetch()['c']) {
+        $insTask = $pdo->prepare("INSERT INTO tasks (title, url, seconds, reward) VALUES (?,?,?,?)");
+        for ($day = 1; $day <= 7; $day++) {
+            for ($n = 1; $n <= 4; $n++) {
+                $insTask->execute([
+                    "مهمة اليوم $day - رقم $n: شاهد واستعرض المحتوى",
+                    '?',
+                    20 + ($n * 5),
+                    5 + $n,
+                ]);
+            }
+        }
+        // مهمتان إضافيتان (المتابعة على وسائل التواصل) لإكمال ٣٠ مهمة
+        $insTask->execute(['تابعنا على تيليجرام', '?', 15, 10]);
+        $insTask->execute(['شارك الموقع مع صديق', '?', 15, 10]);
     }
 }
 migrate();
@@ -1267,6 +1289,12 @@ if ($action === 'accept_policy') {
 if ($action === 'robots') {
     header('Content-Type: text/plain; charset=utf-8');
     echo "User-agent: *\nAllow: /\nSitemap: " . rtrim(SITE_URL, '/') . "/index.php?action=sitemap\n";
+    exit;
+}
+
+if ($action === 'ads_txt') {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo (string)setting('ads_txt_content', '');
     exit;
 }
 
@@ -2073,6 +2101,7 @@ if ($seoProduct) {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <?php if ($page !== 'admin' && !$user): ?><meta name="robots" content="index, follow"><?php else: ?><meta name="robots" content="noindex, nofollow"><?php endif; ?>
 <?php if (setting('google_site_verification')): ?><meta name="google-site-verification" content="<?= e(setting('google_site_verification')) ?>"><?php endif; ?>
+<?php if (setting('adsense_enabled', '0') === '1' && setting('adsense_publisher_id')): ?><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=<?= e(setting('adsense_publisher_id')) ?>" crossorigin="anonymous"></script><?php endif; ?>
 <meta property="og:type" content="<?= $seoProduct ? 'product' : 'website' ?>">
 <meta property="og:title" content="<?= e($seoTitle) ?>">
 <meta property="og:description" content="<?= e($seoDesc) ?>">
@@ -3950,6 +3979,14 @@ case 'admin':
           <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="" placeholder="<?= setting('bot_token') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'من @BotFather' ?>" autocomplete="off"></label>
           <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
+          <label>تفعيل Google AdSense
+            <select name="adsense_enabled">
+              <option value="0" <?= setting('adsense_enabled', '0') === '0' ? 'selected' : '' ?>>معطّل</option>
+              <option value="1" <?= setting('adsense_enabled', '0') === '1' ? 'selected' : '' ?>>مفعّل</option>
+            </select>
+          </label>
+          <label>معرّف ناشر AdSense<input name="adsense_publisher_id" value="<?= e(setting('adsense_publisher_id')) ?>" placeholder="ca-pub-XXXXXXXXXXXXXXXX"></label>
+          <label>محتوى ملف ads.txt<textarea name="ads_txt_content" rows="2" placeholder="google.com, pub-XXXXXXXXXXXXXXXX, DIRECT, f08c47fec0942fa0"><?= e(setting('ads_txt_content')) ?></textarea></label>
           <label>موديل OpenRouter<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
             <datalist id="orModels">
               <option value="meta-llama/llama-3.3-70b-instruct:free">

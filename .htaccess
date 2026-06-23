@@ -1,0 +1,6 @@
+<IfModule mod_rewrite.c>
+RewriteEngine On
+RewriteRule ^robots\.txt$ index.php?action=robots [L,QSA]
+RewriteRule ^ads\.txt$ index.php?action=ads_txt [L,QSA]
+RewriteRule ^sitemap\.xml$ index.php?action=sitemap [L,QSA]
+</IfModule>
