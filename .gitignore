@@ -1,5 +1,9 @@
 config.php
 uploads/products/*
 !uploads/products/.gitkeep
+uploads/avatars/*
+!uploads/avatars/.gitkeep
+uploads/cache/*
+!uploads/cache/.gitkeep
 *.sqlite
 *.log

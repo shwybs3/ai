@@ -656,6 +656,31 @@ function satofill_fetch_catalog(): array
     return $data;
 }
 
+// تنزيل صورة المنتج من سيرفر المزوّد محلياً مرة واحدة عند المزامنة، حتى لا يضطر متصفح المستخدم
+// لتحميلها من سيرفر بطيء/بعيد كل مرة (هذا هو السبب الرئيسي لبطء ظهور صور المنتجات).
+function cache_remote_image(string $url): string
+{
+    if ($url === '' || !preg_match('#^https?://#i', $url)) return $url;
+    $destDir = __DIR__ . '/uploads/cache';
+    if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+    $filename = hash('sha256', $url) . '.img';
+    $destFile = $destDir . '/' . $filename;
+    if (is_file($destFile)) return 'uploads/cache/' . $filename;
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10, CURLOPT_FOLLOWLOCATION => true, CURLOPT_MAXREDIRS => 3]);
+    $bytes = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($bytes === false || $code >= 400 || strlen($bytes) > 5 * 1024 * 1024) return $url;
+    $tmp = $destDir . '/tmp_' . $filename;
+    file_put_contents($tmp, $bytes);
+    $mime = mime_content_type($tmp);
+    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+    if (!isset($allowed[$mime])) { unlink($tmp); return $url; }
+    rename($tmp, $destFile);
+    return 'uploads/cache/' . $filename;
+}
+
 function satofill_sync_products(): int
 {
     $items = satofill_fetch_catalog();
@@ -669,7 +694,7 @@ function satofill_sync_products(): int
         if ($name === '') continue;
         $cost = (float)($item['price'] ?? $item['cost'] ?? 0);
         $price = round($cost * (1 + $markup / 100), 2);
-        $image = (string)($item['image'] ?? $item['thumbnail'] ?? $item['icon_url'] ?? '');
+        $image = cache_remote_image((string)($item['image'] ?? $item['thumbnail'] ?? $item['icon_url'] ?? ''));
 
         $st = $pdo->prepare("SELECT id FROM products WHERE source='satofill' AND external_id=?");
         $st->execute([$extId]);
@@ -2317,7 +2342,7 @@ case 'home':
           <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" onclick="toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
           <a href="?page=product&id=<?= (int)$p['id'] ?>">
             <?php if ($p['image']): ?>
-              <img class="pimg" loading="lazy" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+              <img class="pimg" loading="lazy" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
             <?php elseif (!empty($p['icon'])): ?>
               <div class="icon-wrap emoji-icon"><?= e($p['icon']) ?></div>
             <?php else: ?>
@@ -2341,6 +2366,46 @@ case 'home':
       <h1 style="position:relative;z-index:1"><?= e(setting('banner_title')) ?></h1>
       <p style="position:relative;z-index:1"><?= e(setting('banner_subtitle')) ?></p>
     </div>
+    <form method="get" action="?" class="search-bar">
+      <input type="hidden" name="page" value="home">
+      <input type="text" name="q" value="<?= e($searchQ) ?>" placeholder="ابحث عن منتج...">
+      <button type="submit"><?= icon('search', 'ic-sm') ?></button>
+    </form>
+
+    <?php $tileCats = array_filter($categories, fn($c) => !empty($c['image'])); ?>
+    <?php if ($tileCats): ?>
+    <div class="cat-tiles">
+      <?php foreach ($tileCats as $c): ?>
+        <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#271419') ?>">
+          <img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>" loading="lazy" decoding="async">
+          <span class="cat-tile-label"><?= e($c['name']) ?></span>
+        </a>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+    <?php if ($categories): ?>
+    <div class="cat-chips">
+      <?php foreach ($categories as $c): ?>
+        <a href="#cat-<?= (int)$c['id'] ?>" class="cat-chip"><?= icon(category_icon_name($c['name']), 'ic-sm') ?><?= e($c['name']) ?></a>
+      <?php endforeach; ?>
+    </div>
+    <?php endif; ?>
+
+    <?php if ($banners): ?>
+    <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
+      <div class="banner-carousel-track">
+        <?php foreach ($banners as $i => $b): ?>
+          <a class="banner-carousel-slide" href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" <?= $i === 0 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"' ?> decoding="async" alt=""></a>
+        <?php endforeach; ?>
+      </div>
+      <?php if (count($banners) > 1): ?>
+      <div class="banner-carousel-dots">
+        <?php foreach ($banners as $i => $b): ?><span class="bc-dot<?= $i === 0 ? ' active' : '' ?>" onclick="bannerGoTo(<?= $i ?>)"></span><?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+    </div>
+    <?php endif; ?>
+
     <?php if ($tickers): ?>
     <div class="ticker-bar">
       <span class="ticker-badge"><?= icon('megaphone', 'ic-sm') ?>جديد</span>
@@ -2369,45 +2434,6 @@ case 'home':
       </div>
     </div>
     <?php endif; ?>
-    <?php endif; ?>
-    <?php if ($banners): ?>
-    <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
-      <div class="banner-carousel-track">
-        <?php foreach ($banners as $b): ?>
-          <a class="banner-carousel-slide" href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" loading="lazy" alt=""></a>
-        <?php endforeach; ?>
-      </div>
-      <?php if (count($banners) > 1): ?>
-      <div class="banner-carousel-dots">
-        <?php foreach ($banners as $i => $b): ?><span class="bc-dot<?= $i === 0 ? ' active' : '' ?>" onclick="bannerGoTo(<?= $i ?>)"></span><?php endforeach; ?>
-      </div>
-      <?php endif; ?>
-    </div>
-    <?php endif; ?>
-
-    <form method="get" action="?" class="search-bar">
-      <input type="hidden" name="page" value="home">
-      <input type="text" name="q" value="<?= e($searchQ) ?>" placeholder="ابحث عن منتج...">
-      <button type="submit"><?= icon('search', 'ic-sm') ?></button>
-    </form>
-
-    <?php $tileCats = array_filter($categories, fn($c) => !empty($c['image'])); ?>
-    <?php if ($tileCats): ?>
-    <div class="cat-tiles">
-      <?php foreach ($tileCats as $c): ?>
-        <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#271419') ?>">
-          <img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>">
-          <span class="cat-tile-label"><?= e($c['name']) ?></span>
-        </a>
-      <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-    <?php if ($categories): ?>
-    <div class="cat-chips">
-      <?php foreach ($categories as $c): ?>
-        <a href="#cat-<?= (int)$c['id'] ?>" class="cat-chip"><?= icon(category_icon_name($c['name']), 'ic-sm') ?><?= e($c['name']) ?></a>
-      <?php endforeach; ?>
-    </div>
     <?php endif; ?>
 
     <?php if (!$products): ?>
