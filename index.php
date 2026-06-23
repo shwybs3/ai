@@ -260,6 +260,8 @@ function migrate(): void
     add_column_if_missing($pdo, 'users', 'bonus_bio_claimed', 'INT NOT NULL DEFAULT 0');
     add_column_if_missing($pdo, 'users', 'bonus_profile_claimed', 'INT NOT NULL DEFAULT 0');
     add_column_if_missing($pdo, 'users', 'last_spin_date', 'VARCHAR(10) NULL');
+    add_column_if_missing($pdo, 'users', 'signup_fingerprint', 'VARCHAR(64) NULL');
+    add_column_if_missing($pdo, 'users', 'referral_bonus_given', 'INT NOT NULL DEFAULT 0');
 
     $pdo->exec("CREATE TABLE IF NOT EXISTS product_suggestions (
         id " . (DB_DRIVER === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INT AUTO_INCREMENT PRIMARY KEY') . ",
@@ -302,6 +304,8 @@ function migrate(): void
         'spin_reward_max' => '200',
         'spin_max_per_day' => '1',
         'live_ticker_enabled' => '1',
+        'referral_max_count' => '5',
+        'referral_referred_cut_points' => '50',
         'welcome_bonus_points' => '200',
         'ad_enabled' => '1',
         'ad_zone_id' => '11185011',
@@ -417,6 +421,17 @@ migrate();
 function e($s): string { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
 /* ---- Professional inline SVG icon set (no emojis) ---- */
+function wallet_type_label(string $type): array
+{
+    $map = [
+        'usdt' => ['USDT (TRC20)', 'coins'],
+        'sham' => ['الشام كاش', 'wallet'],
+        'binance' => ['Binance Pay', 'coins'],
+        'crypto' => ['عملات مشفرة', 'coins'],
+    ];
+    return $map[$type] ?? [$type, 'wallet'];
+}
+
 function icon(string $name, string $class = 'ic'): string
 {
     if ($name === 'google') {
@@ -830,6 +845,13 @@ function telegram_handle_login(): void
     redirect($isNew ? '?page=welcome' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
 }
 
+// تجزئة بسيطة لعنوان IP + متصفح المستخدم لمنع تكرار الإحالة من نفس الجهاز.
+// ليست حماية مطلقة (يمكن تجاوزها بـ VPN/متصفح مختلف) لكنها تردع إعادة التسجيل السريعة.
+function device_fingerprint(): string
+{
+    return hash('sha256', ($_SERVER['REMOTE_ADDR'] ?? '') . '|' . ($_SERVER['HTTP_USER_AGENT'] ?? ''));
+}
+
 function handle_register(): void
 {
     csrf_check();
@@ -852,6 +874,7 @@ function handle_register(): void
 
     $role = ($email === ADMIN_EMAIL) ? 'admin' : 'user';
     $refCode = strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+    $fingerprint = device_fingerprint();
     $referredBy = null;
     if (!empty($_SESSION['ref_code'])) {
         $st = db()->prepare("SELECT id FROM users WHERE referral_code = ?");
@@ -859,13 +882,30 @@ function handle_register(): void
         $ref = $st->fetch();
         if ($ref) $referredBy = (int)$ref['id'];
     }
-    db()->prepare("INSERT INTO users (username, email, password_hash, name, role, referral_code, referred_by) VALUES (?,?,?,?,?,?,?)")
-        ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role, $refCode, $referredBy]);
+    db()->prepare("INSERT INTO users (username, email, password_hash, name, role, referral_code, referred_by, signup_fingerprint) VALUES (?,?,?,?,?,?,?,?)")
+        ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role, $refCode, $referredBy, $fingerprint]);
     $uid = db()->lastInsertId();
     award_welcome_bonus((int)$uid);
     if ($referredBy) {
-        $bonus = (int)setting('referral_bonus_points', 100);
-        add_points($referredBy, $bonus, 'referral', 'مكافأة دعوة صديق: ' . $username);
+        // الحماية من احتيال الإحالة: لا مكافأة إذا كان جهاز المستخدم الجديد نفس جهاز الداعي (حساب وهمي على نفس الجهاز)،
+        // ولا مكافأة بعد بلوغ الداعي الحد الأقصى لعدد الإحالات المربحة.
+        $st = db()->prepare("SELECT signup_fingerprint FROM users WHERE id = ?");
+        $st->execute([$referredBy]);
+        $referrerFingerprint = $st->fetch()['signup_fingerprint'] ?? null;
+        $sameDevice = $referrerFingerprint && $referrerFingerprint === $fingerprint;
+
+        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by = ? AND referral_bonus_given = 1");
+        $st->execute([$referredBy]);
+        $successfulReferrals = (int)$st->fetch()['c'];
+        $maxReferrals = (int)setting('referral_max_count', 5);
+
+        if (!$sameDevice && $successfulReferrals < $maxReferrals) {
+            $bonus = (int)setting('referral_bonus_points', 100);
+            add_points($referredBy, $bonus, 'referral', 'مكافأة دعوة صديق: ' . $username);
+            $cut = (int)setting('referral_referred_cut_points', 50);
+            if ($cut > 0) add_points((int)$uid, $cut, 'referral', 'مكافأة الانضمام عبر دعوة صديق');
+            db()->prepare("UPDATE users SET referral_bonus_given = 1 WHERE id = ?")->execute([$uid]);
+        }
     }
     unset($_SESSION['ref_code']);
     $_SESSION['uid'] = $uid;
@@ -1932,6 +1972,9 @@ input,textarea,select{font-family:inherit}
 .coin-pkg span{font-size:10px;color:var(--muted)}
 @media (max-width:480px){.coin-pkgs{grid-template-columns:repeat(2,1fr)}}
 .btn-icon-only{padding:9px;aspect-ratio:1/1}
+.btn-withdraw-cta{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin-top:10px;padding:16px;font-size:16px;font-weight:800;color:#06251c;background:linear-gradient(135deg,#4dd6a3,#2ecc8f);border-radius:14px;box-shadow:0 8px 22px rgba(46,204,143,.4);letter-spacing:.3px}
+.btn-withdraw-cta:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(46,204,143,.55)}
+.btn-withdraw-cta:disabled{opacity:.5;cursor:not-allowed;transform:none}
 .verified-badge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#1d9bf0;color:#fff;vertical-align:middle}
 .verified-badge svg{width:11px;height:11px}
 .profile-frame{position:relative;width:96px;height:96px;margin:0 auto;border-radius:50%;display:flex;align-items:center;justify-content:center}
@@ -2106,7 +2149,8 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
       <?php foreach ($activeWallets as $w): ?>
         <div class="topup-method">
           <div class="topup-method-head">
-            <strong><?= icon($w['type'] === 'usdt' ? 'coins' : 'wallet', 'ic-sm') ?><?= e($w['label']) ?></strong>
+            <?php [$wTypeLbl, $wTypeIcon] = wallet_type_label($w['type']); ?>
+            <strong><?= icon($wTypeIcon, 'ic-sm') ?><?= e($w['label']) ?> (<?= e($wTypeLbl) ?>)</strong>
           </div>
           <div class="topup-method-addr">
             <code><?= e($w['address']) ?></code>
@@ -2445,6 +2489,11 @@ case 'wallet':
     $refStCount = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by = ?");
     $refStCount->execute([$user['id']]);
     $refCount = (int)$refStCount->fetch()['c'];
+    $refPaidSt = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by = ? AND referral_bonus_given = 1");
+    $refPaidSt->execute([$user['id']]);
+    $refPaidCount = (int)$refPaidSt->fetch()['c'];
+    $refMax = (int)setting('referral_max_count', 5);
+    $refBonusPts = (int)setting('referral_bonus_points', 100);
     ?>
     <div class="admin-box" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
       <div><strong><?= icon('coin', 'ic-sm') ?> المكافأة اليومية</strong><div style="font-size:13px;color:var(--muted);margin-top:4px"><?= $gotDailyBonus ? 'حصلت عليها اليوم، عُد غداً.' : "اضغط للحصول على +{$dailyBonusAmt} عملة." ?></div></div>
@@ -2453,22 +2502,28 @@ case 'wallet':
 
     <div class="admin-box">
       <h3><?= icon('send', 'ic') ?>دعوة الأصدقاء</h3>
-      <p style="font-size:13px;color:var(--muted)">شارك رابطك واحصل على <?= (int)setting('referral_bonus_points', 100) ?> عملة عن كل صديق يسجّل عبره. عدد من دعوتهم: <strong><?= $refCount ?></strong></p>
+      <p style="font-size:13px;color:var(--muted)">شارك رابطك واحصل على <?= $refBonusPts ?> عملة عن كل صديق يسجّل عبره (حتى <?= $refMax ?> أصدقاء كحد أقصى = <?= points_to_usd($refBonusPts * $refMax) ?>$ إجمالاً). إحالات مكتملة ومربحة: <strong><?= $refPaidCount ?>/<?= $refMax ?></strong> — إجمالي من سجّل عبر رابطك: <strong><?= $refCount ?></strong></p>
       <div class="upload-row">
         <input type="text" readonly value="<?= e(rtrim(SITE_URL, '/')) ?>/index.php?ref=<?= e($user['referral_code']) ?>" id="refLinkInput" onclick="this.select()">
         <button class="btn btn-ghost" type="button" onclick="navigator.clipboard.writeText(document.getElementById('refLinkInput').value);this.textContent='تم النسخ!'"><?= icon('check', 'ic-sm') ?>نسخ</button>
       </div>
     </div>
 
-    <div class="admin-box">
-      <h3><?= icon('bank', 'ic') ?>طريقة السحب الخاصة بك</h3>
+    <div class="admin-box withdraw-box">
+      <h3><?= icon('bank', 'ic') ?>تحويل العملات إلى رصيد حقيقي</h3>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:10px">اختر طريقة الاستلام، ثم اطلب السحب. كل طلب يحتاج موافقة الإدارة وستجد حالته في "سجل العمليات" أدناه.</p>
       <select id="wType">
+        <option value="sham" <?= $user['wallet_type'] === 'sham' ? 'selected' : '' ?>>الشام كاش (افتراضي)</option>
         <option value="usdt" <?= $user['wallet_type'] === 'usdt' ? 'selected' : '' ?>>USDT (TRC20)</option>
-        <option value="sham" <?= $user['wallet_type'] === 'sham' ? 'selected' : '' ?>>الشام كاش</option>
+        <option value="binance" <?= $user['wallet_type'] === 'binance' ? 'selected' : '' ?>>Binance Pay</option>
+        <option value="crypto" <?= $user['wallet_type'] === 'crypto' ? 'selected' : '' ?>>عملة مشفرة أخرى</option>
       </select>
       <input id="wAddr" value="<?= e($user['wallet_address']) ?>" placeholder="عنوان المحفظة / رقم الحساب">
-      <button class="btn btn-primary" onclick="saveWallet()"><?= icon('check', 'ic-sm') ?>حفظ المحفظة</button>
-      <button class="btn btn-success" style="margin-top:8px;width:100%" onclick="requestWithdraw()" <?= $canWithdraw ? '' : 'disabled' ?>><?= icon('send', 'ic-sm') ?>طلب سحب الرصيد كامل</button>
+      <button class="btn btn-ghost" style="margin-top:8px;width:100%" onclick="saveWallet()"><?= icon('check', 'ic-sm') ?>حفظ طريقة الاستلام</button>
+      <button class="btn btn-withdraw-cta" onclick="requestWithdraw()" <?= $canWithdraw ? '' : 'disabled' ?>>
+        <?= icon('send', 'ic ic-sm') ?>
+        <span><?= $canWithdraw ? 'سحب الرصيد الآن — ' . $usd . '$' : 'الحد الأدنى للسحب ' . e($minw) . '$' ?></span>
+      </button>
     </div>
 
     <div class="admin-box">
@@ -2477,7 +2532,8 @@ case 'wallet':
       <?php foreach ($wallets as $w): ?>
         <div class="topup-method">
           <div class="topup-method-head">
-            <strong><?= icon($w['type'] === 'usdt' ? 'coins' : 'wallet', 'ic-sm') ?><?= $w['type'] === 'usdt' ? 'USDT (TRC20)' : 'الشام كاش' ?> — <?= e($w['label']) ?></strong>
+            <?php [$wTypeLbl, $wTypeIcon] = wallet_type_label($w['type']); ?>
+            <strong><?= icon($wTypeIcon, 'ic-sm') ?><?= e($wTypeLbl) ?> — <?= e($w['label']) ?></strong>
           </div>
           <div class="topup-method-addr">
             <code><?= e($w['address']) ?></code>
@@ -2942,7 +2998,7 @@ case 'admin':
         <h3><?= icon('plus', 'ic') ?>إضافة محفظة استقبال</h3>
         <form method="post" action="?action=admin_save_wallet" class="formrow">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <select name="type"><option value="usdt">USDT (TRC20)</option><option value="sham">الشام كاش</option></select>
+          <select name="type"><option value="usdt">USDT (TRC20)</option><option value="sham">الشام كاش</option><option value="binance">Binance Pay</option><option value="crypto">عملات مشفرة أخرى</option></select>
           <input name="label" placeholder="اسم/وصف">
           <input name="address" placeholder="العنوان / رقم المحفظة">
           <button class="btn btn-primary">حفظ</button>
@@ -2953,7 +3009,8 @@ case 'admin':
           <tr><th>النوع</th><th>الاسم</th><th>العنوان</th><th>الحالة</th><th></th></tr>
           <?php foreach ($wallets as $w): ?>
           <tr>
-            <td><?= icon($w['type'] === 'usdt' ? 'coins' : 'wallet', 'ic-sm') ?><?= $w['type'] === 'usdt' ? 'USDT' : 'شام كاش' ?></td><td><?= e($w['label']) ?></td>
+            <?php [$wTypeLbl, $wTypeIcon] = wallet_type_label($w['type']); ?>
+            <td><?= icon($wTypeIcon, 'ic-sm') ?><?= e($wTypeLbl) ?></td><td><?= e($w['label']) ?></td>
             <td style="font-family:monospace"><?= e($w['address']) ?></td>
             <td><span class="icon-badge <?= $w['active'] ? 'ok' : 'no' ?>"><?= icon($w['active'] ? 'check' : 'x', 'ic-sm') ?></span></td>
             <td>
