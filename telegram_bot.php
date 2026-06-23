@@ -10,8 +10,6 @@
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
 require __DIR__ . '/config.php';
 
-if (!BOT_TOKEN) { http_response_code(200); echo 'BOT_TOKEN not configured'; exit; }
-
 /* ---------------------------------------------------------------------
    DB
    --------------------------------------------------------------------- */
@@ -64,6 +62,9 @@ function migrate_bot(): void
         wallet_type VARCHAR(20) NOT NULL, wallet_address VARCHAR(190) NOT NULL, status VARCHAR(20) NOT NULL DEFAULT 'pending',
         created_at $ts
     )$engine");
+    $pdo->exec("CREATE TABLE IF NOT EXISTS bot_broadcast_queue (
+        id $id, product_id INT NOT NULL, sent TINYINT NOT NULL DEFAULT 0, created_at $ts
+    )$engine");
 
     // أعمدة إضافية على telegram_users — تُضاف فقط إن لم تكن موجودة
     $existing = [];
@@ -101,9 +102,17 @@ function setting(string $k, $default = '')
 }
 function points_to_usd($pts): float { return round($pts * (float)setting('points_rate', 0.001), 4); }
 
+// التوكن والآيدي يُضبطان من لوحة تحكم الموقع (إعدادات > بوت تيليجرام)، ويُخزّنان في
+// قاعدة البيانات المشتركة حتى يقرأهما هذا الملف على سيرفر VPS منفصل، مع الرجوع
+// لقيمة config.php كخيار احتياطي فقط.
+function bot_token(): string { return setting('bot_token') ?: (defined('BOT_TOKEN') ? BOT_TOKEN : ''); }
+function owner_id(): string { return setting('owner_id') ?: (defined('OWNER_ID') ? (string)OWNER_ID : ''); }
+
+if (!bot_token()) { http_response_code(200); echo 'bot_token not configured'; exit; }
+
 function tg_api(string $method, array $params = [])
 {
-    $ch = curl_init("https://api.telegram.org/bot" . BOT_TOKEN . "/$method");
+    $ch = curl_init("https://api.telegram.org/bot" . bot_token() . "/$method");
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => json_encode($params),
@@ -151,7 +160,35 @@ function add_points(string $chatId, int $amount): void
 {
     db()->prepare("UPDATE telegram_users SET points = points + ? WHERE chat_id = ?")->execute([$amount, $chatId]);
 }
-function is_owner(string $chatId): bool { return OWNER_ID && (string)OWNER_ID === $chatId; }
+function is_owner(string $chatId): bool { return owner_id() !== '' && owner_id() === $chatId; }
+
+/* ---------------------------------------------------------------------
+   بث المنتجات الجديدة (يعمل عبر استدعاء دوري Cron من سيرفر VPS الخاص بالبوت)
+   مثال إعداد Cron: * * * * * curl -s "https://YOURDOMAIN/telegram_bot.php?cron=broadcast" >/dev/null
+   هذا الملف يقرأ فقط من bot_broadcast_queue (التي يكتبها الموقع عند نشر منتج) ولا يتلقى أي
+   استدعاء مباشر من index.php — التواصل بينهما يتم فقط عبر قاعدة البيانات المشتركة.
+   --------------------------------------------------------------------- */
+if (($_GET['cron'] ?? '') === 'broadcast') {
+    process_broadcast_queue();
+    echo 'ok'; exit;
+}
+
+function process_broadcast_queue(): void
+{
+    $rows = db()->query("SELECT q.id qid, p.* FROM bot_broadcast_queue q JOIN products p ON p.id = q.product_id WHERE q.sent = 0 ORDER BY q.id ASC LIMIT 20")->fetchAll();
+    if (!$rows) return;
+    $chats = db()->query("SELECT chat_id FROM telegram_users")->fetchAll();
+    foreach ($rows as $p) {
+        $text = "🆕 <b>منتج جديد!</b>\n\n"
+            . ($p['icon'] ? $p['icon'] . ' ' : '') . "<b>" . e_($p['name']) . "</b>\n"
+            . "💵 السعر: <b>{$p['price']}$</b>\n"
+            . ($p['description'] ? e_(mb_substr($p['description'], 0, 200)) . "\n" : "")
+            . "\n🔗 " . SITE_URL;
+        foreach ($chats as $c) tg_send($c['chat_id'], $text);
+        if (owner_id()) tg_send(owner_id(), "📢 تم بث المنتج \"{$p['name']}\" لعدد " . count($chats) . " محادثة.");
+        db()->prepare("UPDATE bot_broadcast_queue SET sent = 1 WHERE id = ?")->execute([$p['qid']]);
+    }
+}
 
 /* ---------------------------------------------------------------------
    Update intake
@@ -197,7 +234,12 @@ if ($text === '/admin') {
     $pendingW = db()->query("SELECT COUNT(*) c FROM telegram_withdraw_requests WHERE status='pending'")->fetch()['c'];
     tg_send($chatId,
         "🎛️ <b>لوحة تحكم البوت</b>\n\n👥 المستخدمون: <b>$totalUsers</b>\n💸 طلبات سحب معلّقة: <b>$pendingW</b>\n\n" .
-        "لإدارة الموقع كاملاً (منتجات، طلبات، إعدادات) ادخل من لوحة التحكم على الموقع."
+        "إدارة الإعدادات السريعة بالأسفل، أو لإدارة الموقع كاملاً (منتجات، طلبات) ادخل من لوحة التحكم على الموقع.",
+        ['inline_keyboard' => [
+            [['text' => '📢 رسالة جماعية', 'callback_data' => 'admin:broadcast']],
+            [['text' => '🪙 مكافأة الكابتشا', 'callback_data' => 'admin:set:captcha_reward'], ['text' => '💵 الحد الأدنى للسحب', 'callback_data' => 'admin:set:min_withdraw_usd']],
+            [['text' => '📊 إحصائيات', 'callback_data' => 'admin:stats']],
+        ]]
     );
     exit;
 }
@@ -211,6 +253,25 @@ if ($state && ($state['awaiting'] ?? '') === 'wallet_address') {
         ->execute([$state['wallet_type'], $text, $chatId]);
     set_state($chatId, null);
     tg_send($chatId, "✅ تم حفظ محفظتك بنجاح.", main_keyboard());
+    exit;
+}
+
+if ($state && ($state['awaiting'] ?? '') === 'broadcast_message' && is_owner($chatId)) {
+    set_state($chatId, null);
+    $chats = db()->query("SELECT chat_id FROM telegram_users")->fetchAll();
+    foreach ($chats as $c) tg_send($c['chat_id'], $text);
+    tg_send($chatId, "✅ تم إرسال الرسالة لعدد " . count($chats) . " محادثة.");
+    exit;
+}
+
+if ($state && ($state['awaiting'] ?? '') === 'set_setting' && is_owner($chatId)) {
+    set_state($chatId, null);
+    $key = $state['key'];
+    db()->prepare(DB_DRIVER === 'sqlite'
+        ? "INSERT INTO settings (k, v) VALUES (?,?) ON CONFLICT(k) DO UPDATE SET v = ?"
+        : "INSERT INTO settings (k, v) VALUES (?,?) ON DUPLICATE KEY UPDATE v = ?")
+        ->execute([$key, $text, $text]);
+    tg_send($chatId, "✅ تم حفظ القيمة الجديدة لـ <b>$key</b>: <code>" . e_($text) . "</code>");
     exit;
 }
 
@@ -304,7 +365,7 @@ switch ($text) {
             ->execute([$chatId, $pts, $usd, $tgUser['wallet_type'], $tgUser['wallet_address']]);
         db()->prepare("UPDATE telegram_users SET points = 0 WHERE chat_id = ?")->execute([$chatId]);
         tg_send($chatId, "✅ تم إرسال طلب سحب بقيمة {$usd}$، بانتظار موافقة الإدارة.");
-        if (OWNER_ID) tg_send((string)OWNER_ID, "💸 طلب سحب جديد من @{$username} ({$chatId})\nالمبلغ: {$usd}$");
+        if (owner_id()) tg_send(owner_id(), "💸 طلب سحب جديد من @{$username} ({$chatId})\nالمبلغ: {$usd}$");
         break;
 
     case '❓ مساعدة':
@@ -351,6 +412,31 @@ function handle_callback(array $cb): void
         set_state($chatId, ['awaiting' => 'wallet_address', 'wallet_type' => $type]);
         tg_answer_cb($cbId);
         tg_send($chatId, $type === 'usdt' ? '💎 أرسل عنوان USDT (TRC20):' : '📱 أرسل رقم الشام كاش:');
+        return;
+    }
+
+    if (str_starts_with($data, 'admin:') && !is_owner($chatId)) { tg_answer_cb($cbId, '⛔ للمالك فقط.', true); return; }
+
+    if ($data === 'admin:broadcast') {
+        set_state($chatId, ['awaiting' => 'broadcast_message']);
+        tg_answer_cb($cbId);
+        tg_send($chatId, '📢 أرسل نص الرسالة الجماعية الآن:');
+        return;
+    }
+
+    if (str_starts_with($data, 'admin:set:')) {
+        $key = substr($data, 10);
+        set_state($chatId, ['awaiting' => 'set_setting', 'key' => $key]);
+        tg_answer_cb($cbId);
+        tg_send($chatId, "✏️ أرسل القيمة الجديدة لـ <b>$key</b> (الحالية: <code>" . e_(setting($key)) . "</code>):");
+        return;
+    }
+
+    if ($data === 'admin:stats') {
+        $totalUsers = db()->query("SELECT COUNT(*) c FROM telegram_users")->fetch()['c'];
+        $pendingW = db()->query("SELECT COUNT(*) c FROM telegram_withdraw_requests WHERE status='pending'")->fetch()['c'];
+        tg_answer_cb($cbId);
+        tg_send($chatId, "📊 <b>إحصائيات</b>\n\n👥 المستخدمون: <b>$totalUsers</b>\n💸 طلبات سحب معلّقة: <b>$pendingW</b>");
         return;
     }
 

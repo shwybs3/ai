@@ -1,5 +1,17 @@
 config.php
 uploads/products/*
 !uploads/products/.gitkeep
+uploads/avatars/*
+!uploads/avatars/.gitkeep
+uploads/cache/*
+!uploads/cache/.gitkeep
+uploads/banners/*
+!uploads/banners/.gitkeep
+uploads/receipts/*
+!uploads/receipts/.gitkeep
+uploads/site/*
+!uploads/site/.gitkeep
 *.sqlite
 *.log
+__pycache__/
+*.pyc
