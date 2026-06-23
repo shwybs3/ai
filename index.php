@@ -357,6 +357,8 @@ function migrate(): void
         'telegram_bot_username' => '',
         'banner_interval' => '4000',
         'banner_height' => '160',
+        'home_sections_order' => 'hero,search,cat_tiles,cat_chips,carousel,ticker,live_ticker,products,soon',
+        'home_sections_hidden' => '',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -1790,6 +1792,12 @@ if ($action && str_starts_with($action, 'admin_')) {
             db()->prepare("DELETE FROM openrouter_keys WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=settings');
 
+        case 'admin_save_home_sections':
+            set_setting('home_sections_order', preg_replace('/[^a-z_,]/', '', $_POST['order'] ?? ''));
+            set_setting('home_sections_hidden', preg_replace('/[^a-z_,]/', '', $_POST['hidden'] ?? ''));
+            flash('تم حفظ تخطيط الصفحة الرئيسية.');
+            redirect('?page=admin&tab=homepage');
+
         case 'admin_save_task':
             db()->prepare("INSERT INTO tasks (title, url, seconds, reward) VALUES (?,?,?,?)")
                 ->execute([$_POST['title'], $_POST['url'], (int)$_POST['seconds'], (int)$_POST['reward']]);
@@ -2605,111 +2613,136 @@ case 'home':
         <?php
     }
     ?>
-    <?php $bannerBg = setting('banner_bg_image'); ?>
-    <div class="banner<?= $bannerBg ? ' has-bg' : '' ?>"<?= $bannerBg ? ' style="background-image:url(\'' . e($bannerBg) . '\')"' : '' ?>>
-      <?php if ($bannerBg): ?><div class="banner-overlay"></div><?php endif; ?>
-      <h1 style="position:relative;z-index:1"><?= e(setting('banner_title')) ?></h1>
-      <p style="position:relative;z-index:1"><?= e(setting('banner_subtitle')) ?></p>
-    </div>
-    <form method="get" action="?" class="search-bar">
-      <input type="hidden" name="page" value="home">
-      <input type="text" name="q" value="<?= e($searchQ) ?>" placeholder="ابحث عن منتج...">
-      <button type="submit"><?= icon('search', 'ic-sm') ?></button>
-    </form>
-
-    <?php $tileCats = array_filter($categories, fn($c) => !empty($c['image'])); ?>
-    <?php if ($tileCats): ?>
-    <div class="cat-tiles">
-      <?php foreach ($tileCats as $c): ?>
-        <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#271419') ?>">
-          <img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>" loading="lazy" decoding="async">
-          <span class="cat-tile-label"><?= e($c['name']) ?></span>
-        </a>
-      <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-    <?php if ($categories): ?>
-    <div class="cat-chips">
-      <?php foreach ($categories as $c): ?>
-        <a href="#cat-<?= (int)$c['id'] ?>" class="cat-chip"><?= icon(category_icon_name($c['name']), 'ic-sm') ?><?= e($c['name']) ?></a>
-      <?php endforeach; ?>
-    </div>
-    <?php endif; ?>
-
-    <?php if ($banners): ?>
-    <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
-      <div class="banner-carousel-track">
-        <?php foreach ($banners as $i => $b): ?>
-          <a class="banner-carousel-slide" href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" <?= $i === 0 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"' ?> decoding="async" alt=""></a>
-        <?php endforeach; ?>
-      </div>
-      <?php if (count($banners) > 1): ?>
-      <div class="banner-carousel-dots">
-        <?php foreach ($banners as $i => $b): ?><span class="bc-dot<?= $i === 0 ? ' active' : '' ?>" onclick="bannerGoTo(<?= $i ?>)"></span><?php endforeach; ?>
-      </div>
-      <?php endif; ?>
-    </div>
-    <?php endif; ?>
-
-    <?php if ($tickers): ?>
-    <div class="ticker-bar">
-      <span class="ticker-badge"><?= icon('megaphone', 'ic-sm') ?>جديد</span>
-      <div class="ticker-track">
-        <div class="ticker-track-inner">
-          <?php foreach (array_merge($tickers, $tickers) as $t): ?>
-            <?php if ($t['link']): ?><a class="ticker-item" href="<?= e($t['link']) ?>"><?= icon('star', 'ic-sm') ?><?= e($t['text']) ?></a>
-            <?php else: ?><span class="ticker-item"><?= icon('star', 'ic-sm') ?><?= e($t['text']) ?></span><?php endif; ?>
-          <?php endforeach; ?>
-        </div>
-      </div>
-    </div>
-    <?php endif; ?>
-    <?php if (setting('live_ticker_enabled', '1') === '1'):
-        $winners = db()->query("SELECT u.name, u.username, e.amount FROM earn_logs e JOIN users u ON u.id = e.user_id WHERE e.amount > 0 ORDER BY e.id DESC LIMIT 15")->fetchAll();
+    <?php
+    $tileCats = array_filter($categories, fn($c) => !empty($c['image']));
+    $homeSections = [
+        'hero' => function () {
+            $bannerBg = setting('banner_bg_image'); ?>
+            <div class="banner<?= $bannerBg ? ' has-bg' : '' ?>"<?= $bannerBg ? ' style="background-image:url(\'' . e($bannerBg) . '\')"' : '' ?>>
+              <?php if ($bannerBg): ?><div class="banner-overlay"></div><?php endif; ?>
+              <h1 style="position:relative;z-index:1"><?= e(setting('banner_title')) ?></h1>
+              <p style="position:relative;z-index:1"><?= e(setting('banner_subtitle')) ?></p>
+            </div>
+            <?php
+        },
+        'search' => function () use ($searchQ) { ?>
+            <form method="get" action="?" class="search-bar">
+              <input type="hidden" name="page" value="home">
+              <input type="text" name="q" value="<?= e($searchQ) ?>" placeholder="ابحث عن منتج...">
+              <button type="submit"><?= icon('search', 'ic-sm') ?></button>
+            </form>
+            <?php
+        },
+        'cat_tiles' => function () use ($tileCats) {
+            if (!$tileCats) return; ?>
+            <div class="cat-tiles">
+              <?php foreach ($tileCats as $c): ?>
+                <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#271419') ?>">
+                  <img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>" loading="lazy" decoding="async">
+                  <span class="cat-tile-label"><?= e($c['name']) ?></span>
+                </a>
+              <?php endforeach; ?>
+            </div>
+            <?php
+        },
+        'cat_chips' => function () use ($categories) {
+            if (!$categories) return; ?>
+            <div class="cat-chips">
+              <?php foreach ($categories as $c): ?>
+                <a href="#cat-<?= (int)$c['id'] ?>" class="cat-chip"><?= icon(category_icon_name($c['name']), 'ic-sm') ?><?= e($c['name']) ?></a>
+              <?php endforeach; ?>
+            </div>
+            <?php
+        },
+        'carousel' => function () use ($banners) {
+            if (!$banners) return; ?>
+            <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
+              <div class="banner-carousel-track">
+                <?php foreach ($banners as $i => $b): ?>
+                  <a class="banner-carousel-slide" href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" <?= $i === 0 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"' ?> decoding="async" alt=""></a>
+                <?php endforeach; ?>
+              </div>
+              <?php if (count($banners) > 1): ?>
+              <div class="banner-carousel-dots">
+                <?php foreach ($banners as $i => $b): ?><span class="bc-dot<?= $i === 0 ? ' active' : '' ?>" onclick="bannerGoTo(<?= $i ?>)"></span><?php endforeach; ?>
+              </div>
+              <?php endif; ?>
+            </div>
+            <?php
+        },
+        'ticker' => function () use ($tickers) {
+            if (!$tickers) return; ?>
+            <div class="ticker-bar">
+              <span class="ticker-badge"><?= icon('megaphone', 'ic-sm') ?>جديد</span>
+              <div class="ticker-track">
+                <div class="ticker-track-inner">
+                  <?php foreach (array_merge($tickers, $tickers) as $t): ?>
+                    <?php if ($t['link']): ?><a class="ticker-item" href="<?= e($t['link']) ?>"><?= icon('star', 'ic-sm') ?><?= e($t['text']) ?></a>
+                    <?php else: ?><span class="ticker-item"><?= icon('star', 'ic-sm') ?><?= e($t['text']) ?></span><?php endif; ?>
+                  <?php endforeach; ?>
+                </div>
+              </div>
+            </div>
+            <?php
+        },
+        'live_ticker' => function () {
+            if (setting('live_ticker_enabled', '1') !== '1') return;
+            $winners = db()->query("SELECT u.name, u.username, e.amount FROM earn_logs e JOIN users u ON u.id = e.user_id WHERE e.amount > 0 ORDER BY e.id DESC LIMIT 15")->fetchAll();
+            if (!$winners) return; ?>
+            <div class="ticker-bar live-ticker">
+              <span class="ticker-badge"><?= icon('coin', 'ic-sm') ?>مباشر</span>
+              <div class="ticker-track">
+                <div class="ticker-track-inner">
+                  <?php foreach (array_merge($winners, $winners) as $w): ?>
+                    <span class="ticker-item"><?= icon('coins', 'ic-sm') ?><?= e($w['name'] ?: $w['username']) ?> ربح <strong>+<?= (int)$w['amount'] ?></strong> عملة</span>
+                  <?php endforeach; ?>
+                </div>
+              </div>
+            </div>
+            <?php
+        },
+        'products' => function () use ($products, $categories, $byCat, $uncategorized) {
+            if (!$products) { ?>
+              <div class="empty"><?= icon('rocket', 'ic ic-lg') ?><br><?= e(setting('empty_products_text', 'لا توجد منتجات حالياً، تابعنا قريباً')) ?></div>
+              <?php return;
+            } ?>
+            <?php foreach ($categories as $c): if (empty($byCat[$c['id']])) continue; ?>
+              <div class="section-title" id="cat-<?= (int)$c['id'] ?>"><?= icon(category_icon_name($c['name']), 'ic') ?><?= e($c['name']) ?></div>
+              <div class="grid">
+                <?php foreach ($byCat[$c['id']] as $p) render_product_card($p); ?>
+              </div>
+            <?php endforeach; ?>
+            <?php if ($uncategorized): ?>
+              <div class="section-title"><?= icon('cart', 'ic') ?>أحدث المنتجات</div>
+              <div class="grid">
+                <?php foreach ($uncategorized as $p) render_product_card($p); ?>
+              </div>
+            <?php endif; ?>
+            <?php
+        },
+        'soon' => function () { ?>
+            <div class="section-title"><?= icon('rocket', 'ic') ?>تطبيقات وألعاب — قريباً</div>
+            <div class="grid">
+              <?php foreach ([['تطبيقات معدّلة (مود)', 'globe'], ['ألعاب بقوائم غش', 'rocket'], ['اشتراكات مميزة', 'star']] as [$label, $ic]): ?>
+                <div class="card soon-card">
+                  <span class="tag" style="background:linear-gradient(135deg,#555,#333)">قريباً</span>
+                  <div class="icon-wrap"><?= icon($ic, 'ic ic-xl') ?></div>
+                  <h3><?= e($label) ?></h3>
+                  <div class="desc">هذا القسم قيد التحضير وسيتوفر قريباً، تابعنا للحصول على آخر التحديثات.</div>
+                  <button class="btn btn-ghost" disabled style="opacity:.6;cursor:not-allowed"><?= icon('clock', 'ic-sm') ?>قريباً</button>
+                </div>
+              <?php endforeach; ?>
+            </div>
+            <?php
+        },
+    ];
+    $homeOrder = array_filter(explode(',', setting('home_sections_order', '')));
+    $homeHidden = array_filter(explode(',', setting('home_sections_hidden', '')));
+    foreach ($homeOrder as $sKey) {
+        if (in_array($sKey, $homeHidden, true)) continue;
+        if (isset($homeSections[$sKey])) $homeSections[$sKey]();
+    }
     ?>
-    <?php if ($winners): ?>
-    <div class="ticker-bar live-ticker">
-      <span class="ticker-badge"><?= icon('coin', 'ic-sm') ?>مباشر</span>
-      <div class="ticker-track">
-        <div class="ticker-track-inner">
-          <?php foreach (array_merge($winners, $winners) as $w): ?>
-            <span class="ticker-item"><?= icon('coins', 'ic-sm') ?><?= e($w['name'] ?: $w['username']) ?> ربح <strong>+<?= (int)$w['amount'] ?></strong> عملة</span>
-          <?php endforeach; ?>
-        </div>
-      </div>
-    </div>
-    <?php endif; ?>
-    <?php endif; ?>
-
-    <?php if (!$products): ?>
-      <div class="empty"><?= icon('rocket', 'ic ic-lg') ?><br><?= e(setting('empty_products_text', 'لا توجد منتجات حالياً، تابعنا قريباً')) ?></div>
-    <?php else: ?>
-      <?php foreach ($categories as $c): if (empty($byCat[$c['id']])) continue; ?>
-        <div class="section-title" id="cat-<?= (int)$c['id'] ?>"><?= icon(category_icon_name($c['name']), 'ic') ?><?= e($c['name']) ?></div>
-        <div class="grid">
-          <?php foreach ($byCat[$c['id']] as $p) render_product_card($p); ?>
-        </div>
-      <?php endforeach; ?>
-      <?php if ($uncategorized): ?>
-        <div class="section-title"><?= icon('cart', 'ic') ?>أحدث المنتجات</div>
-        <div class="grid">
-          <?php foreach ($uncategorized as $p) render_product_card($p); ?>
-        </div>
-      <?php endif; ?>
-    <?php endif; ?>
-
-    <div class="section-title"><?= icon('rocket', 'ic') ?>تطبيقات وألعاب — قريباً</div>
-    <div class="grid">
-      <?php foreach ([['تطبيقات معدّلة (مود)', 'globe'], ['ألعاب بقوائم غش', 'rocket'], ['اشتراكات مميزة', 'star']] as [$label, $ic]): ?>
-        <div class="card soon-card">
-          <span class="tag" style="background:linear-gradient(135deg,#555,#333)">قريباً</span>
-          <div class="icon-wrap"><?= icon($ic, 'ic ic-xl') ?></div>
-          <h3><?= e($label) ?></h3>
-          <div class="desc">هذا القسم قيد التحضير وسيتوفر قريباً، تابعنا للحصول على آخر التحديثات.</div>
-          <button class="btn btn-ghost" disabled style="opacity:.6;cursor:not-allowed"><?= icon('clock', 'ic-sm') ?>قريباً</button>
-        </div>
-      <?php endforeach; ?>
-    </div>
     <?php
     break;
 
@@ -3104,7 +3137,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -3461,6 +3494,80 @@ case 'admin':
         </div>
         <?php endforeach; ?>
       </div>
+
+    <?php elseif ($tab === 'homepage'):
+        $homeSectionLabels = [
+            'hero' => 'البنر الرئيسي + العنوان',
+            'search' => 'شريط البحث',
+            'cat_tiles' => 'بلاطات التصنيفات (بالصور)',
+            'cat_chips' => 'أزرار التصنيفات السريعة',
+            'carousel' => 'البنرات الدوارة',
+            'ticker' => 'الشريط الإعلاني المتحرك',
+            'live_ticker' => 'شريط أرباح المستخدمين المباشر',
+            'products' => 'شبكة المنتجات حسب التصنيف',
+            'soon' => 'قسم "قريباً"',
+        ];
+        $homeOrderCur = array_filter(explode(',', setting('home_sections_order', '')));
+        foreach (array_keys($homeSectionLabels) as $k2) if (!in_array($k2, $homeOrderCur, true)) $homeOrderCur[] = $k2;
+        $homeHiddenCur = array_filter(explode(',', setting('home_sections_hidden', '')));
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('menu', 'ic') ?>ترتيب وإظهار أقسام الصفحة الرئيسية</h3>
+        <p style="color:var(--muted);font-size:13px;margin:6px 0 14px">اسحب الأقسام لتغيير ترتيب ظهورها في الصفحة الرئيسية، وألغِ تفعيل أي قسم لإخفائه تماماً.</p>
+        <ul id="homeSectionsList" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px">
+          <?php foreach ($homeOrderCur as $k2):
+              if (!isset($homeSectionLabels[$k2])) continue;
+              $isHidden = in_array($k2, $homeHiddenCur, true);
+          ?>
+            <li draggable="true" data-key="<?= e($k2) ?>" class="home-section-row<?= $isHidden ? ' is-hidden' : '' ?>" style="display:flex;align-items:center;gap:10px;background:#1d1014;border:1px solid #3a1c23;border-radius:10px;padding:10px 14px;cursor:grab">
+              <?= icon('menu', 'ic-sm') ?>
+              <span style="flex:1"><?= e($homeSectionLabels[$k2]) ?></span>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin:0">
+                <input type="checkbox" class="home-section-toggle" <?= $isHidden ? '' : 'checked' ?>> مفعّل
+              </label>
+            </li>
+          <?php endforeach; ?>
+        </ul>
+        <button type="button" class="btn btn-primary" style="margin-top:14px" onclick="saveHomeSections()"><?= icon('check', 'ic-sm') ?>حفظ الترتيب</button>
+        <form method="post" action="?action=admin_save_home_sections" id="homeSectionsForm" style="display:none">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="order" id="homeSectionsOrder">
+          <input type="hidden" name="hidden" id="homeSectionsHidden">
+        </form>
+      </div>
+      <style>.home-section-row.dragging{opacity:.4}.home-section-row.is-hidden{opacity:.55}</style>
+      <script>
+      (function(){
+        const list = document.getElementById('homeSectionsList');
+        if (!list) return;
+        let dragEl = null;
+        list.querySelectorAll('li').forEach(li => {
+          li.addEventListener('dragstart', () => { dragEl = li; li.classList.add('dragging'); });
+          li.addEventListener('dragend', () => { dragEl = null; li.classList.remove('dragging'); });
+          li.addEventListener('dragover', e => {
+            e.preventDefault();
+            if (!dragEl || dragEl === li) return;
+            const rect = li.getBoundingClientRect();
+            const before = (e.clientY - rect.top) < rect.height / 2;
+            list.insertBefore(dragEl, before ? li : li.nextSibling);
+          });
+        });
+      })();
+      function saveHomeSections(){
+        const list = document.getElementById('homeSectionsList');
+        const order = [], hidden = [];
+        list.querySelectorAll('li').forEach(li => {
+          const key = li.dataset.key;
+          order.push(key);
+          const checked = li.querySelector('.home-section-toggle').checked;
+          li.classList.toggle('is-hidden', !checked);
+          if (!checked) hidden.push(key);
+        });
+        document.getElementById('homeSectionsOrder').value = order.join(',');
+        document.getElementById('homeSectionsHidden').value = hidden.join(',');
+        document.getElementById('homeSectionsForm').submit();
+      }
+      </script>
 
     <?php elseif ($tab === 'pages'):
         $privacy = db()->query("SELECT * FROM pages WHERE slug='privacy'")->fetch();
