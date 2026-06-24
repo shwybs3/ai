@@ -383,10 +383,11 @@ function migrate(): void
         'welcome_bonus_points' => '200',
         'ad_enabled' => '1',
         'ad_zone_id' => '11185011',
+        'auto_translate_enabled' => '1',
         'support_telegram' => '@layos_he',
         'google_site_verification' => '',
         'openrouter_api_key' => '',
-        'openrouter_model' => 'meta-llama/llama-3.3-70b-instruct:free',
+        'openrouter_model' => 'openai/gpt-4o',
         'openrouter_image_model' => '',
         'product_image_height' => '96',
         'cat_tile_size' => '108',
@@ -437,6 +438,21 @@ function migrate(): void
         $pdo->prepare(DB_DRIVER === 'sqlite'
             ? "INSERT INTO settings (k, v) VALUES ('home_apps_first_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
             : "INSERT INTO settings (k, v) VALUES ('home_apps_first_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: تغيير موديل الذكاء الاصطناعي الافتراضي إلى gpt-4o
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='ai_model_default_migrated'")->fetchColumn() === '') {
+        $curModel = (string)$pdo->query("SELECT v FROM settings WHERE k='openrouter_model'")->fetchColumn();
+        if ($curModel === '' || $curModel === 'meta-llama/llama-3.3-70b-instruct:free') {
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('openrouter_model', 'openai/gpt-4o') ON CONFLICT(k) DO UPDATE SET v='openai/gpt-4o'"
+                : "INSERT INTO settings (k, v) VALUES ('openrouter_model', 'openai/gpt-4o') ON DUPLICATE KEY UPDATE v='openai/gpt-4o'")
+                ->execute();
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('ai_model_default_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('ai_model_default_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
             ->execute();
     }
 
@@ -1659,14 +1675,12 @@ if ($action === 'admin_upload') {
 /* ---- OpenRouter AI helpers (admin) ---- */
 function openrouter_active_keys(): array
 {
-    global $pdo;
-    return $pdo->query("SELECT * FROM openrouter_keys WHERE active=1 ORDER BY sort_order ASC, id ASC")->fetchAll();
+    return db()->query("SELECT * FROM openrouter_keys WHERE active=1 ORDER BY sort_order ASC, id ASC")->fetchAll();
 }
 
 function openrouter_mark_error(int $keyId, string $msg): void
 {
-    global $pdo;
-    $pdo->prepare("UPDATE openrouter_keys SET last_error=? WHERE id=?")->execute([mb_substr($msg, 0, 255), $keyId]);
+    db()->prepare("UPDATE openrouter_keys SET last_error=? WHERE id=?")->execute([mb_substr($msg, 0, 255), $keyId]);
 }
 
 /**
@@ -1700,13 +1714,15 @@ function openrouter_request(array $payload): array
     return ['ok' => false, 'msg' => $lastErr];
 }
 
-function openrouter_chat(string $prompt): array
+function openrouter_chat(string $prompt, bool $jsonMode = false): array
 {
-    $model = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
-    $r = openrouter_request([
+    $model = setting('openrouter_model', 'openai/gpt-4o');
+    $payload = [
         'model' => $model,
         'messages' => [['role' => 'user', 'content' => $prompt]],
-    ]);
+    ];
+    if ($jsonMode) $payload['response_format'] = ['type' => 'json_object'];
+    $r = openrouter_request($payload);
     if (!$r['ok']) return $r;
     $data = $r['data'];
     if (empty($data['choices'][0]['message']['content'])) {
@@ -1715,7 +1731,7 @@ function openrouter_chat(string $prompt): array
     return ['ok' => true, 'text' => $data['choices'][0]['message']['content']];
 }
 
-function openrouter_image(string $prompt): array
+function openrouter_image(string $prompt, string $destSubdir = 'products'): array
 {
     $model = setting('openrouter_image_model');
     if (!$model) return ['ok' => false, 'msg' => 'لم يتم ضبط موديل توليد الصور من الإعدادات.'];
@@ -1733,12 +1749,12 @@ function openrouter_image(string $prompt): array
     $ext = $m[1] === 'jpeg' ? 'jpg' : $m[1];
     $bytes = base64_decode($m[2]);
     if (!$bytes) return ['ok' => false, 'msg' => 'فشل فك تشفير الصورة الناتجة.'];
-    $destDir = __DIR__ . '/uploads/products';
+    $destDir = __DIR__ . '/uploads/' . $destSubdir;
     if (!is_dir($destDir)) mkdir($destDir, 0755, true);
     $filename = bin2hex(random_bytes(8)) . '.' . $ext;
     file_put_contents($destDir . '/' . $filename, $bytes);
     compress_image_file($destDir . '/' . $filename, 1280, 78);
-    return ['ok' => true, 'url' => 'uploads/products/' . $filename];
+    return ['ok' => true, 'url' => 'uploads/' . $destSubdir . '/' . $filename];
 }
 
 if ($action === 'admin_test_openrouter') {
@@ -1780,6 +1796,40 @@ if ($action === 'admin_ai_generate') {
         }
     }
     echo json_encode($out);
+    exit;
+}
+
+if ($action === 'admin_ai_generate_app') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $name = trim($_POST['name'] ?? '');
+    $kind = ($_POST['kind'] ?? 'app') === 'game' ? 'لعبة' : 'تطبيق';
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    $prompt = "أنت خبير ASO/SEO لمتاجر تطبيقات أندرويد. لـ$kind اسمه \"$name\"، أنشئ محتوى نشر كامل بالعربية مناسب لمتجر تطبيقات عالمي يشبه APKPure، واجعل عنوان SEO جذاباً يحتوي كلمات بحث يستخدمها المستخدمون فعلياً (مثل تحميل، آخر إصدار، مهكرة إن كان مناسباً). "
+        . "أعد الإجابة بصيغة JSON فقط بدون أي نص إضافي وبدون Markdown، بالمفاتيح التالية فقط: "
+        . '{"short_description":"جملة واحدة جذابة أقل من 80 حرفاً","description":"وصف تفصيلي 4-6 جمل يشرح المزايا","changelog":"سطرين عن آخر تحديث افتراضي مناسب","category":"تصنيف التطبيق المناسب (مثل: ألعاب أكشن، أدوات، تواصل اجتماعي)","permissions":"3-5 صلاحيات شائعة مفصولة بفاصلة","seo_title":"عنوان SEO جذاب أقل من 65 حرفاً يحتوي اسم التطبيق وكلمة تحميل","seo_description":"وصف SEO أقل من 155 حرفاً","seo_keywords":"5-8 كلمات مفتاحية مفصولة بفاصلة"}';
+    $r = openrouter_chat($prompt, true);
+    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
+    $text = trim($r['text']);
+    $text = preg_replace('/^```json|```$/m', '', $text);
+    $json = json_decode(trim($text), true);
+    if (!$json) { echo json_encode(['ok' => false, 'msg' => 'تعذر فهم استجابة الذكاء الاصطناعي، حاول مجدداً.']); exit; }
+    echo json_encode(array_merge(['ok' => true], $json));
+    exit;
+}
+
+if ($action === 'admin_ai_generate_app_icon') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $name = trim($_POST['name'] ?? '');
+    $kind = ($_POST['kind'] ?? 'app') === 'game' ? 'لعبة' : 'تطبيق';
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    $imgPrompt = "أيقونة تطبيق أندرويد ($kind) اسمه \"$name\"، تصميم مسطح عصري بزوايا دائرية، ألوان جذابة متناسقة، بدون أي نص مكتوب على الأيقونة، خلفية مربعة كاملة، أسلوب متجر تطبيقات محترف.";
+    $imgRes = openrouter_image($imgPrompt, 'apps');
+    if (!$imgRes['ok']) { echo json_encode(['ok' => false, 'msg' => $imgRes['msg']]); exit; }
+    echo json_encode(['ok' => true, 'url' => $imgRes['url']]);
     exit;
 }
 
@@ -2291,8 +2341,12 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .stat-card .num{font-size:20px;font-weight:800}
 .stat-card .lbl{color:var(--muted);font-size:12px}
 .upload-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
-.upload-row input[type=text]{flex:1;margin-bottom:0}
+.upload-row input[type=text],.upload-row input:not([type]),.upload-row textarea{flex:1;margin-bottom:0}
+.upload-row textarea{align-self:stretch}
 .upload-row label.btn{margin:0;white-space:nowrap;cursor:pointer}
+.btn-ai{background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;width:100%;justify-content:center;margin-bottom:10px}
+.btn-ai-icon{flex-shrink:0;width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:10px;border:1px solid #28304a;background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;cursor:pointer}
+.btn-ai-icon:hover{filter:brightness(1.1)}
 .upload-row .preview{width:44px;height:44px;border-radius:8px;object-fit:cover;background:#101a2e}
 .icon-badge{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px}
 .icon-badge.ok{background:#1d3b2e;color:var(--accent2)}
@@ -2556,8 +2610,28 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
 :root{--accent:<?= e($themeAccent) ?>;--accent2:<?= e($themeAccent2) ?>}
 <?php endif; ?>
 </style>
+<?php if (setting('auto_translate_enabled', '1') === '1' && $page !== 'admin'): ?>
+<style>.goog-te-banner-frame,.skiptranslate>iframe{display:none!important}body{top:0!important}#google_translate_element{display:none}</style>
+<script>
+(function(){
+  try {
+    if (document.cookie.indexOf('googtrans=') === -1) {
+      var lang = ((navigator.language || navigator.userLanguage || 'ar').split('-')[0] || 'ar').toLowerCase();
+      if (lang && lang !== 'ar') document.cookie = 'googtrans=/ar/' + lang + ';path=/';
+    }
+  } catch (e) {}
+})();
+function googleTranslateElementInit(){
+  new google.translate.TranslateElement({ pageLanguage: 'ar', autoDisplay: false }, 'google_translate_element');
+}
+</script>
+<?php endif; ?>
 </head>
 <body>
+<?php if (setting('auto_translate_enabled', '1') === '1' && $page !== 'admin'): ?>
+<div id="google_translate_element"></div>
+<script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" async></script>
+<?php endif; ?>
 <div id="preloader">
   <div class="pl-ring">
     <svg viewBox="0 0 100 100"><circle class="pl-track" cx="50" cy="50" r="48"></circle><circle class="pl-bar" id="plBar" cx="50" cy="50" r="48"></circle></svg>
@@ -3681,9 +3755,11 @@ case 'admin':
             <input name="privacy_policy_url" id="appolicy" placeholder="رابط سياسة الخصوصية">
             <select name="status" id="apstatus"><option value="published">منشور</option><option value="pending">قيد المراجعة</option><option value="hidden">مخفي</option></select>
           </div>
+          <button type="button" class="btn btn-ai" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?>توليد كل المحتوى من الاسم بالذكاء الاصطناعي (الوصف + التصنيف + SEO + الصلاحيات)</button>
           <div class="upload-row">
             <input type="text" name="icon" id="apicon" placeholder="رابط أيقونة التطبيق (أو ارفع ملفاً)">
             <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apicon')"></label>
+            <button type="button" class="btn-ai-icon" title="توليد أيقونة بالذكاء الاصطناعي" onclick="aiGenerateAppIcon()"><?= icon('rocket', 'ic-sm') ?></button>
           </div>
           <div class="upload-row">
             <input type="text" name="banner_image" id="apbanner" placeholder="رابط صورة الغلاف">
@@ -3691,17 +3767,17 @@ case 'admin':
           </div>
           <textarea name="screenshots" id="apscreens" placeholder="روابط صور لقطات الشاشة، كل رابط بسطر مستقل" rows="3"></textarea>
           <input name="video_url" id="apvideo" placeholder="رابط فيديو عرض (يوتيوب، اختياري)">
-          <input name="short_description" id="apshort" placeholder="وصف مختصر يظهر بالبطاقات" maxlength="300">
-          <textarea name="description" id="apdesc" placeholder="الوصف الكامل للتطبيق" rows="4"></textarea>
-          <textarea name="changelog" id="apchangelog" placeholder="ما الجديد في هذا الإصدار" rows="2"></textarea>
-          <textarea name="permissions" id="appermissions" placeholder="الصلاحيات المطلوبة، كل صلاحية بسطر مستقل" rows="2"></textarea>
+          <div class="upload-row"><input name="short_description" id="apshort" placeholder="وصف مختصر يظهر بالبطاقات" maxlength="300"><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><textarea name="description" id="apdesc" placeholder="الوصف الكامل للتطبيق" rows="4"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><textarea name="changelog" id="apchangelog" placeholder="ما الجديد في هذا الإصدار" rows="2"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><textarea name="permissions" id="appermissions" placeholder="الصلاحيات المطلوبة، كل صلاحية بسطر مستقل" rows="2"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
           <div class="upload-row">
             <input type="text" name="download_url" id="apdownload" placeholder="رابط ملف APK / التحميل المباشر" required>
             <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" style="display:none" onchange="uploadInto(this,'apdownload')"></label>
           </div>
-          <input name="seo_title" id="apseotitle" placeholder="عنوان SEO لمحركات البحث (اختياري)">
-          <textarea name="seo_description" id="apseodesc" placeholder="وصف SEO لمحركات البحث (اختياري)" rows="2"></textarea>
-          <input name="seo_keywords" id="apseokw" placeholder="كلمات مفتاحية SEO مفصولة بفواصل (اختياري)">
+          <div class="upload-row"><input name="seo_title" id="apseotitle" placeholder="عنوان SEO لمحركات البحث (اختياري)"><button type="button" class="btn-ai-icon" title="توليد عنوان SEO بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><textarea name="seo_description" id="apseodesc" placeholder="وصف SEO لمحركات البحث (اختياري)" rows="2"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><input name="seo_keywords" id="apseokw" placeholder="كلمات مفتاحية SEO مفصولة بفواصل (اختياري)"><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
           <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ التطبيق</button>
         </form>
       </div>
@@ -4280,6 +4356,12 @@ case 'admin':
             </select>
           </label>
           <label>رمز منطقة الإعلان (Zone ID)<input name="ad_zone_id" value="<?= e(setting('ad_zone_id')) ?>"></label>
+          <label>ترجمة الموقع تلقائياً حسب لغة جهاز الزائر
+            <select name="auto_translate_enabled">
+              <option value="1" <?= setting('auto_translate_enabled') === '1' ? 'selected' : '' ?>>مفعّلة</option>
+              <option value="0" <?= setting('auto_translate_enabled') === '0' ? 'selected' : '' ?>>معطّلة</option>
+            </select>
+          </label>
           <label>شريط أرباح المستخدمين المباشر (الرئيسية)
             <select name="live_ticker_enabled">
               <option value="1" <?= setting('live_ticker_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
@@ -4291,8 +4373,18 @@ case 'admin':
           <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="" placeholder="<?= setting('bot_token') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'من @BotFather' ?>" autocomplete="off"></label>
           <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
-          <label>موديل OpenRouter<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
+          <label>موديل OpenRouter (الافتراضي: gpt-4o)<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="openai/gpt-4o">
             <datalist id="orModels">
+              <option value="openai/gpt-4o">
+              <option value="openai/gpt-4o-mini">
+              <option value="openai/gpt-4.1-mini">
+              <option value="anthropic/claude-3.7-sonnet">
+              <option value="anthropic/claude-3.5-sonnet">
+              <option value="anthropic/claude-3.5-haiku">
+              <option value="google/gemini-2.5-pro">
+              <option value="google/gemini-2.5-flash">
+              <option value="deepseek/deepseek-chat-v3">
+              <option value="x-ai/grok-2-1212">
               <option value="meta-llama/llama-3.3-70b-instruct:free">
               <option value="meta-llama/llama-3.1-8b-instruct:free">
               <option value="google/gemini-2.0-flash-exp:free">
@@ -4303,16 +4395,6 @@ case 'admin':
               <option value="mistralai/mistral-nemo:free">
               <option value="qwen/qwen-2.5-72b-instruct:free">
               <option value="microsoft/phi-3-medium-128k-instruct:free">
-              <option value="openai/gpt-4o-mini">
-              <option value="openai/gpt-4o">
-              <option value="openai/gpt-4.1-mini">
-              <option value="anthropic/claude-3.5-haiku">
-              <option value="anthropic/claude-3.5-sonnet">
-              <option value="anthropic/claude-3.7-sonnet">
-              <option value="google/gemini-2.5-flash">
-              <option value="google/gemini-2.5-pro">
-              <option value="deepseek/deepseek-chat-v3">
-              <option value="x-ai/grok-2-1212">
             </datalist>
           </label>
           <label>موديل توليد الصور (اختياري)<input name="openrouter_image_model" value="<?= e(setting('openrouter_image_model')) ?>" list="orImageModels" placeholder="مثال: google/gemini-2.5-flash-image-preview">
@@ -4411,7 +4493,7 @@ function loadAdNetworkOnce(){
   s.src = 'https://al5sm.com/tag.min.js';
   document.body.appendChild(s);
 }
-// الإعلانات تُحمَّل فقط عند ضغط المستخدم على أي زر في الموقع، وليس عند تحميل الصفحة
+loadAdNetworkOnce();
 document.addEventListener('click', (e) => {
   if (e.target.closest('.btn, button')) loadAdNetworkOnce();
 }, { capture: true });
@@ -4761,6 +4843,37 @@ function aiGenerateProduct(){
     if (res.meta_description) document.getElementById('pmeta').value = res.meta_description;
     if (res.image) document.getElementById('pimage').value = res.image;
     toast(res.image ? 'تم توليد الوصف والصورة وSEO بنجاح' : 'تم توليد الوصف وSEO' + (res.image_error ? ' (تعذر توليد الصورة: ' + res.image_error + ')' : ''));
+  });
+}
+function aiGenerateApp(){
+  const name = document.getElementById('apname').value.trim();
+  const kind = document.getElementById('apkind').value;
+  if (!name) return toast('أدخل اسم التطبيق أولاً.');
+  toast('جاري التوليد بالذكاء الاصطناعي...');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('kind', kind);
+  fetch('?action=admin_ai_generate_app', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    if (res.short_description) document.getElementById('apshort').value = res.short_description;
+    if (res.description) document.getElementById('apdesc').value = res.description;
+    if (res.changelog) document.getElementById('apchangelog').value = res.changelog;
+    if (res.permissions) document.getElementById('appermissions').value = res.permissions;
+    if (res.category) document.getElementById('apcategory').value = res.category;
+    if (res.seo_title) document.getElementById('apseotitle').value = res.seo_title;
+    if (res.seo_description) document.getElementById('apseodesc').value = res.seo_description;
+    if (res.seo_keywords) document.getElementById('apseokw').value = res.seo_keywords;
+    toast('تم توليد المحتوى بنجاح بالذكاء الاصطناعي');
+  });
+}
+function aiGenerateAppIcon(){
+  const name = document.getElementById('apname').value.trim();
+  const kind = document.getElementById('apkind').value;
+  if (!name) return toast('أدخل اسم التطبيق أولاً.');
+  toast('جاري توليد الأيقونة...');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('kind', kind);
+  fetch('?action=admin_ai_generate_app_icon', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    document.getElementById('apicon').value = res.url;
+    toast('تم توليد الأيقونة بنجاح');
   });
 }
 function copyAddr(btn){
