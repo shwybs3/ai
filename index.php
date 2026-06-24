@@ -15,7 +15,7 @@ require __DIR__ . '/config.php';
 
 // ثوابت اختيارية قد لا تكون موجودة في config.php القديم
 foreach ([
-    'ADMOB_APP_ID', 'ADMOB_REWARDED_ID', 'ADMOB_INTERSTitial_ID', 'OPENROUTER_KEY',
+    'ADMOB_APP_ID', 'ADMOB_REWARDED_ID', 'ADMOB_INTERSTITIAL_ID', 'OPENROUTER_KEY',
 ] as $opt) { if (!defined($opt)) define($opt, ''); }
 
 /* ======================================================================
@@ -1030,14 +1030,14 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 </head>
 <body>
 <div id="preloader">
-  <?php if ($logo): ?><img src="<?= e($logo) ?>" alt="logo" onerror="this.outerHTML='<?= addslashes(brand_logo_svg(64)) ?>'"><?php else: ?><?= brand_logo_svg(64) ?><?php endif; ?>
+  <?php if ($logo): ?><img src="<?= e($logo) ?>" alt="logo" onerror="this.onerror=null;this.src='?action=appicon'"><?php else: ?><?= brand_logo_svg(64) ?><?php endif; ?>
   <div class="spinner"></div>
   <div style="color:var(--muted);font-size:13px">جاري التحميل...</div>
 </div>
 
 <div class="topbar">
   <button class="burger" onclick="toggleSidebar()">☰</button>
-  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" onerror="this.outerHTML='<?= addslashes(brand_logo_svg(30)) ?>'"><?php else: ?><?= brand_logo_svg(30) ?><?php endif; ?> <?= e($siteName) ?></a>
+  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" onerror="this.onerror=null;this.src='?action=appicon'"><?php else: ?><?= brand_logo_svg(30) ?><?php endif; ?> <?= e($siteName) ?></a>
   <div class="grow"></div>
   <?php if ($user): ?>
     <?php $u_usd = points_to_usd($user['points']); ?>
@@ -1831,10 +1831,15 @@ function forcedAd(secs, cb){
   c.textContent='يمكنك المتابعة بعد '+r+' ثانية';
   const iv=setInterval(()=>{ r--; c.textContent= r>0 ? ('يمكنك المتابعة بعد '+r+' ثانية') : 'جارٍ المتابعة...'; if(r<=0){clearInterval(iv);ov.remove();cb();} },1000);
 }
-window.addEventListener('load', () => {
+function hidePreloader(){
   const pl = document.getElementById('preloader');
-  setTimeout(() => { pl.style.opacity = 0; setTimeout(() => pl.remove(), 400); }, 300);
-});
+  if (!pl) return;
+  pl.style.opacity = 0;
+  setTimeout(() => pl.remove(), 400);
+}
+window.addEventListener('load', () => setTimeout(hidePreloader, 300));
+// أمان: أزِل شاشة التحميل حتى لو لم تكتمل بعض الموارد (صور معطوبة مثلاً)
+setTimeout(hidePreloader, 4000);
 function toggleSidebar(){
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('show');
