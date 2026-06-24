@@ -26,5 +26,14 @@ define('OWNER_ID', '');
 // ===== MoneyTag =====
 define('MONEYTAG_SCRIPT', ''); // كود/سكربت الإعلانات الخاص بك
 
+// ===== Google AdMob (للتطبيق APK) =====
+define('ADMOB_APP_ID', '');        // ca-app-pub-xxxx~xxxx
+define('ADMOB_REWARDED_ID', '');   // وحدة الإعلان المكافأ (شاهد 30 ثانية)
+define('ADMOB_INTERSTitial_ID', ''); // إعلان بيني (كابتشا 5 ثوانٍ)
+
+// ===== OpenRouter AI =====
+// المفتاح يمكن ضبطه أيضاً من لوحة الإدارة، وهذه قيمة افتراضية اختيارية
+define('OPENROUTER_KEY', '');
+
 // ===== عام =====
 define('SITE_URL', ''); // رابط الموقع بدون / في النهاية
