@@ -199,6 +199,38 @@ function migrate(): void
         sent TINYINT NOT NULL DEFAULT 0,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS apps (
+        id $id,
+        name VARCHAR(190) NOT NULL,
+        slug VARCHAR(190) NULL,
+        kind VARCHAR(10) NOT NULL DEFAULT 'app',
+        package_name VARCHAR(190) NULL,
+        version VARCHAR(40) NULL,
+        size_label VARCHAR(40) NULL,
+        min_android VARCHAR(20) NULL,
+        category VARCHAR(80) NULL,
+        developer_name VARCHAR(190) NULL,
+        developer_website VARCHAR(300) NULL,
+        privacy_policy_url VARCHAR(300) NULL,
+        icon VARCHAR(500) NULL,
+        banner_image VARCHAR(500) NULL,
+        screenshots TEXT NULL,
+        video_url VARCHAR(500) NULL,
+        short_description VARCHAR(300) NULL,
+        description TEXT NULL,
+        changelog TEXT NULL,
+        permissions TEXT NULL,
+        download_url VARCHAR(500) NOT NULL DEFAULT '',
+        seo_title VARCHAR(190) NULL,
+        seo_description VARCHAR(255) NULL,
+        seo_keywords VARCHAR(255) NULL,
+        rating_avg DECIMAL(3,2) NOT NULL DEFAULT 0,
+        views INT NOT NULL DEFAULT 0,
+        downloads INT NOT NULL DEFAULT 0,
+        status VARCHAR(20) NOT NULL DEFAULT 'published',
+        publisher_id INT NULL,
+        created_at $ts
+    )$engine",
     "CREATE TABLE IF NOT EXISTS wishlist (
         id $id,
         user_id INT NOT NULL,
@@ -322,8 +354,12 @@ function migrate(): void
         'footer_text' => '',
         'buy_button_text' => 'طلب شراء',
         'empty_products_text' => 'لا توجد منتجات حالياً، تابعنا قريباً',
-        'theme_accent_color' => '#e6294b',
-        'theme_accent2_color' => '#ff4d4d',
+        'theme_accent_color' => '#2563eb',
+        'theme_accent2_color' => '#06b6d4',
+        'moneytag_script' => '',
+        'turnstile_site_key' => '',
+        'turnstile_secret_key' => '',
+        'app_download_wait_seconds' => '5',
         'satofill_markup_percent' => '15',
         'satofill_api_base' => 'https://satofill.com/api',
         'referral_bonus_points' => '100',
@@ -357,7 +393,7 @@ function migrate(): void
         'telegram_bot_username' => '',
         'banner_interval' => '4000',
         'banner_height' => '160',
-        'home_sections_order' => 'hero,search,cat_tiles,cat_chips,carousel,ticker,live_ticker,products,soon',
+        'home_sections_order' => 'search,carousel,ticker,live_ticker,latest_apps,cat_chips',
         'home_sections_hidden' => 'hero',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
@@ -379,6 +415,28 @@ function migrate(): void
         $pdo->prepare(DB_DRIVER === 'sqlite'
             ? "INSERT INTO settings (k, v) VALUES ('hero_hidden_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
             : "INSERT INTO settings (k, v) VALUES ('hero_hidden_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: تحويل الرئيسية لتعرض فقط أحدث التطبيقات والألعاب (latest_apps)
+    // ونقل قسم منتجات البيع (products) إلى صفحة "المتجر" المستقلة في القائمة الجانبية.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='home_apps_first_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_filter(array_map('trim', explode(',', $order)));
+        $orderParts = array_values(array_diff($orderParts, ['products']));
+        if (!in_array('latest_apps', $orderParts, true)) {
+            $pos = array_search('cat_chips', $orderParts, true);
+            if ($pos !== false) array_splice($orderParts, $pos + 1, 0, ['latest_apps']);
+            else $orderParts[] = 'latest_apps';
+        }
+        $newOrder = implode(',', $orderParts);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v = ?"
+            : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v = ?")
+            ->execute([$newOrder, $newOrder]);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_apps_first_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('home_apps_first_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
             ->execute();
     }
 
@@ -422,7 +480,7 @@ function migrate(): void
         $bannerDir = __DIR__ . '/uploads/banners';
         if (!is_dir($bannerDir)) mkdir($bannerDir, 0755, true);
         $bannerSeeds = [
-            ['تسوّق الآن واربح نقاطاً', '#e6294b', '#ff4d4d'],
+            ['تسوّق الآن واربح نقاطاً', '#2563eb', '#06b6d4'],
             ['اسحب أرباحك فوراً', '#1e63d6', '#3fa9f5'],
             ['عروض حصرية كل يوم', '#1ea672', '#34d399'],
         ];
@@ -682,6 +740,10 @@ function icon(string $name, string $class = 'ic'): string
         'star' => '<path d="M12 3.5 14.6 9l6 .9-4.3 4.2 1 6L12 17.3 6.7 20l1-6L3.4 9.9 9.4 9z"/>',
         'hat' => '<path d="M4 13.5c0-4.5 3.6-8 8-8s8 3.5 8 8"/><ellipse cx="12" cy="13.5" rx="9" ry="2.2"/><path d="M9 6.2C9.3 4.3 10.5 3 12 3s2.7 1.3 3 3.2"/>',
         'terminal' => '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5 11 12l-4 2.5M13 15h4"/>',
+        'android' => '<path d="M7 9.5h10v8a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 17.5z"/><path d="M7 12H4.5M20 12h-2.5M9 5l-1.3-1.8M15 5l1.3-1.8"/><path d="M7 9.5a5 5 0 0 1 10 0"/><circle cx="9.7" cy="7" r=".4" fill="currentColor"/><circle cx="14.3" cy="7" r=".4" fill="currentColor"/><path d="M8 21v-2M16 21v-2"/>',
+        'download' => '<path d="M12 4v11M7.5 11.5 12 16l4.5-4.5"/><path d="M4 19h16"/>',
+        'eye' => '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+        'play' => '<path d="M7 4.5v15l13-7.5z"/>',
     ];
     $body = $paths[$name] ?? $paths['check'];
     return '<svg class="' . e($class) . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $body . '</svg>';
@@ -1111,6 +1173,35 @@ function device_fingerprint(): string
     return hash('sha256', ($_SERVER['REMOTE_ADDR'] ?? '') . '|' . ($_SERVER['HTTP_USER_AGENT'] ?? ''));
 }
 
+// كابتشا عالمية حقيقية عبر Cloudflare Turnstile (مفتاح/سر يُضبطان من لوحة الإدارة).
+// إن لم يُضبط أي مفتاح يُعتبر التحقق غير مفعّل ولا يمنع تسجيل الدخول/الحساب.
+function turnstile_verify(): bool
+{
+    $secret = setting('turnstile_secret_key');
+    if (!$secret) return true;
+    $token = $_POST['cf-turnstile-response'] ?? '';
+    if (!$token) return false;
+    $ch = curl_init('https://challenges.cloudflare.com/turnstile/v0/siteverify');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query(['secret' => $secret, 'response' => $token, 'remoteip' => $_SERVER['REMOTE_ADDR'] ?? '']),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    if ($res === false) return false;
+    $data = json_decode($res, true);
+    return !empty($data['success']);
+}
+
+function turnstile_widget(): string
+{
+    $siteKey = setting('turnstile_site_key');
+    if (!$siteKey) return '';
+    return '<div class="cf-turnstile" data-sitekey="' . e($siteKey) . '" data-theme="dark"></div>';
+}
+
 function handle_register(): void
 {
     csrf_check();
@@ -1118,6 +1209,7 @@ function handle_register(): void
     $email = trim($_POST['email'] ?? '');
     $password = (string)($_POST['password'] ?? '');
 
+    if (!turnstile_verify()) { flash('فشل التحقق الأمني (الكابتشا)، يرجى المحاولة مجدداً.', 'error'); redirect('?'); }
     if (!$username || !$email || !$password) { flash('يرجى تعبئة جميع الحقول.', 'error'); redirect('?'); }
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) { flash('البريد الإلكتروني غير صالح.', 'error'); redirect('?'); }
     if (mb_strlen($password) < 6) { flash('كلمة المرور يجب أن تكون 6 أحرف على الأقل.', 'error'); redirect('?'); }
@@ -1176,6 +1268,7 @@ function handle_login(): void
     csrf_check();
     $identity = trim($_POST['identity'] ?? '');
     $password = (string)($_POST['password'] ?? '');
+    if (!turnstile_verify()) { flash('فشل التحقق الأمني (الكابتشا)، يرجى المحاولة مجدداً.', 'error'); redirect('?'); }
     if (!$identity || !$password) { flash('يرجى تعبئة جميع الحقول.', 'error'); redirect('?'); }
 
     $st = db()->prepare("SELECT * FROM users WHERE email = ? OR username = ?");
@@ -1237,12 +1330,18 @@ if ($action === 'sitemap') {
     $base = rtrim(SITE_URL, '/') . '/index.php';
     $urls = [
         ['loc' => $base, 'priority' => '1.0'],
+        ['loc' => $base . '?page=apps', 'priority' => '0.9'],
+        ['loc' => $base . '?page=store', 'priority' => '0.7'],
         ['loc' => $base . '?page=privacy', 'priority' => '0.3'],
         ['loc' => $base . '?page=terms', 'priority' => '0.3'],
     ];
+    $apps = db()->query("SELECT id, created_at FROM apps WHERE status='published'")->fetchAll();
+    foreach ($apps as $a) {
+        $urls[] = ['loc' => $base . '?page=app&id=' . (int)$a['id'], 'priority' => '0.9', 'lastmod' => substr((string)$a['created_at'], 0, 10)];
+    }
     $products = db()->query("SELECT id, created_at FROM products WHERE status='active'")->fetchAll();
     foreach ($products as $p) {
-        $urls[] = ['loc' => $base . '?page=product&id=' . (int)$p['id'], 'priority' => '0.8', 'lastmod' => substr((string)$p['created_at'], 0, 10)];
+        $urls[] = ['loc' => $base . '?page=product&id=' . (int)$p['id'], 'priority' => '0.7', 'lastmod' => substr((string)$p['created_at'], 0, 10)];
     }
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
@@ -1735,6 +1834,55 @@ if ($action && str_starts_with($action, 'admin_')) {
             flash('تم حذف القسم.');
             redirect('?page=admin&tab=products');
 
+        case 'admin_save_app':
+            $id = (int)($_POST['id'] ?? 0);
+            $name = trim($_POST['name'] ?? '');
+            if (!$name) { flash('اسم التطبيق مطلوب.', 'error'); redirect('?page=admin&tab=apps'); }
+            $fields = [
+                'kind' => in_array($_POST['kind'] ?? 'app', ['app', 'game'], true) ? $_POST['kind'] : 'app',
+                'package_name' => trim($_POST['package_name'] ?? ''),
+                'version' => trim($_POST['version'] ?? ''),
+                'size_label' => trim($_POST['size_label'] ?? ''),
+                'min_android' => trim($_POST['min_android'] ?? ''),
+                'category' => trim($_POST['category'] ?? ''),
+                'developer_name' => trim($_POST['developer_name'] ?? ''),
+                'developer_website' => trim($_POST['developer_website'] ?? ''),
+                'privacy_policy_url' => trim($_POST['privacy_policy_url'] ?? ''),
+                'icon' => trim($_POST['icon'] ?? ''),
+                'banner_image' => trim($_POST['banner_image'] ?? ''),
+                'screenshots' => trim($_POST['screenshots'] ?? ''),
+                'video_url' => trim($_POST['video_url'] ?? ''),
+                'short_description' => trim($_POST['short_description'] ?? ''),
+                'description' => trim($_POST['description'] ?? ''),
+                'changelog' => trim($_POST['changelog'] ?? ''),
+                'permissions' => trim($_POST['permissions'] ?? ''),
+                'download_url' => trim($_POST['download_url'] ?? ''),
+                'seo_title' => trim($_POST['seo_title'] ?? ''),
+                'seo_description' => trim($_POST['seo_description'] ?? ''),
+                'seo_keywords' => trim($_POST['seo_keywords'] ?? ''),
+                'status' => in_array($_POST['status'] ?? 'published', ['published', 'pending', 'hidden'], true) ? $_POST['status'] : 'published',
+            ];
+            $slugBase = trim(preg_replace('/[^a-z0-9-]+/', '-', strtolower($name)), '-') ?: 'app';
+            $admin = current_user();
+            if ($id) {
+                $fields['slug'] = $slugBase . '-' . $id;
+                $sql = "UPDATE apps SET name=?, " . implode('=?, ', array_keys($fields)) . "=?, slug=? WHERE id=?";
+                db()->prepare($sql)->execute([$name, ...array_values($fields), $fields['slug'], $id]);
+            } else {
+                $cols = array_keys($fields);
+                $sql = "INSERT INTO apps (name, publisher_id, " . implode(',', $cols) . ") VALUES (?,?," . implode(',', array_fill(0, count($cols), '?')) . ")";
+                db()->prepare($sql)->execute([$name, (int)$admin['id'], ...array_values($fields)]);
+                $id = (int)db()->lastInsertId();
+                db()->prepare("UPDATE apps SET slug=? WHERE id=?")->execute([$slugBase . '-' . $id, $id]);
+            }
+            flash('تم حفظ التطبيق بنجاح.');
+            redirect('?page=admin&tab=apps');
+
+        case 'admin_delete_app':
+            db()->prepare("DELETE FROM apps WHERE id=?")->execute([(int)$_POST['id']]);
+            flash('تم حذف التطبيق.');
+            redirect('?page=admin&tab=apps');
+
         case 'admin_satofill_sync':
             try {
                 $n = satofill_sync_products();
@@ -1901,8 +2049,20 @@ if ($page === 'product') {
     $seoProduct = $st->fetch();
     if (!$seoProduct) { http_response_code(404); }
 }
-$pageLabels = ['home' => 'الرئيسية', 'earn' => 'اكسب عملات', 'tasks' => 'المهام اليومية', 'wallet' => 'محفظتي', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'welcome' => 'مرحباً بك', 'admin' => 'لوحة الإدارة'];
-if ($seoProduct) {
+$seoApp = null;
+if (in_array($page, ['app', 'app_download'], true)) {
+    $st = db()->prepare("SELECT * FROM apps WHERE id=? AND status='published'");
+    $st->execute([(int)($_GET['id'] ?? 0)]);
+    $seoApp = $st->fetch();
+    if (!$seoApp) { http_response_code(404); }
+}
+$pageLabels = ['home' => 'الرئيسية', 'earn' => 'اكسب عملات', 'tasks' => 'المهام اليومية', 'wallet' => 'محفظتي', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'welcome' => 'مرحباً بك', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر'];
+if ($seoApp) {
+    $seoTitle = ($seoApp['seo_title'] ?: $seoApp['name']) . ' — تحميل ' . ($seoApp['kind'] === 'game' ? 'لعبة' : 'تطبيق') . ' مجاناً — ' . e($siteName);
+    $seoDesc = $seoApp['seo_description'] ?: ($seoApp['short_description'] ?: mb_substr((string)$seoApp['description'], 0, 155));
+    $seoImage = $seoApp['icon'] ?: $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=app&id=' . (int)$seoApp['id'];
+} elseif ($seoProduct) {
     $seoTitle = $seoProduct['name'] . ' — ' . e($siteName);
     $seoDesc = $seoProduct['meta_description'] ?: mb_substr((string)$seoProduct['description'], 0, 155);
     $seoImage = $seoProduct['image'] ?: $logo;
@@ -1935,13 +2095,17 @@ if ($seoProduct) {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <?php if ($page !== 'admin' && !$user): ?><meta name="robots" content="index, follow"><?php else: ?><meta name="robots" content="noindex, nofollow"><?php endif; ?>
 <?php if (setting('google_site_verification')): ?><meta name="google-site-verification" content="<?= e(setting('google_site_verification')) ?>"><?php endif; ?>
-<meta property="og:type" content="<?= $seoProduct ? 'product' : 'website' ?>">
+<meta property="og:type" content="<?= $seoApp ? 'website' : ($seoProduct ? 'product' : 'website') ?>">
 <meta property="og:title" content="<?= e($seoTitle) ?>">
 <meta property="og:description" content="<?= e($seoDesc) ?>">
 <?php if ($seoImage): ?><meta property="og:image" content="<?= e($seoImage) ?>"><?php endif; ?>
 <?php if ($logo): ?><link rel="icon" href="<?= e($logo) ?>"><?php endif; ?>
 <link rel="canonical" href="<?= e($seoCanonical) ?>">
-<?php if ($seoProduct): ?>
+<?php if ($seoApp): ?>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"<?= e($seoApp['name']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>","applicationCategory":"<?= $seoApp['kind'] === 'game' ? 'GameApplication' : 'MobileApplication' ?>","operatingSystem":"ANDROID"<?= $seoApp['version'] ? ',"softwareVersion":"' . e($seoApp['version']) . '"' : '' ?><?= $seoApp['rating_avg'] ? ',"aggregateRating":{"@type":"AggregateRating","ratingValue":"' . e($seoApp['rating_avg']) . '","ratingCount":"' . max(1, (int)$seoApp['downloads']) . '"}' : '' ?>,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+</script>
+<?php elseif ($seoProduct): ?>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"Product","name":"<?= e($seoProduct['name']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>","offers":{"@type":"Offer","price":"<?= e($seoProduct['price']) ?>","priceCurrency":"USD","availability":"https://schema.org/InStock"}}
 </script>
@@ -1954,7 +2118,7 @@ if ($seoProduct) {
 </script>
 <?php endif; ?>
 <style>
-:root{--bg:#0e0a0c;--bg2:#1a1014;--card:#241318;--card2:#2c171d;--accent:#e6294b;--accent-d:#a3182c;--accent2:#ff4d4d;--accent2-d:#c92a2a;--gold:#ffc233;--text:#f3eef0;--muted:#a98e93;--danger:#ff5c5c;--radius:18px;--shadow:0 10px 30px rgba(0,0,0,.45);--glow:0 0 0 1px rgba(230,41,75,.3),0 8px 30px rgba(230,41,75,.2);--ease:cubic-bezier(.22,1,.36,1)}
+:root{--bg:#0b1120;--bg2:#121b30;--card:#16213b;--card2:#1c2a48;--accent:#2563eb;--accent-d:#1d4ed8;--accent2:#06b6d4;--accent2-d:#0891b2;--gold:#ffc233;--text:#eef2ff;--muted:#8b9bbd;--danger:#ff5c5c;--radius:18px;--shadow:0 10px 30px rgba(0,0,0,.45);--glow:0 0 0 1px rgba(37,99,235,.3),0 8px 30px rgba(37,99,235,.2);--ease:cubic-bezier(.22,1,.36,1)}
 *{box-sizing:border-box;margin:0;padding:0}
 *::selection{background:var(--accent);color:#fff}
 html{scroll-behavior:smooth}
@@ -1962,22 +2126,22 @@ body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;color:var(--text);min-height
 a{color:inherit;text-decoration:none}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-track{background:var(--bg)}
-::-webkit-scrollbar-thumb{background:#3a1c25;border-radius:10px;border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb{background:#2a3350;border-radius:10px;border:2px solid var(--bg)}
 ::-webkit-scrollbar-thumb:hover{background:var(--accent)}
 #preloader{position:fixed;inset:0;background:radial-gradient(900px 500px at 50% 0%,rgba(230,41,75,.14),transparent 60%),var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;transition:opacity .4s}
 .pl-ring{position:relative;width:108px;height:108px;display:flex;align-items:center;justify-content:center}
 .pl-ring svg{width:108px;height:108px;transform:rotate(-90deg)}
 .pl-ring circle{fill:none;stroke-width:5}
-.pl-ring .pl-track{stroke:#361c22}
+.pl-ring .pl-track{stroke:#28304a}
 .pl-ring .pl-bar{stroke:var(--accent);stroke-linecap:round;stroke-dasharray:301;stroke-dashoffset:301;transition:stroke-dashoffset .15s linear}
 .pl-ring img,.pl-ring .pl-fallback{position:absolute;width:62px;height:62px;border-radius:50%;object-fit:cover}
 .pl-pct{position:absolute;bottom:-30px;font-size:13px;font-weight:700;color:var(--accent2)}
 #preloader .pl-text{color:var(--muted);font-size:13px;margin-top:14px}
 #preloader img{width:64px;height:64px;border-radius:50%}
-.spinner{width:46px;height:46px;border:4px solid #3a1c23;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+.spinner{width:46px;height:46px;border:4px solid #2a3350;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
 .topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;padding:12px 18px;background:rgba(13,17,30,.72);backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);border-bottom:1px solid rgba(230,41,75,.15);box-shadow:0 4px 24px rgba(0,0,0,.25)}
-.burger{cursor:pointer;font-size:22px;background:#271419;border:1px solid #3a1c25;border-radius:12px;color:var(--text);width:42px;height:42px;display:flex;align-items:center;justify-content:center;transition:.2s var(--ease)}
+.burger{cursor:pointer;font-size:22px;background:#18223a;border:1px solid #2a3350;border-radius:12px;color:var(--text);width:42px;height:42px;display:flex;align-items:center;justify-content:center;transition:.2s var(--ease)}
 .burger:hover{background:var(--accent);transform:translateY(-1px);border-color:var(--accent)}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:.3px}
 .brand img{width:34px;height:34px;flex-shrink:0;object-fit:cover;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.3)}
@@ -1987,30 +2151,30 @@ a{color:inherit;text-decoration:none}
 .btn::after{content:"";position:absolute;top:0;left:-120%;width:60%;height:100%;background:linear-gradient(120deg,transparent,rgba(255,255,255,.28),transparent);transform:skewX(-20deg);transition:left .6s var(--ease)}
 .btn:hover::after{left:140%}
 .btn:active{transform:scale(.96)}
-.btn-primary{background:linear-gradient(135deg,var(--accent),#ff6b6b);color:#fff;box-shadow:0 6px 18px rgba(230,41,75,.35)}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#38bdf8);color:#fff;box-shadow:0 6px 18px rgba(230,41,75,.35)}
 .btn-primary:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(230,41,75,.5)}
 .btn-ghost{background:#2e1920;color:var(--text)}
 .btn-ghost:hover{background:#391e26;transform:translateY(-1px)}
 .btn-success{background:linear-gradient(135deg,#22c55e,#16a34a);color:#06251c;box-shadow:0 6px 18px rgba(34,197,94,.3)}
 .btn-success:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(34,197,94,.45)}
-.btn-danger{background:linear-gradient(135deg,var(--danger),#ff7b7b);color:#250505}
+.btn-danger{background:linear-gradient(135deg,var(--danger),#38bdf8);color:#250505}
 .btn-danger:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(255,92,92,.4)}
 .btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
 .btn:disabled::after{display:none}
 .ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,.45);transform:scale(0);animation:rippleAnim .6s var(--ease);pointer-events:none}
 @keyframes rippleAnim{to{transform:scale(2.5);opacity:0}}
-.user-chip{display:flex;align-items:center;gap:8px;background:#341c22;padding:6px 10px;border-radius:30px}
+.user-chip{display:flex;align-items:center;gap:8px;background:#28304a;padding:6px 10px;border-radius:30px}
 .user-chip img{width:26px;height:26px;flex-shrink:0;object-fit:cover;border-radius:50%}
 .sidebar{position:fixed;top:0;right:-300px;width:280px;height:100%;background:var(--bg2);z-index:60;transition:right .3s;overflow-y:auto;box-shadow:-10px 0 30px rgba(0,0,0,.3)}
 .sidebar.open{right:0}
 .sidebar .sb-head{padding:18px;border-bottom:1px solid #3a1f26;display:flex;justify-content:space-between;align-items:center}
 .sidebar nav a{position:relative;display:flex;align-items:center;gap:12px;padding:15px 18px;color:var(--text);border-bottom:1px solid #2b151b;font-size:15px;font-weight:600;transition:background .2s,padding .2s var(--ease)}
 .sidebar nav a::before{content:"";position:absolute;right:0;top:0;bottom:0;width:4px;background:linear-gradient(var(--accent),var(--accent2));transform:scaleY(0);transition:transform .25s var(--ease)}
-.sidebar nav a:hover{background:#2c171d;padding-right:24px}
+.sidebar nav a:hover{background:#1c2a48;padding-right:24px}
 .sidebar nav a:hover::before{transform:scaleY(1)}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:55;display:none}
 .overlay.show{display:block}
-.banner{margin:18px 18px 0;border-radius:24px 24px 0 0;background:linear-gradient(135deg,#5a0e1a,#a3182c 55%,#ff4d4d);padding:46px 28px;position:relative;overflow:hidden;box-shadow:0 14px 40px rgba(163,24,44,.35);animation:fadeUp .7s var(--ease) both;background-size:cover;background-position:center}
+.banner{margin:18px 18px 0;border-radius:24px 24px 0 0;background:linear-gradient(135deg,#5a0e1a,#1d4ed8 55%,#06b6d4);padding:46px 28px;position:relative;overflow:hidden;box-shadow:0 14px 40px rgba(163,24,44,.35);animation:fadeUp .7s var(--ease) both;background-size:cover;background-position:center}
 .banner.has-bg::before,.banner.has-bg::after{display:none}
 .banner.has-bg{background-blend-mode:overlay}
 .banner.has-bg .banner-overlay{position:absolute;inset:0;background:linear-gradient(135deg,rgba(13,30,60,.72),rgba(13,30,60,.45))}
@@ -2033,11 +2197,11 @@ a{color:inherit;text-decoration:none}
 .section-title::before{content:"";width:5px;height:22px;border-radius:6px;background:linear-gradient(var(--accent),var(--accent2))}
 .section-title .ic{color:var(--accent2)}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:12px;padding:0 18px 30px}
-.card{background:linear-gradient(180deg,var(--card),#2c171d);border-radius:var(--radius);padding:12px;position:relative;border:1px solid #341c22;transition:transform .28s var(--ease),box-shadow .28s var(--ease),border-color .28s;overflow:hidden}
+.card{background:linear-gradient(180deg,var(--card),#1c2a48);border-radius:var(--radius);padding:12px;position:relative;border:1px solid #28304a;transition:transform .28s var(--ease),box-shadow .28s var(--ease),border-color .28s;overflow:hidden}
 .card::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(135deg,rgba(230,41,75,.6),transparent 40%,rgba(255,77,77,.5));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:0;transition:opacity .3s}
 .card:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.45)}
 .card:hover::before{opacity:1}
-.card .tag{position:absolute;top:12px;left:12px;background:linear-gradient(135deg,var(--accent2),#ff7676);color:#06251c;font-size:11px;padding:4px 10px;border-radius:20px;font-weight:800;z-index:2;box-shadow:0 4px 12px rgba(255,77,77,.4)}
+.card .tag{position:absolute;top:12px;left:12px;background:linear-gradient(135deg,var(--accent2),#38bdf8);color:#06251c;font-size:11px;padding:4px 10px;border-radius:20px;font-weight:800;z-index:2;box-shadow:0 4px 12px rgba(255,77,77,.4)}
 .card .icon{font-size:28px;margin-bottom:6px}
 .card img.pimg{width:100%;height:96px;object-fit:cover;border-radius:10px;margin-bottom:8px;transition:transform .4s var(--ease)}
 .card:hover img.pimg{transform:scale(1.07)}
@@ -2060,30 +2224,30 @@ a{color:inherit;text-decoration:none}
 .container{max-width:1000px;margin:0 auto;padding-bottom:80px}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
 .modal-bg{animation:fadeIn .25s ease}
-.modal{background:linear-gradient(180deg,var(--card),#221318);border-radius:22px;padding:24px;max-width:430px;width:100%;max-height:85vh;overflow:auto;border:1px solid #3a1c25;box-shadow:0 24px 60px rgba(0,0,0,.5);animation:modalPop .35s var(--ease)}
+.modal{background:linear-gradient(180deg,var(--card),#141d33);border-radius:22px;padding:24px;max-width:430px;width:100%;max-height:85vh;overflow:auto;border:1px solid #2a3350;box-shadow:0 24px 60px rgba(0,0,0,.5);animation:modalPop .35s var(--ease)}
 @keyframes modalPop{from{opacity:0;transform:translateY(24px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
 @keyframes fadeIn{from{opacity:0}to{opacity:1}}
 .modal h2{margin-bottom:14px;display:flex;align-items:center;gap:8px}
-.modal input,.modal textarea,.modal select{width:100%;padding:12px;border-radius:12px;border:1px solid #3a1c23;background:#1d0f14;color:var(--text);margin-bottom:10px;font-family:inherit;font-size:14px;transition:border-color .2s,box-shadow .2s}
+.modal input,.modal textarea,.modal select{width:100%;padding:12px;border-radius:12px;border:1px solid #2a3350;background:#101a2e;color:var(--text);margin-bottom:10px;font-family:inherit;font-size:14px;transition:border-color .2s,box-shadow .2s}
 .modal input:focus,.modal textarea:focus,.modal select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(230,41,75,.2)}
-.toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%) translateY(20px);background:linear-gradient(135deg,#341c22,#3a1f29);padding:13px 22px;border-radius:30px;z-index:300;display:none;font-size:14px;font-weight:600;box-shadow:0 12px 30px rgba(0,0,0,.45);border:1px solid #4a2530}
+.toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%) translateY(20px);background:linear-gradient(135deg,#28304a,#28324e);padding:13px 22px;border-radius:30px;z-index:300;display:none;font-size:14px;font-weight:600;box-shadow:0 12px 30px rgba(0,0,0,.45);border:1px solid #4a2530}
 .toast.show{display:block;animation:toastIn .4s var(--ease) forwards}
 @keyframes toastIn{to{transform:translateX(-50%) translateY(0)}}
 .policy-modal{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:flex;align-items:center;justify-content:center;padding:16px}
 .policy-box{background:var(--card);border-radius:var(--radius);padding:24px;max-width:480px}
 .flash{margin:14px 18px;padding:12px 16px;border-radius:10px;background:#1d3b2e;border:1px solid var(--accent2)}
-.flash.error{background:#3b1d1d;border-color:var(--danger)}
+.flash.error{background:#243152;border-color:var(--danger)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-table th,table td{padding:8px;border-bottom:1px solid #341c22;text-align:right}
+table th,table td{padding:8px;border-bottom:1px solid #28304a;text-align:right}
 .admin-tabs{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px}
-.admin-tabs a{padding:8px 14px;border-radius:10px;background:#341c22;font-size:13px}
+.admin-tabs a{padding:8px 14px;border-radius:10px;background:#28304a;font-size:13px}
 .admin-tabs a.active{background:var(--accent)}
 .admin-box{background:var(--card);margin:0 18px 20px;border-radius:var(--radius);padding:18px;overflow-x:auto}
 .formrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px}
 .badge{padding:2px 8px;border-radius:8px;font-size:11px}
 .badge.pending{background:#5a4a1c}
 .badge.approved{background:#1d3b2e}
-.badge.rejected{background:#3b1d1d}
+.badge.rejected{background:#243152}
 footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .ic{width:18px;height:18px;display:inline-block;vertical-align:middle;flex-shrink:0}
 .ic-sm{width:14px;height:14px}
@@ -2095,46 +2259,46 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .bottom-nav a .ic{display:block;margin:0 auto 3px}
 .bottom-nav a.active .ic{color:var(--accent2)}
 .admin-tabs a{display:inline-flex;align-items:center;gap:6px}
-.card .icon-wrap{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:#1d1014;display:flex;align-items:center;justify-content:center;margin-bottom:8px;color:var(--accent2)}
+.card .icon-wrap{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:#101a2e;display:flex;align-items:center;justify-content:center;margin-bottom:8px;color:var(--accent2)}
 .card .icon-wrap.emoji-icon{font-size:20px;line-height:1}
-.wish-btn{position:absolute;top:10px;left:10px;z-index:2;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.4);border:1px solid #3a1c25;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer;transition:.2s}
+.wish-btn{position:absolute;top:10px;left:10px;z-index:2;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.4);border:1px solid #2a3350;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer;transition:.2s}
 .wish-btn .ic{fill:none;stroke:currentColor}
 .wish-btn.active{color:var(--accent2)}
 .wish-btn.active .ic{fill:var(--accent2)}
 .search-bar{display:flex;gap:8px;margin:0 18px 16px}
-.search-bar input{flex:1;padding:12px 14px;border-radius:12px;border:1px solid #3a1c23;background:#1d0f14;color:var(--text);font-size:14px}
-.search-bar button{width:44px;border-radius:12px;border:1px solid #3a1c23;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.search-bar input{flex:1;padding:12px 14px;border-radius:12px;border:1px solid #2a3350;background:#101a2e;color:var(--text);font-size:14px}
+.search-bar button{width:44px;border-radius:12px;border:1px solid #2a3350;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
 .star-rating{display:flex;gap:2px;color:var(--accent2)}
 .star-rating .ic{width:16px;height:16px}
 .profile-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
-.profile-stat{display:flex;flex-direction:column;align-items:center;gap:6px;background:#1d0f14;border:1px solid #341c22;border-radius:14px;padding:14px 8px;text-align:center}
+.profile-stat{display:flex;flex-direction:column;align-items:center;gap:6px;background:#101a2e;border:1px solid #28304a;border-radius:14px;padding:14px 8px;text-align:center}
 .profile-stat strong{font-size:18px}
 .profile-stat span{color:var(--muted);font-size:12px}
-.profile-info-row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #341c22;font-size:13px}
+.profile-info-row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #28304a;font-size:13px}
 .profile-info-row:last-child{border-bottom:none}
 .profile-info-row span{color:var(--muted)}
 .achv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
-.achv-badge{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;background:#1d0f14;border:1px solid #341c22;color:var(--muted);font-size:13px;opacity:.5}
+.achv-badge{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;background:#101a2e;border:1px solid #28304a;color:var(--muted);font-size:13px;opacity:.5}
 .achv-badge.on{opacity:1;color:var(--text);border-color:var(--accent);background:rgba(230,41,75,.1)}
 .achv-badge.on .ic{color:var(--accent2)}
-.balance-pill-sm{display:flex;align-items:center;gap:5px;background:#1d0f14;border:1px solid #341c22;border-radius:20px;padding:6px 12px;font-size:13px;font-weight:700;color:var(--accent2)}
+.balance-pill-sm{display:flex;align-items:center;gap:5px;background:#101a2e;border:1px solid #28304a;border-radius:20px;padding:6px 12px;font-size:13px;font-weight:700;color:var(--accent2)}
 @media (max-width:480px){.profile-grid{grid-template-columns:repeat(2,1fr)}.achv-grid{grid-template-columns:1fr}}
 .icon-wrap .ic{flex-shrink:0}
 .card img.pimg{display:block;flex-shrink:0}
 .brand .ic{color:var(--accent2)}
-.stat-card{background:#1d1014;border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px}
-.stat-card .ic{color:var(--accent2);background:#2a151b;border-radius:10px;padding:8px;width:36px;height:36px}
+.stat-card{background:#101a2e;border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px}
+.stat-card .ic{color:var(--accent2);background:#1c2840;border-radius:10px;padding:8px;width:36px;height:36px}
 .stat-card .num{font-size:20px;font-weight:800}
 .stat-card .lbl{color:var(--muted);font-size:12px}
 .upload-row{display:flex;gap:8px;align-items:center;margin-bottom:10px}
 .upload-row input[type=text]{flex:1;margin-bottom:0}
 .upload-row label.btn{margin:0;white-space:nowrap;cursor:pointer}
-.upload-row .preview{width:44px;height:44px;border-radius:8px;object-fit:cover;background:#1d1014}
+.upload-row .preview{width:44px;height:44px;border-radius:8px;object-fit:cover;background:#101a2e}
 .icon-badge{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px}
 .icon-badge.ok{background:#1d3b2e;color:var(--accent2)}
-.icon-badge.no{background:#3b1d1d;color:var(--danger)}
+.icon-badge.no{background:#243152;color:var(--danger)}
 
-.wallet-balance-card{background:linear-gradient(135deg,#2a151b,#3a1c30);border:1px solid #3f1f2c;border-radius:18px;padding:20px;margin:18px;position:relative;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.wallet-balance-card{background:linear-gradient(135deg,#1c2840,#3a1c30);border:1px solid #3f1f2c;border-radius:18px;padding:20px;margin:18px;position:relative;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
 .wallet-balance-card::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 100% 0%,rgba(230,41,75,.25),transparent 60%)}
 .wbc-top{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted);position:relative;z-index:1}
 .wbc-label{display:flex;align-items:center;gap:6px;color:#fff;font-weight:700}
@@ -2145,21 +2309,22 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .wbc-usd{color:var(--muted);font-size:14px;position:relative;z-index:1}
 .wbc-usd strong{color:#fff;font-size:16px}
 .wbc-progress{margin-top:14px;position:relative;z-index:1}
-.wbc-progress-bar{height:8px;border-radius:6px;background:#1d1014;overflow:hidden}
+.wbc-progress-bar{height:8px;border-radius:6px;background:#101a2e;overflow:hidden}
 .wbc-progress-fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .6s ease}
 .wbc-progress-txt{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:6px}
 
-.topup-method{background:#1d1014;border-radius:10px;padding:12px;margin-bottom:8px;transition:transform .15s ease}
+.topup-method{background:#101a2e;border-radius:10px;padding:12px;margin-bottom:8px;transition:transform .15s ease}
 .topup-method:hover{transform:translateY(-2px)}
 .topup-method-head strong{display:flex;align-items:center;gap:6px;font-size:14px}
 .topup-method-addr{display:flex;align-items:center;gap:8px;margin-top:6px}
 .topup-method-addr code{flex:1;font-family:monospace;word-break:break-all;color:var(--muted);font-size:12px}
 .cat-chips{display:flex;gap:10px;overflow-x:auto;padding:0 18px 14px;scrollbar-width:none}
 .cat-chips::-webkit-scrollbar{display:none}
-.cat-chip{display:flex;align-items:center;gap:6px;flex-shrink:0;background:#271419;border:1px solid #361c22;border-radius:30px;padding:8px 16px;font-size:13px;font-weight:600;color:var(--text);transition:transform .2s var(--ease),border-color .2s}
+.cat-chip{display:flex;align-items:center;gap:6px;flex-shrink:0;background:#18223a;border:1px solid #28304a;border-radius:30px;padding:8px 16px;font-size:13px;font-weight:600;color:var(--text);transition:transform .2s var(--ease),border-color .2s}
 .cat-chip:hover{transform:translateY(-2px);border-color:var(--accent2)}
+.cat-chip.active{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:transparent;color:#fff}
 .cat-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;padding:0 18px 16px}
-.cat-tile{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;aspect-ratio:1/1;border-radius:16px;overflow:hidden;background:linear-gradient(135deg,#a3182c,#ff4d4d);box-shadow:0 6px 16px rgba(0,0,0,.25);transition:transform .2s var(--ease)}
+.cat-tile{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;aspect-ratio:1/1;border-radius:16px;overflow:hidden;background:linear-gradient(135deg,#1d4ed8,#06b6d4);box-shadow:0 6px 16px rgba(0,0,0,.25);transition:transform .2s var(--ease)}
 .cat-tile:hover{transform:translateY(-4px) scale(1.03)}
 .cat-tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
 .cat-tile-icon{flex:1;display:flex;align-items:center;justify-content:center;color:#fff;opacity:.9}
@@ -2174,18 +2339,18 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .bc-dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.45);cursor:pointer;transition:.2s}
 .bc-dot.active{background:#fff;width:18px;border-radius:4px}
 .soon-card{opacity:.85}
-.balance-pill{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#2a151b,#2e161d);border:1px solid #3a1c23;border-radius:30px;padding:10px 16px;margin-bottom:16px;font-size:14px;color:var(--muted)}
+.balance-pill{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#1c2840,#2e161d);border:1px solid #2a3350;border-radius:30px;padding:10px 16px;margin-bottom:16px;font-size:14px;color:var(--muted)}
 .balance-pill strong{color:var(--accent2)}
 .buy-modal label{display:block;font-size:13px;color:var(--muted);margin-bottom:10px}
-.buy-extra{background:#1d1014;border:1px solid #3a1c23;border-radius:10px;margin-bottom:10px;overflow:hidden}
+.buy-extra{background:#101a2e;border:1px solid #2a3350;border-radius:10px;margin-bottom:10px;overflow:hidden}
 .buy-extra summary{cursor:pointer;padding:10px 12px;font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;list-style:none}
 .buy-extra summary::-webkit-details-marker{display:none}
-.buy-extra[open] summary{border-bottom:1px solid #3a1c23}
+.buy-extra[open] summary{border-bottom:1px solid #2a3350}
 .buy-extra label,.buy-extra .topup-method{margin:10px 12px}
 .buy-extra .topup-method:last-of-type{margin-bottom:6px}
 .buy-extra a{margin:0 12px 10px}
-.upload-box{position:relative;border:2px dashed #3a1c23;border-radius:var(--radius,12px);background:#1d1014;padding:18px 14px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:6px}
-.upload-box:hover,.upload-box.dragover{border-color:var(--accent2);background:#221318}
+.upload-box{position:relative;border:2px dashed #2a3350;border-radius:var(--radius,12px);background:#101a2e;padding:18px 14px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:6px}
+.upload-box:hover,.upload-box.dragover{border-color:var(--accent2);background:#141d33}
 .upload-box input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
 .upload-box .ic{color:var(--accent2)}
 .upload-box-text{font-size:13px;color:var(--muted)}
@@ -2196,45 +2361,45 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .upload-box-preview img{width:56px;height:56px;border-radius:8px;object-fit:cover;flex-shrink:0}
 .upload-box-preview-info{flex:1;text-align:right;overflow:hidden}
 .upload-box-preview-info span{display:block;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-.upload-box-remove{background:#2a151b;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;flex-shrink:0;position:relative;z-index:2}
+.upload-box-remove{background:#1c2840;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;flex-shrink:0;position:relative;z-index:2}
 .upload-box-remove:hover{color:var(--danger);background:#3b1d22}
-.btn-copy{background:#2a151b;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;transition:color .2s,background .2s}
+.btn-copy{background:#1c2840;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;transition:color .2s,background .2s}
 .btn-copy:hover{color:#fff;background:#3a1c29}
 .btn-copy.copied{color:var(--accent2);background:#1d3b2e}
 
 .login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;background:radial-gradient(1100px 600px at 50% -10%,rgba(230,41,75,.16),transparent 60%),var(--bg)}
 .login-wrap{width:100%;max-width:440px}
 .login-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
-.login-back{display:flex;align-items:center;gap:8px;background:#271419;border:1px solid #361c22;border-radius:30px;padding:9px 16px;font-size:13px;font-weight:600;color:var(--text);transition:.2s var(--ease)}
+.login-back{display:flex;align-items:center;gap:8px;background:#18223a;border:1px solid #28304a;border-radius:30px;padding:9px 16px;font-size:13px;font-weight:600;color:var(--text);transition:.2s var(--ease)}
 .login-back:hover{border-color:var(--accent)}
 .login-logo{display:flex;align-items:center;gap:8px;font-weight:800;font-size:18px}
 .login-logo img{width:34px;height:34px;border-radius:50%;object-fit:cover}
-.login-card{background:linear-gradient(180deg,var(--card),#221318);border:1px solid #3a1c25;border-radius:24px;padding:28px 24px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.login-card{background:linear-gradient(180deg,var(--card),#141d33);border:1px solid #2a3350;border-radius:24px;padding:28px 24px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
 .login-card h2{font-size:24px;margin-bottom:6px;color:var(--accent2)}
 .login-card .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
 .login-tabs{display:flex;gap:10px;margin-bottom:20px}
-.login-tabs button{flex:1;padding:11px;border-radius:12px;border:1px solid #3a1c25;background:transparent;color:var(--muted);font-weight:700;font-size:14px;cursor:pointer;transition:.2s var(--ease)}
-.login-tabs button.active{background:#fff;color:#2a0a10;border-color:#fff}
+.login-tabs button{flex:1;padding:11px;border-radius:12px;border:1px solid #2a3350;background:transparent;color:var(--muted);font-weight:700;font-size:14px;cursor:pointer;transition:.2s var(--ease)}
+.login-tabs button.active{background:#fff;color:#16213b;border-color:#fff}
 .login-card label{display:block;font-size:13px;color:var(--text);font-weight:600;margin-bottom:8px}
-.login-card input{width:100%;padding:13px 14px;border-radius:12px;border:1px solid #3a1c23;background:#1d0f14;color:var(--text);margin-bottom:16px;font-size:14px}
+.login-card input{width:100%;padding:13px 14px;border-radius:12px;border:1px solid #2a3350;background:#101a2e;color:var(--text);margin-bottom:16px;font-size:14px}
 .login-remember{display:flex;align-items:center;justify-content:flex-end;gap:8px;font-size:13px;color:var(--muted);margin-bottom:18px}
-.login-submit{width:100%;padding:14px;border-radius:12px;border:none;background:#fff;color:#2a0a10;font-weight:800;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.2s var(--ease)}
+.login-submit{width:100%;padding:14px;border-radius:12px;border:none;background:#fff;color:#16213b;font-weight:800;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.2s var(--ease)}
 .login-submit:hover{transform:translateY(-2px)}
 .login-forgot{display:block;text-align:center;color:var(--muted);font-size:13px;margin-top:16px}
 .login-divider{display:flex;align-items:center;gap:10px;margin:22px 0;color:var(--muted);font-size:13px}
-.login-divider::before,.login-divider::after{content:'';flex:1;height:1px;background:#3a1c25}
+.login-divider::before,.login-divider::after{content:'';flex:1;height:1px;background:#2a3350}
 .social-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
-.social-btn{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:18px 6px;border-radius:14px;border:1px solid #3a1c25;background:#221318;color:var(--text);font-size:18px;transition:.2s var(--ease)}
+.social-btn{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:18px 6px;border-radius:14px;border:1px solid #2a3350;background:#141d33;color:var(--text);font-size:18px;transition:.2s var(--ease)}
 .social-btn:not(.soon):hover{border-color:var(--accent2);transform:translateY(-2px)}
 .social-btn.soon{opacity:.55;cursor:not-allowed;pointer-events:none}
 .social-btn .soon-tag{font-size:10px;color:var(--muted);font-weight:600}
 
 .tx-list{display:flex;flex-direction:column;gap:2px}
-.tx-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #341c22}
+.tx-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #28304a}
 .tx-row:last-child{border-bottom:none}
 .tx-icon{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9px;flex-shrink:0}
 .tx-icon.pos{background:#1d3b2e;color:var(--accent2)}
-.tx-icon.neg{background:#3b1d1d;color:var(--danger)}
+.tx-icon.neg{background:#243152;color:var(--danger)}
 .tx-info{display:flex;flex-direction:column;flex:1;min-width:0}
 .tx-info strong{font-size:13px}
 .tx-info span{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -2245,11 +2410,46 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .breadcrumb a{color:var(--accent2)}
 .product-detail{display:flex;flex-direction:column;gap:16px;margin:0 18px 24px;background:var(--card);border-radius:var(--radius);padding:18px;max-width:calc(100% - 36px)}
 @media(min-width:640px){.product-detail{flex-direction:row;align-items:flex-start}}
-.pd-img{width:100%;max-width:320px;border-radius:14px;object-fit:cover;color:var(--accent2);background:#1d1014;min-height:200px}
+.pd-img{width:100%;max-width:320px;border-radius:14px;object-fit:cover;color:var(--accent2);background:#101a2e;min-height:200px}
 .pd-info{flex:1}
 .pd-info h1{font-size:22px;margin-bottom:8px}
 .pd-price{margin-bottom:12px}
 .pd-desc{color:var(--muted);line-height:1.8;margin-bottom:16px}
+.apps-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.app-card{display:flex;flex-direction:column}
+.app-card .pimg.app-icon-img{width:64px;height:64px;border-radius:16px;margin:0 auto 8px;object-fit:cover}
+.app-kind-tag{background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.app-stats{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:6px 0}
+.app-stats span{display:flex;align-items:center;gap:4px}
+.app-detail{margin:0 18px 24px;background:var(--card);border-radius:var(--radius);padding:18px}
+.app-detail-head{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.app-detail-icon{width:88px;height:88px;border-radius:20px;object-fit:cover;flex-shrink:0}
+.app-detail-info{flex:1;min-width:200px}
+.app-detail-info h1{font-size:22px;margin-bottom:6px}
+.app-detail-meta{display:flex;gap:14px;color:var(--muted);font-size:13px;margin-bottom:8px;flex-wrap:wrap}
+.app-detail-stats{margin:8px 0 14px}
+.app-download-btn{display:inline-flex;width:100%;justify-content:center;margin-top:6px}
+.app-screens{display:flex;gap:10px;overflow-x:auto;margin:18px 0;scrollbar-width:none}
+.app-screens img{height:280px;border-radius:14px;flex-shrink:0}
+.app-short-desc{color:var(--muted);margin:14px 0;line-height:1.7}
+.app-desc{color:var(--text);line-height:1.8;margin-bottom:10px;white-space:pre-line}
+.app-permissions{margin:0 0 10px 0;padding-right:20px;color:var(--muted);line-height:1.8}
+.app-info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:10px}
+.app-info-grid div{background:#18223a;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
+.app-info-grid span{color:var(--muted);font-size:12px}
+.app-info-grid strong{font-size:13px;word-break:break-all}
+.download-page{display:flex;justify-content:center;padding:30px 18px 50px}
+.download-card{width:100%;max-width:440px;background:var(--card);border-radius:var(--radius);padding:30px 24px;text-align:center;box-shadow:var(--shadow)}
+.download-app-icon{width:90px;height:90px;border-radius:22px;object-fit:cover;margin:0 auto 14px}
+.download-card h1{font-size:20px;margin-bottom:6px}
+.download-sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+.download-ad-slot{margin:14px 0;min-height:0;overflow:hidden;border-radius:10px}
+.download-countdown{margin:18px 0}
+.dl-progress{height:8px;border-radius:8px;background:#18223a;overflow:hidden;margin-bottom:10px}
+.dl-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width 1s linear}
+.download-meta{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:16px 0}
+.download-meta span{display:flex;align-items:center;gap:4px}
+.back-link{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;margin-top:10px}
 
 /* ===== Global polish, animations & micro-interactions ===== */
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
@@ -2263,20 +2463,20 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .grid .card:nth-child(6){animation-delay:.25s}
 
 .user-chip{transition:transform .2s var(--ease),background .2s}
-.user-chip:hover{transform:translateY(-1px);background:#3a1f29}
+.user-chip:hover{transform:translateY(-1px);background:#28324e}
 
-.admin-box{background:linear-gradient(180deg,var(--card),#2c171d);margin:0 18px 20px;border-radius:var(--radius);padding:20px;overflow-x:auto;border:1px solid #341c22;box-shadow:var(--shadow);animation:fadeUp .5s var(--ease) both}
+.admin-box{background:linear-gradient(180deg,var(--card),#1c2a48);margin:0 18px 20px;border-radius:var(--radius);padding:20px;overflow-x:auto;border:1px solid #28304a;box-shadow:var(--shadow);animation:fadeUp .5s var(--ease) both}
 .admin-box h2,.admin-box h3{display:flex;align-items:center;gap:8px;margin-bottom:8px}
 .admin-box h3 .ic,.admin-box h2 .ic{color:var(--accent2)}
-.admin-box input,.admin-box textarea,.admin-box select{width:100%;padding:11px;border-radius:11px;border:1px solid #3a1c23;background:#1d0f14;color:var(--text);font-family:inherit;font-size:14px;transition:border-color .2s,box-shadow .2s}
+.admin-box input,.admin-box textarea,.admin-box select{width:100%;padding:11px;border-radius:11px;border:1px solid #2a3350;background:#101a2e;color:var(--text);font-family:inherit;font-size:14px;transition:border-color .2s,box-shadow .2s}
 .admin-box input:focus,.admin-box textarea:focus,.admin-box select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(230,41,75,.2)}
 .admin-box label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
 
 .admin-tabs a{transition:transform .18s var(--ease),background .2s,box-shadow .2s}
-.admin-tabs a:hover{transform:translateY(-2px);background:#3a1f29}
-.admin-tabs a.active{background:linear-gradient(135deg,var(--accent),#ff6b6b);box-shadow:0 6px 16px rgba(230,41,75,.4);color:#fff}
+.admin-tabs a:hover{transform:translateY(-2px);background:#28324e}
+.admin-tabs a.active{background:linear-gradient(135deg,var(--accent),#38bdf8);box-shadow:0 6px 16px rgba(230,41,75,.4);color:#fff}
 
-.stat-card{transition:transform .22s var(--ease),box-shadow .22s;border:1px solid #341c22}
+.stat-card{transition:transform .22s var(--ease),box-shadow .22s;border:1px solid #28304a}
 .stat-card:hover{transform:translateY(-4px);box-shadow:0 12px 28px rgba(0,0,0,.4);border-color:var(--accent)}
 
 .flash{animation:fadeUp .4s var(--ease) both;display:flex;align-items:center;gap:8px;box-shadow:var(--shadow)}
@@ -2285,12 +2485,12 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 input,textarea,select{font-family:inherit}
 
 /* scroll to top */
-#scrollTop{position:fixed;bottom:92px;right:18px;width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,var(--accent),#ff6b6b);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:45;opacity:0;visibility:hidden;transform:translateY(16px) scale(.8);transition:.3s var(--ease);box-shadow:0 8px 22px rgba(230,41,75,.45)}
+#scrollTop{position:fixed;bottom:92px;right:18px;width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,var(--accent),#38bdf8);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:45;opacity:0;visibility:hidden;transform:translateY(16px) scale(.8);transition:.3s var(--ease);box-shadow:0 8px 22px rgba(230,41,75,.45)}
 #scrollTop.show{opacity:1;visibility:visible;transform:none}
 #scrollTop:hover{transform:translateY(-2px) scale(1.05)}
 
 /* skeleton shimmer */
-.skeleton{background:linear-gradient(90deg,#271419 25%,#341c22 37%,#271419 63%);background-size:400% 100%;animation:shimmer 1.4s infinite}
+.skeleton{background:linear-gradient(90deg,#18223a 25%,#28304a 37%,#18223a 63%);background-size:400% 100%;animation:shimmer 1.4s infinite}
 @keyframes shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
 
 @media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}
@@ -2311,17 +2511,17 @@ input,textarea,select{font-family:inherit}
 }
 @media (max-width:380px){.formrow{grid-template-columns:1fr}}
 .lb-list{display:flex;flex-direction:column;gap:8px;margin:0 18px 20px}
-.lb-row{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid #341c22;border-radius:14px;padding:12px 14px;animation:fadeUp .5s var(--ease) both}
+.lb-row{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid #28304a;border-radius:14px;padding:12px 14px;animation:fadeUp .5s var(--ease) both}
 .lb-row.lb-rank-1{background:linear-gradient(90deg,rgba(255,194,51,.18),var(--card));border-color:#ffc233}
 .lb-row.lb-rank-2{background:linear-gradient(90deg,rgba(192,192,192,.14),var(--card));border-color:#bdbdbd}
 .lb-row.lb-rank-3{background:linear-gradient(90deg,rgba(205,127,50,.14),var(--card));border-color:#cd7f32}
 .lb-pos{font-size:20px;width:34px;text-align:center;font-weight:800}
 .lb-avatar{width:42px;height:42px;border-radius:50%;object-fit:cover;flex-shrink:0}
-.lb-avatar-ph{display:flex;align-items:center;justify-content:center;background:#341c22}
+.lb-avatar-ph{display:flex;align-items:center;justify-content:center;background:#28304a}
 .lb-name{flex:1;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .lb-points{display:flex;align-items:center;gap:5px;color:var(--accent2);font-weight:800;flex-shrink:0}
 .coin-pkgs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
-.coin-pkg{display:flex;flex-direction:column;align-items:center;gap:3px;background:#1d0f14;border:1px solid #341c22;border-radius:12px;padding:10px 4px;cursor:pointer;color:var(--text);transition:.2s var(--ease)}
+.coin-pkg{display:flex;flex-direction:column;align-items:center;gap:3px;background:#101a2e;border:1px solid #28304a;border-radius:12px;padding:10px 4px;cursor:pointer;color:var(--text);transition:.2s var(--ease)}
 .coin-pkg:hover{border-color:var(--accent);transform:translateY(-2px)}
 .coin-pkg strong{font-size:14px}
 .coin-pkg span{font-size:10px;color:var(--muted)}
@@ -2333,7 +2533,7 @@ input,textarea,select{font-family:inherit}
 .verified-badge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#1d9bf0;color:#fff;vertical-align:middle}
 .verified-badge svg{width:11px;height:11px}
 .profile-frame{position:relative;width:96px;height:96px;margin:0 auto;border-radius:50%;display:flex;align-items:center;justify-content:center}
-.profile-frame img,.profile-frame .ph{width:84px;height:84px;border-radius:50%;object-fit:cover;background:#341c22;display:flex;align-items:center;justify-content:center}
+.profile-frame img,.profile-frame .ph{width:84px;height:84px;border-radius:50%;object-fit:cover;background:#28304a;display:flex;align-items:center;justify-content:center}
 .profile-frame::before{content:'';position:absolute;inset:0;border-radius:50%;border:3px solid var(--accent);animation:frameSpin 6s linear infinite}
 .profile-rank-bronze .profile-frame::before{border-color:#c97a3d}
 .profile-rank-silver .profile-frame::before{border-color:#c9d2da;box-shadow:0 0 12px rgba(201,210,218,.5)}
@@ -2343,14 +2543,14 @@ input,textarea,select{font-family:inherit}
 .avatar-edit-btn svg{width:13px;height:13px}
 @keyframes frameSpin{from{transform:rotate(0deg) scale(1)}50%{transform:rotate(180deg) scale(1.04)}to{transform:rotate(360deg) scale(1)}}
 .spin-wheel-wrap{display:flex;flex-direction:column;align-items:center;gap:20px;padding:20px 0}
-.spin-wheel{width:240px;height:240px;border-radius:50%;position:relative;background:conic-gradient(#e6294b 0deg 45deg,#ff8a3d 45deg 90deg,#ffd23d 90deg 135deg,#4dd6a3 135deg 180deg,#3da5ff 180deg 225deg,#a36dff 225deg 270deg,#ff5fa2 270deg 315deg,#6dffb0 315deg 360deg);transition:transform 2.4s cubic-bezier(.18,.9,.2,1);box-shadow:0 0 0 6px #1d0f14,0 0 30px rgba(0,0,0,.5)}
+.spin-wheel{width:240px;height:240px;border-radius:50%;position:relative;background:conic-gradient(#2563eb 0deg 45deg,#ff8a3d 45deg 90deg,#ffd23d 90deg 135deg,#4dd6a3 135deg 180deg,#3da5ff 180deg 225deg,#a36dff 225deg 270deg,#38bdf8 270deg 315deg,#6dffb0 315deg 360deg);transition:transform 2.4s cubic-bezier(.18,.9,.2,1);box-shadow:0 0 0 6px #101a2e,0 0 30px rgba(0,0,0,.5)}
 .spin-wheel-pointer{position:absolute;top:-14px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:14px solid transparent;border-right:14px solid transparent;border-top:22px solid var(--accent);z-index:2}
 .card img.pimg{height:<?= (int)setting('product_image_height', 130) ?>px}
 .cat-tiles{grid-template-columns:repeat(auto-fill,minmax(<?= (int)setting('cat_tile_size', 140) ?>px,1fr))}
 .banner-carousel-slide img{height:<?= (int)setting('banner_height', 160) ?>px}
 <?php
-$themeAccent = setting('theme_accent_color', '#e6294b');
-$themeAccent2 = setting('theme_accent2_color', '#ff4d4d');
+$themeAccent = setting('theme_accent_color', '#2563eb');
+$themeAccent2 = setting('theme_accent2_color', '#06b6d4');
 if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent2)):
 ?>
 :root{--accent:<?= e($themeAccent) ?>;--accent2:<?= e($themeAccent2) ?>}
@@ -2389,6 +2589,7 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
         <label>كلمة المرور</label>
         <input type="password" name="password" placeholder="أدخل كلمة المرور" required>
         <div class="login-remember"><label style="margin:0">تذكرني</label><input type="checkbox" style="width:auto;margin:0" name="remember"></div>
+        <?= turnstile_widget() ?>
         <button type="submit" class="login-submit"><?= icon('logout', 'ic-sm') ?>تسجيل الدخول</button>
       </form>
 
@@ -2402,8 +2603,10 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
         <input type="email" name="email" placeholder="البريد الإلكتروني" required>
         <label>كلمة المرور</label>
         <input type="password" name="password" placeholder="6 أحرف فأكثر" required>
+        <?= turnstile_widget() ?>
         <button type="submit" class="login-submit"><?= icon('gift', 'ic-sm') ?>إنشاء حساب</button>
       </form>
+      <?php if (setting('turnstile_site_key')): ?><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script><?php endif; ?>
 
       <a class="login-forgot" href="?page=contact">نسيت كلمة المرور؟ تواصل معنا</a>
 
@@ -2474,13 +2677,15 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
   <div class="sb-head"><strong><?= icon('hat', 'ic-sm') ?> <?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()"><?= icon('close', 'ic') ?></button></div>
   <nav>
     <a href="?"><?= icon('home') ?> الرئيسية</a>
+    <a href="?page=apps"><?= icon('android') ?> تطبيقات وألعاب</a>
+    <a href="?page=store"><?= icon('cart') ?> المتجر (منتجات للبيع)</a>
     <?php if ($user): ?><a href="?page=profile"><?= icon('user') ?> ملفي الشخصي</a><?php endif; ?>
+    <a href="?page=wallet"><?= icon('wallet') ?> محفظتي</a>
+    <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
     <a href="?page=earn"><?= icon('coin') ?> اكسب عملات (كابتشا)</a>
     <a href="?page=tasks"><?= icon('tasks') ?> المهام اليومية</a>
-    <a href="?page=wallet"><?= icon('wallet') ?> محفظتي</a>
     <a href="?page=leaderboard"><?= icon('star') ?> المتصدّرون</a>
     <a href="?page=spin"><?= icon('gift') ?> عجلة الحظ</a>
-    <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
     <a href="?page=suggest"><?= icon('megaphone') ?> اقترح منتجاً</a>
     <a href="?page=about"><?= icon('shield') ?> من نحن</a>
     <a href="?page=faq"><?= icon('doc') ?> الأسئلة الشائعة</a>
@@ -2567,6 +2772,65 @@ if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA
 /* ======================================================================
    6) PAGE VIEWS
    ====================================================================== */
+function category_icon_name(string $name): string
+{
+    $n = mb_strtolower($name);
+    if (str_contains($n, 'لعب') || str_contains($n, 'game')) return 'rocket';
+    if (str_contains($n, 'اشتراك') || str_contains($n, 'sub')) return 'star';
+    if (str_contains($n, 'تطبيق') || str_contains($n, 'app')) return 'globe';
+    return 'cart';
+}
+function render_product_card(array $p): void
+{
+    global $wishlistSet;
+    $isFav = !empty($wishlistSet[$p['id']]);
+    ?>
+    <div class="card">
+      <?php if ($p['tag']): ?><span class="tag"><?= e($p['tag']) ?></span><?php endif; ?>
+      <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" onclick="toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
+      <a href="?page=product&id=<?= (int)$p['id'] ?>">
+        <?php if ($p['image']): ?>
+          <img class="pimg" loading="lazy" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+        <?php elseif (!empty($p['icon'])): ?>
+          <div class="icon-wrap emoji-icon"><?= e($p['icon']) ?></div>
+        <?php else: ?>
+          <div class="icon-wrap"><?= icon('cart', 'ic ic-xl') ?></div>
+        <?php endif; ?>
+        <h3><?= e($p['name']) ?></h3>
+      </a>
+      <?php if ($p['description']): ?><div class="desc"><?= e(mb_substr($p['description'], 0, 60)) ?></div><?php endif; ?>
+      <div>
+        <span class="price"><?= e($p['price']) ?>$</span>
+        <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
+      </div>
+      <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>)"><?= icon('cart', 'ic ic-sm') ?><?= e(setting('buy_button_text', 'طلب شراء')) ?></button>
+    </div>
+    <?php
+}
+function render_app_card(array $a): void
+{
+    $kindLabel = $a['kind'] === 'game' ? 'لعبة' : 'تطبيق';
+    ?>
+    <div class="card app-card">
+      <span class="tag app-kind-tag"><?= e($kindLabel) ?></span>
+      <a href="?page=app&id=<?= (int)$a['id'] ?>">
+        <?php if ($a['icon']): ?>
+          <img class="pimg app-icon-img" loading="lazy" decoding="async" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
+        <?php else: ?>
+          <div class="icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
+        <?php endif; ?>
+        <h3><?= e($a['name']) ?></h3>
+      </a>
+      <?php if ($a['short_description']): ?><div class="desc"><?= e(mb_substr($a['short_description'], 0, 60)) ?></div><?php endif; ?>
+      <div class="app-stats">
+        <?php if ($a['rating_avg']): ?><span><?= icon('star', 'ic-sm') ?><?= e(number_format((float)$a['rating_avg'], 1)) ?></span><?php endif; ?>
+        <span><?= icon('eye', 'ic-sm') ?><?= number_format((int)$a['views']) ?></span>
+        <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads']) ?></span>
+      </div>
+      <a class="btn btn-primary buy" href="?page=app&id=<?= (int)$a['id'] ?>"><?= icon('download', 'ic ic-sm') ?>تحميل</a>
+    </div>
+    <?php
+}
 switch ($page) {
 
 case 'login':
@@ -2596,41 +2860,6 @@ case 'home':
         if ($p['category_id']) $byCat[$p['category_id']][] = $p;
         else $uncategorized[] = $p;
     }
-    function category_icon_name(string $name): string
-    {
-        $n = mb_strtolower($name);
-        if (str_contains($n, 'لعب') || str_contains($n, 'game')) return 'rocket';
-        if (str_contains($n, 'اشتراك') || str_contains($n, 'sub')) return 'star';
-        if (str_contains($n, 'تطبيق') || str_contains($n, 'app')) return 'globe';
-        return 'cart';
-    }
-    function render_product_card(array $p): void
-    {
-        global $wishlistSet;
-        $isFav = !empty($wishlistSet[$p['id']]);
-        ?>
-        <div class="card">
-          <?php if ($p['tag']): ?><span class="tag"><?= e($p['tag']) ?></span><?php endif; ?>
-          <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" onclick="toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
-          <a href="?page=product&id=<?= (int)$p['id'] ?>">
-            <?php if ($p['image']): ?>
-              <img class="pimg" loading="lazy" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
-            <?php elseif (!empty($p['icon'])): ?>
-              <div class="icon-wrap emoji-icon"><?= e($p['icon']) ?></div>
-            <?php else: ?>
-              <div class="icon-wrap"><?= icon('cart', 'ic ic-xl') ?></div>
-            <?php endif; ?>
-            <h3><?= e($p['name']) ?></h3>
-          </a>
-          <?php if ($p['description']): ?><div class="desc"><?= e(mb_substr($p['description'], 0, 60)) ?></div><?php endif; ?>
-          <div>
-            <span class="price"><?= e($p['price']) ?>$</span>
-            <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
-          </div>
-          <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>)"><?= icon('cart', 'ic ic-sm') ?><?= e(setting('buy_button_text', 'طلب شراء')) ?></button>
-        </div>
-        <?php
-    }
     ?>
     <?php
     $tileCats = array_filter($categories, fn($c) => !empty($c['image']));
@@ -2656,7 +2885,7 @@ case 'home':
             if (!$tileCats) return; ?>
             <div class="cat-tiles">
               <?php foreach ($tileCats as $c): ?>
-                <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#271419') ?>">
+                <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#18223a') ?>">
                   <img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>" loading="lazy" decoding="async">
                   <span class="cat-tile-label"><?= e($c['name']) ?></span>
                 </a>
@@ -2739,6 +2968,21 @@ case 'home':
             <?php endif; ?>
             <?php
         },
+        'latest_apps' => function () {
+            $apps = db()->query("SELECT * FROM apps WHERE status='published' ORDER BY id DESC LIMIT 7")->fetchAll();
+            if (!$apps) { ?>
+              <div class="empty"><?= icon('android', 'ic ic-lg') ?><br>لا توجد تطبيقات أو ألعاب منشورة حالياً، تابعنا قريباً</div>
+              <?php return;
+            } ?>
+            <div class="section-title"><?= icon('android', 'ic') ?>أحدث التطبيقات والألعاب</div>
+            <div class="grid apps-grid">
+              <?php foreach ($apps as $a): render_app_card($a); endforeach; ?>
+            </div>
+            <div style="text-align:center;margin:18px 0">
+              <a href="?page=apps" class="btn btn-ghost"><?= icon('android', 'ic-sm') ?>عرض كل التطبيقات والألعاب</a>
+            </div>
+            <?php
+        },
         'soon' => function () { ?>
             <div class="section-title"><?= icon('rocket', 'ic') ?>تطبيقات وألعاب — قريباً</div>
             <div class="grid">
@@ -2794,6 +3038,221 @@ case 'product':
     <?php
     break;
 
+case 'store':
+    $storeQ = trim($_GET['q'] ?? '');
+    if ($storeQ !== '') {
+        $st = db()->prepare("SELECT * FROM products WHERE status='active' AND name LIKE ? ORDER BY id DESC");
+        $st->execute(['%' . $storeQ . '%']);
+        $storeProducts = $st->fetchAll();
+    } else {
+        $storeProducts = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC")->fetchAll();
+    }
+    $storeCategories = db()->query("SELECT * FROM categories ORDER BY sort_order, id")->fetchAll();
+    $wishlistSet = [];
+    if ($user) {
+        $st = db()->prepare("SELECT product_id FROM wishlist WHERE user_id=?");
+        $st->execute([$user['id']]);
+        foreach ($st->fetchAll() as $w) $wishlistSet[$w['product_id']] = true;
+    }
+    $storeByCat = []; $storeUncategorized = [];
+    foreach ($storeProducts as $p) {
+        if ($p['category_id']) $storeByCat[$p['category_id']][] = $p;
+        else $storeUncategorized[] = $p;
+    }
+    ?>
+    <div class="section-title"><?= icon('cart', 'ic') ?>المتجر — منتجات للبيع</div>
+    <form method="get" action="?" class="search-bar">
+      <input type="hidden" name="page" value="store">
+      <input type="text" name="q" value="<?= e($storeQ) ?>" placeholder="ابحث عن منتج...">
+      <button type="submit"><?= icon('search', 'ic-sm') ?></button>
+    </form>
+    <?php if (!$storeProducts): ?>
+      <div class="empty"><?= icon('rocket', 'ic ic-lg') ?><br><?= e(setting('empty_products_text', 'لا توجد منتجات حالياً، تابعنا قريباً')) ?></div>
+    <?php else: ?>
+      <?php foreach ($storeCategories as $c): if (empty($storeByCat[$c['id']])) continue; ?>
+        <div class="section-title" id="cat-<?= (int)$c['id'] ?>"><?= icon(category_icon_name($c['name']), 'ic') ?><?= e($c['name']) ?></div>
+        <div class="grid">
+          <?php foreach ($storeByCat[$c['id']] as $p) render_product_card($p); ?>
+        </div>
+      <?php endforeach; ?>
+      <?php if ($storeUncategorized): ?>
+        <div class="section-title"><?= icon('cart', 'ic') ?>أحدث المنتجات</div>
+        <div class="grid">
+          <?php foreach ($storeUncategorized as $p) render_product_card($p); ?>
+        </div>
+      <?php endif; ?>
+    <?php endif; ?>
+    <?php
+    break;
+
+case 'apps':
+    $appsQ = trim($_GET['q'] ?? '');
+    $appsKind = $_GET['kind'] ?? '';
+    $sqlApps = "SELECT * FROM apps WHERE status='published'";
+    $argsApps = [];
+    if ($appsQ !== '') { $sqlApps .= " AND name LIKE ?"; $argsApps[] = '%' . $appsQ . '%'; }
+    if (in_array($appsKind, ['app', 'game'], true)) { $sqlApps .= " AND kind=?"; $argsApps[] = $appsKind; }
+    $sqlApps .= " ORDER BY id DESC";
+    $st = db()->prepare($sqlApps);
+    $st->execute($argsApps);
+    $appsList = $st->fetchAll();
+    ?>
+    <div class="section-title"><?= icon('android', 'ic') ?>تطبيقات وألعاب</div>
+    <form method="get" action="?" class="search-bar">
+      <input type="hidden" name="page" value="apps">
+      <input type="text" name="q" value="<?= e($appsQ) ?>" placeholder="ابحث عن تطبيق أو لعبة...">
+      <button type="submit"><?= icon('search', 'ic-sm') ?></button>
+    </form>
+    <div class="cat-chips">
+      <a href="?page=apps" class="cat-chip<?= $appsKind === '' ? ' active' : '' ?>"><?= icon('android', 'ic-sm') ?>الكل</a>
+      <a href="?page=apps&kind=app" class="cat-chip<?= $appsKind === 'app' ? ' active' : '' ?>"><?= icon('android', 'ic-sm') ?>تطبيقات</a>
+      <a href="?page=apps&kind=game" class="cat-chip<?= $appsKind === 'game' ? ' active' : '' ?>"><?= icon('rocket', 'ic-sm') ?>ألعاب</a>
+    </div>
+    <?php if (!$appsList): ?>
+      <div class="empty"><?= icon('android', 'ic ic-lg') ?><br>لا توجد نتائج.</div>
+    <?php else: ?>
+      <div class="grid apps-grid">
+        <?php foreach ($appsList as $a) render_app_card($a); ?>
+      </div>
+    <?php endif; ?>
+    <?php
+    break;
+
+case 'app':
+    if (!$seoApp) {
+        echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>التطبيق غير موجود أو غير متاح.<br><a href="?page=apps" class="btn btn-primary" style="margin-top:14px;display:inline-block">عودة لقائمة التطبيقات</a></div>';
+        break;
+    }
+    $a = $seoApp;
+    db()->prepare("UPDATE apps SET views = views + 1 WHERE id=?")->execute([$a['id']]);
+    $screenshots = array_filter(explode(',', (string)$a['screenshots']));
+    $permissions = array_filter(explode(',', (string)$a['permissions']));
+    ?>
+    <div class="breadcrumb" style="padding:14px 18px;font-size:13px;color:var(--muted)">
+      <a href="?">الرئيسية</a> / <a href="?page=apps"><?= $a['kind'] === 'game' ? 'ألعاب' : 'تطبيقات' ?></a> / <span><?= e($a['name']) ?></span>
+    </div>
+    <div class="app-detail">
+      <div class="app-detail-head">
+        <?php if ($a['icon']): ?>
+          <img class="app-detail-icon" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
+        <?php else: ?>
+          <div class="app-detail-icon icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
+        <?php endif; ?>
+        <div class="app-detail-info">
+          <h1><?= e($a['name']) ?></h1>
+          <div class="app-detail-meta">
+            <?php if ($a['developer_name']): ?><span><?= icon('users', 'ic-sm') ?><?= e($a['developer_name']) ?></span><?php endif; ?>
+            <?php if ($a['version']): ?><span>الإصدار <?= e($a['version']) ?></span><?php endif; ?>
+          </div>
+          <div class="app-stats app-detail-stats">
+            <?php if ($a['rating_avg']): ?><span><?= icon('star', 'ic-sm') ?><?= e(number_format((float)$a['rating_avg'], 1)) ?></span><?php endif; ?>
+            <span><?= icon('eye', 'ic-sm') ?><?= number_format((int)$a['views'] + 1) ?> مشاهدة</span>
+            <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads']) ?> تحميل</span>
+            <?php if ($a['size_label']): ?><span><?= e($a['size_label']) ?></span><?php endif; ?>
+          </div>
+          <a class="btn btn-primary app-download-btn" href="?page=app_download&id=<?= (int)$a['id'] ?>"><?= icon('download', 'ic-sm') ?>تحميل الآن</a>
+        </div>
+      </div>
+
+      <?php if ($screenshots): ?>
+      <div class="app-screens">
+        <?php foreach ($screenshots as $s): ?><img src="<?= e($s) ?>" loading="lazy" decoding="async" alt="لقطة شاشة"><?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+
+      <?php if ($a['short_description']): ?><p class="app-short-desc"><?= e($a['short_description']) ?></p><?php endif; ?>
+      <?php if ($a['description']): ?>
+        <div class="section-title"><?= icon('check', 'ic') ?>الوصف</div>
+        <p class="app-desc"><?= nl2br(e($a['description'])) ?></p>
+      <?php endif; ?>
+      <?php if ($a['changelog']): ?>
+        <div class="section-title"><?= icon('history', 'ic') ?>سجل التحديثات</div>
+        <p class="app-desc"><?= nl2br(e($a['changelog'])) ?></p>
+      <?php endif; ?>
+      <?php if ($permissions): ?>
+        <div class="section-title"><?= icon('check', 'ic') ?>الصلاحيات المطلوبة</div>
+        <ul class="app-permissions">
+          <?php foreach ($permissions as $perm): ?><li><?= e(trim($perm)) ?></li><?php endforeach; ?>
+        </ul>
+      <?php endif; ?>
+      <div class="section-title"><?= icon('check', 'ic') ?>معلومات إضافية</div>
+      <div class="app-info-grid">
+        <?php if ($a['package_name']): ?><div><span>اسم الحزمة</span><strong><?= e($a['package_name']) ?></strong></div><?php endif; ?>
+        <?php if ($a['min_android']): ?><div><span>أقل إصدار أندرويد</span><strong><?= e($a['min_android']) ?></strong></div><?php endif; ?>
+        <?php if ($a['category']): ?><div><span>التصنيف</span><strong><?= e($a['category']) ?></strong></div><?php endif; ?>
+        <?php if ($a['developer_website']): ?><div><span>موقع المطوّر</span><strong><a href="<?= e($a['developer_website']) ?>" target="_blank" rel="nofollow noopener"><?= e($a['developer_website']) ?></a></strong></div><?php endif; ?>
+        <?php if ($a['privacy_policy_url']): ?><div><span>سياسة الخصوصية</span><strong><a href="<?= e($a['privacy_policy_url']) ?>" target="_blank" rel="nofollow noopener">عرض</a></strong></div><?php endif; ?>
+      </div>
+    </div>
+    <?php
+    break;
+
+case 'app_download':
+    if (!$seoApp) {
+        echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>التطبيق غير موجود أو غير متاح.<br><a href="?page=apps" class="btn btn-primary" style="margin-top:14px;display:inline-block">عودة لقائمة التطبيقات</a></div>';
+        break;
+    }
+    $a = $seoApp;
+    db()->prepare("UPDATE apps SET downloads = downloads + 1 WHERE id=?")->execute([$a['id']]);
+    $waitSeconds = max(0, (int)setting('app_download_wait_seconds', 5));
+    $moneytagScript = setting('moneytag_script');
+    ?>
+    <div class="download-page">
+      <div class="download-card">
+        <?php if ($a['icon']): ?>
+          <img class="download-app-icon" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
+        <?php else: ?>
+          <div class="download-app-icon icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
+        <?php endif; ?>
+        <h1><?= e($a['name']) ?></h1>
+        <p class="download-sub">يتم تحضير رابط التحميل الخاص بك...</p>
+
+        <?php if ($moneytagScript): ?>
+        <div class="download-ad-slot"><?= $moneytagScript ?></div>
+        <?php endif; ?>
+
+        <div class="download-countdown" id="dlCountdown" data-seconds="<?= $waitSeconds ?>" data-url="<?= e($a['download_url']) ?>">
+          <div class="dl-progress"><div class="dl-progress-fill" id="dlProgressFill"></div></div>
+          <span id="dlCountdownText"><?= $waitSeconds > 0 ? 'يرجى الانتظار ' . $waitSeconds . ' ثانية...' : '' ?></span>
+        </div>
+        <a id="dlRealBtn" class="btn btn-primary app-download-btn" style="display:none" href="<?= e($a['download_url']) ?>" rel="nofollow"><?= icon('download', 'ic-sm') ?>تحميل <?= e($a['name']) ?> الآن</a>
+
+        <div class="download-meta">
+          <?php if ($a['size_label']): ?><span><?= icon('check', 'ic-sm') ?><?= e($a['size_label']) ?></span><?php endif; ?>
+          <?php if ($a['version']): ?><span><?= icon('check', 'ic-sm') ?>الإصدار <?= e($a['version']) ?></span><?php endif; ?>
+          <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads'] + 1) ?> تحميل</span>
+        </div>
+        <a href="?page=app&id=<?= (int)$a['id'] ?>" class="back-link"><?= icon('check', 'ic-sm') ?>عودة لصفحة التطبيق</a>
+      </div>
+    </div>
+    <script>
+    (function(){
+      var el = document.getElementById('dlCountdown');
+      if (!el) return;
+      var seconds = parseInt(el.dataset.seconds, 10) || 0;
+      var url = el.dataset.url;
+      var fill = document.getElementById('dlProgressFill');
+      var txt = document.getElementById('dlCountdownText');
+      var realBtn = document.getElementById('dlRealBtn');
+      var total = seconds;
+      function reveal() {
+        el.style.display = 'none';
+        if (realBtn) realBtn.style.display = 'flex';
+      }
+      if (seconds <= 0) { reveal(); return; }
+      var tick = function () {
+        seconds--;
+        var pct = Math.max(0, Math.min(100, ((total - seconds) / total) * 100));
+        if (fill) fill.style.width = pct + '%';
+        if (txt) txt.textContent = seconds > 0 ? ('يرجى الانتظار ' + seconds + ' ثانية...') : 'جاهز!';
+        if (seconds <= 0) { clearInterval(timer); reveal(); }
+      };
+      var timer = setInterval(tick, 1000);
+    })();
+    </script>
+    <?php
+    break;
+
 case 'earn':
     if (!$user) { echo '<div class="empty">سجّل الدخول لتبدأ بكسب العملات.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     $day = date('Y-m-d');
@@ -2805,8 +3264,8 @@ case 'earn':
     <div class="admin-box" style="margin-top:18px">
       <h2><?= icon('coin', 'ic') ?>اكسب عملات Yassota</h2>
       <p style="color:var(--muted);margin:10px 0">أدخل الرقم الظاهر بالأسفل بشكل صحيح لتحصل على <?= e(setting('captcha_reward')) ?> عملة. (<?= $done ?>/<?= $max ?> اليوم)</p>
-      <div id="captchaBox" style="font-size:32px;font-weight:800;letter-spacing:8px;background:#1d1014;border-radius:12px;padding:18px;text-align:center;margin:14px 0">----</div>
-      <input type="text" id="captchaAnswer" placeholder="أدخل الرقم هنا" style="width:100%;padding:12px;border-radius:10px;border:1px solid #3a1c23;background:#1d1014;color:#fff;text-align:center;font-size:18px">
+      <div id="captchaBox" style="font-size:32px;font-weight:800;letter-spacing:8px;background:#101a2e;border-radius:12px;padding:18px;text-align:center;margin:14px 0">----</div>
+      <input type="text" id="captchaAnswer" placeholder="أدخل الرقم هنا" style="width:100%;padding:12px;border-radius:10px;border:1px solid #2a3350;background:#101a2e;color:#fff;text-align:center;font-size:18px">
       <button class="btn btn-success" style="width:100%;margin-top:12px" onclick="submitCaptcha()"><?= icon('check', 'ic ic-sm') ?>تحقق واحصل على العملات</button>
     </div>
     <?php
@@ -2827,7 +3286,7 @@ case 'tasks':
         $st->execute([$user['id'], $t['id'], $day]);
         $done = (bool)$st->fetch();
     ?>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #341c22">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #28304a">
         <div>
           <strong><?= e($t['title']) ?></strong>
           <div style="color:var(--muted);font-size:12px;display:flex;align-items:center;gap:4px"><?= icon('clock', 'ic-sm') ?><?= (int)$t['seconds'] ?> ثانية · +<?= (int)$t['reward'] ?> عملة</div>
@@ -2980,7 +3439,7 @@ case 'orders':
     <div class="admin-box">
     <?php if (!$orders): ?><div class="empty">لا توجد طلبات بعد.</div><?php endif; ?>
     <?php foreach ($orders as $o): ?>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #341c22">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #28304a">
         <div style="display:flex;align-items:center;gap:8px"><?= icon('cart', 'ic-sm') ?><?= e($o['name']) ?> — <?= e($o['price']) ?>$</div>
         <span class="badge <?= e($o['status']) ?>"><?= e($o['status']) ?></span>
       </div>
@@ -3012,7 +3471,7 @@ case 'suggest':
     <div class="admin-box">
       <p style="color:var(--muted);font-size:13px;margin-bottom:10px">لم تجد ما تبحث عنه؟ أرسل اقتراحك وستراجعه الإدارة.</p>
       <input id="sugTitle" placeholder="اسم المنتج المقترح">
-      <textarea id="sugDetails" rows="4" placeholder="تفاصيل إضافية (اختياري)" style="width:100%;margin-top:8px;background:#1d0f14;border:1px solid #341c22;border-radius:10px;padding:10px;color:var(--text);font-family:inherit"></textarea>
+      <textarea id="sugDetails" rows="4" placeholder="تفاصيل إضافية (اختياري)" style="width:100%;margin-top:8px;background:#101a2e;border:1px solid #28304a;border-radius:10px;padding:10px;color:var(--text);font-family:inherit"></textarea>
       <button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="submitSuggestion()"><?= icon('send', 'ic-sm') ?>إرسال الاقتراح</button>
     </div>
     <?php
@@ -3156,7 +3615,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'products'=>['cart','المنتجات'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -3201,6 +3660,105 @@ case 'admin':
         <?php endif; ?>
       </div>
 
+    <?php elseif ($tab === 'apps'):
+        $apps = db()->query("SELECT * FROM apps ORDER BY id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('plus', 'ic') ?>نشر / تعديل تطبيق أو لعبة</h3>
+        <form method="post" action="?action=admin_save_app">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="id" id="apid">
+          <div class="formrow">
+            <input name="name" id="apname" placeholder="اسم التطبيق / اللعبة" required>
+            <select name="kind" id="apkind"><option value="app">تطبيق</option><option value="game">لعبة</option></select>
+            <input name="category" id="apcategory" placeholder="التصنيف (مثال: أدوات، أكشن)">
+            <input name="package_name" id="appackage" placeholder="اسم الحزمة com.example.app">
+            <input name="version" id="apversion" placeholder="رقم الإصدار مثل 2.4.1">
+            <input name="size_label" id="apsize" placeholder="حجم الملف مثل 45MB">
+            <input name="min_android" id="apminandroid" placeholder="أقل إصدار أندرويد مطلوب">
+            <input name="developer_name" id="apdev" placeholder="اسم المطوّر">
+            <input name="developer_website" id="apdevsite" placeholder="رابط موقع المطوّر">
+            <input name="privacy_policy_url" id="appolicy" placeholder="رابط سياسة الخصوصية">
+            <select name="status" id="apstatus"><option value="published">منشور</option><option value="pending">قيد المراجعة</option><option value="hidden">مخفي</option></select>
+          </div>
+          <div class="upload-row">
+            <input type="text" name="icon" id="apicon" placeholder="رابط أيقونة التطبيق (أو ارفع ملفاً)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apicon')"></label>
+          </div>
+          <div class="upload-row">
+            <input type="text" name="banner_image" id="apbanner" placeholder="رابط صورة الغلاف">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apbanner')"></label>
+          </div>
+          <textarea name="screenshots" id="apscreens" placeholder="روابط صور لقطات الشاشة، كل رابط بسطر مستقل" rows="3"></textarea>
+          <input name="video_url" id="apvideo" placeholder="رابط فيديو عرض (يوتيوب، اختياري)">
+          <input name="short_description" id="apshort" placeholder="وصف مختصر يظهر بالبطاقات" maxlength="300">
+          <textarea name="description" id="apdesc" placeholder="الوصف الكامل للتطبيق" rows="4"></textarea>
+          <textarea name="changelog" id="apchangelog" placeholder="ما الجديد في هذا الإصدار" rows="2"></textarea>
+          <textarea name="permissions" id="appermissions" placeholder="الصلاحيات المطلوبة، كل صلاحية بسطر مستقل" rows="2"></textarea>
+          <div class="upload-row">
+            <input type="text" name="download_url" id="apdownload" placeholder="رابط ملف APK / التحميل المباشر" required>
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" style="display:none" onchange="uploadInto(this,'apdownload')"></label>
+          </div>
+          <input name="seo_title" id="apseotitle" placeholder="عنوان SEO لمحركات البحث (اختياري)">
+          <textarea name="seo_description" id="apseodesc" placeholder="وصف SEO لمحركات البحث (اختياري)" rows="2"></textarea>
+          <input name="seo_keywords" id="apseokw" placeholder="كلمات مفتاحية SEO مفصولة بفواصل (اختياري)">
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ التطبيق</button>
+        </form>
+      </div>
+      <div class="admin-box">
+        <table>
+          <tr><th>الأيقونة</th><th>الاسم</th><th>النوع</th><th>الحالة</th><th>المشاهدات</th><th>التحميلات</th><th></th></tr>
+          <?php foreach ($apps as $a): ?>
+          <tr>
+            <td><?php if ($a['icon']): ?><img src="<?= e($a['icon']) ?>" style="width:32px;height:32px;border-radius:8px;object-fit:cover"><?php endif; ?></td>
+            <td><?= e($a['name']) ?></td>
+            <td><?= $a['kind'] === 'game' ? 'لعبة' : 'تطبيق' ?></td>
+            <td><span class="badge <?= $a['status'] === 'published' ? 'approved' : ($a['status'] === 'pending' ? 'pending' : 'rejected') ?>"><?= e($a['status']) ?></span></td>
+            <td><?= (int)$a['views'] ?></td>
+            <td><?= (int)$a['downloads'] ?></td>
+            <td style="display:flex;gap:6px">
+              <a class="btn btn-ghost" href="?page=app&id=<?= (int)$a['id'] ?>" target="_blank"><?= icon('eye', 'ic-sm') ?></a>
+              <button class="btn btn-ghost" type="button" onclick='fillAppForm(<?= json_encode($a, JSON_UNESCAPED_UNICODE) ?>)'><?= icon('edit', 'ic-sm') ?></button>
+              <form method="post" action="?action=admin_delete_app" style="display:inline">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
+                <button class="btn btn-danger" onclick="return confirm('حذف التطبيق؟')"><?= icon('trash', 'ic-sm') ?></button>
+              </form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+      <script>
+      function fillAppForm(a) {
+        document.getElementById('apid').value = a.id;
+        document.getElementById('apname').value = a.name || '';
+        document.getElementById('apkind').value = a.kind || 'app';
+        document.getElementById('apcategory').value = a.category || '';
+        document.getElementById('appackage').value = a.package_name || '';
+        document.getElementById('apversion').value = a.version || '';
+        document.getElementById('apsize').value = a.size_label || '';
+        document.getElementById('apminandroid').value = a.min_android || '';
+        document.getElementById('apdev').value = a.developer_name || '';
+        document.getElementById('apdevsite').value = a.developer_website || '';
+        document.getElementById('appolicy').value = a.privacy_policy_url || '';
+        document.getElementById('apstatus').value = a.status || 'published';
+        document.getElementById('apicon').value = a.icon || '';
+        document.getElementById('apbanner').value = a.banner_image || '';
+        document.getElementById('apscreens').value = a.screenshots || '';
+        document.getElementById('apvideo').value = a.video_url || '';
+        document.getElementById('apshort').value = a.short_description || '';
+        document.getElementById('apdesc').value = a.description || '';
+        document.getElementById('apchangelog').value = a.changelog || '';
+        document.getElementById('appermissions').value = a.permissions || '';
+        document.getElementById('apdownload').value = a.download_url || '';
+        document.getElementById('apseotitle').value = a.seo_title || '';
+        document.getElementById('apseodesc').value = a.seo_description || '';
+        document.getElementById('apseokw').value = a.seo_keywords || '';
+        document.querySelector('.admin-box h3').scrollIntoView({behavior:'smooth'});
+      }
+      </script>
+
     <?php elseif ($tab === 'products'):
         $cats = db()->query("SELECT * FROM categories")->fetchAll();
         $products = db()->query("SELECT * FROM products ORDER BY id DESC")->fetchAll();
@@ -3231,7 +3789,7 @@ case 'admin':
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <div class="formrow">
             <input name="name" placeholder="اسم القسم (مثال: الألعاب)" required>
-            <input name="color" type="color" value="#a3182c" title="لون بطاقة القسم" style="padding:4px;height:42px">
+            <input name="color" type="color" value="#1d4ed8" title="لون بطاقة القسم" style="padding:4px;height:42px">
           </div>
           <div class="upload-row">
             <input type="text" name="image" id="catimage" placeholder="صورة بطاقة القسم (شعارات/أيقونات مجمّعة، اختياري)">
@@ -3245,7 +3803,7 @@ case 'admin':
           <tr>
             <td><?= e($c['name']) ?></td>
             <td>
-              <div class="cat-tile-mini" style="background:<?= e($c['color'] ?: '#271419') ?>">
+              <div class="cat-tile-mini" style="background:<?= e($c['color'] ?: '#18223a') ?>">
                 <?php if (!empty($c['image'])): ?><img src="<?= e($c['image']) ?>"><?php endif; ?>
               </div>
             </td>
@@ -3538,7 +4096,7 @@ case 'admin':
               if (!isset($homeSectionLabels[$k2])) continue;
               $isHidden = in_array($k2, $homeHiddenCur, true);
           ?>
-            <li draggable="true" data-key="<?= e($k2) ?>" class="home-section-row<?= $isHidden ? ' is-hidden' : '' ?>" style="display:flex;align-items:center;gap:10px;background:#1d1014;border:1px solid #3a1c23;border-radius:10px;padding:10px 14px;cursor:grab">
+            <li draggable="true" data-key="<?= e($k2) ?>" class="home-section-row<?= $isHidden ? ' is-hidden' : '' ?>" style="display:flex;align-items:center;gap:10px;background:#101a2e;border:1px solid #2a3350;border-radius:10px;padding:10px 14px;cursor:grab">
               <?= icon('menu', 'ic-sm') ?>
               <span style="flex:1"><?= e($homeSectionLabels[$k2]) ?></span>
               <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin:0">
@@ -3699,7 +4257,7 @@ case 'admin':
           <label>ثيمات جاهزة (اختر ثيماً لتعبئة الألوان تلقائياً)
             <select onchange="applyThemePreset(this.value)">
               <option value="">— اختر ثيماً جاهزاً —</option>
-              <option value="#e6294b,#ff4d4d">كلاسيك أحمر</option>
+              <option value="#2563eb,#06b6d4">كلاسيك أحمر</option>
               <option value="#1e63d6,#3fa9f5">أزرق محيطي</option>
               <option value="#1ea672,#34d399">أخضر طبيعي</option>
               <option value="#7c3aed,#a855f7">بنفسجي ملكي</option>
@@ -3710,6 +4268,10 @@ case 'admin':
           </label>
           <label>اللون الأساسي للموقع<input type="color" id="themeAccentColor" name="theme_accent_color" value="<?= e(setting('theme_accent_color')) ?>"></label>
           <label>لون التمييز الثانوي<input type="color" id="themeAccent2Color" name="theme_accent2_color" value="<?= e(setting('theme_accent2_color')) ?>"></label>
+          <label>كود إعلانات MoneyTag (يظهر فقط في صفحة تحميل التطبيقات)<textarea name="moneytag_script" rows="3" placeholder="ألصق كود/سكربت MoneyTag هنا"><?= e(setting('moneytag_script')) ?></textarea></label>
+          <label>ثواني الانتظار بصفحة التحميل قبل ظهور رابط التحميل<input type="number" name="app_download_wait_seconds" value="<?= e(setting('app_download_wait_seconds')) ?>" min="0" max="30"></label>
+          <label>مفتاح Cloudflare Turnstile العلني (Site Key) — كابتشا عالمية حقيقية<input name="turnstile_site_key" value="<?= e(setting('turnstile_site_key')) ?>" placeholder="0x4AAAAAAA..."></label>
+          <label>مفتاح Cloudflare Turnstile السري (Secret Key)<input type="password" name="turnstile_secret_key" value="<?= e(setting('turnstile_secret_key')) ?>" autocomplete="off"></label>
           <label>نسبة هامش ربح Satofill %<input type="number" step="0.1" name="satofill_markup_percent" value="<?= e(setting('satofill_markup_percent', 15)) ?>"></label>
           <label>تفعيل الإعلانات (عند ضغط زر فقط)
             <select name="ad_enabled">
@@ -3765,7 +4327,7 @@ case 'admin':
           <button class="btn btn-primary" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()"><?= icon('check', 'ic-sm') ?>حفظ الإعدادات</button>
           <button type="button" class="btn btn-ghost" onclick="testOpenRouter()"><?= icon('rocket', 'ic-sm') ?>اختبار الاتصال بـ OpenRouter</button>
         </div>
-        <hr style="border-color:#341c22;margin:18px 0">
+        <hr style="border-color:#28304a;margin:18px 0">
         <h4 style="margin:0 0 8px">مفاتيح OpenRouter API (عدد غير محدود)</h4>
         <p style="color:var(--muted);font-size:13px;margin-top:0">يمكنك إضافة أكثر من مفتاح. عند استهلاك حد مفتاح أو تعطّله يجرّب النظام المفتاح التالي تلقائياً.</p>
         <form method="post" action="?action=admin_save_openrouter_key" class="formrow">
@@ -3794,7 +4356,7 @@ case 'admin':
           <?php endif; ?>
           </tbody>
         </table>
-        <hr style="border-color:#341c22;margin:18px 0">
+        <hr style="border-color:#28304a;margin:18px 0">
         <p style="color:var(--muted);font-size:13px">
           بيانات قاعدة البيانات وGoogle OAuth تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). توكن البوت وآيدي المالك يتم ضبطهما من الحقلين أعلاه فقط — يقرأهما بوت تيليجرام (<code>telegram_bot.php</code>) مباشرة من قاعدة البيانات حتى لو كان يعمل على سيرفر VPS مستقل تماماً عن هذا الموقع. باقي إعدادات البوت (الرسائل الجماعية، مكافأة الكابتشا، الحد الأدنى للسحب) تُضبط من داخل البوت نفسه بإرسال أمر <code>/admin</code> له (للمالك فقط). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي. مفتاح OpenRouter مجاني ويمكن الحصول عليه من openrouter.ai، ويدعم آلاف الموديلات المجانية والمدفوعة لتوليد الوصف وSEO تلقائياً للمنتجات. لتفعيل تسجيل الدخول بتيليجرام: أنشئ بوتاً عبر @BotFather، ضع توكنه في الحقل أعلاه، واكتب اسم المستخدم للبوت (بدون @) في الحقل المخصص — كما يجب ضبط دومين الموقع للبوت عبر أمر <code>/setdomain</code> في @BotFather.
         </p>
@@ -3812,8 +4374,8 @@ default:
 
 <div class="bottom-nav">
   <a href="?" class="<?= $page === 'home' ? 'active' : '' ?>"><?= icon('home', 'ic') ?>الرئيسية</a>
-  <a href="?page=earn" class="<?= $page === 'earn' ? 'active' : '' ?>"><?= icon('coin', 'ic') ?>اكسب</a>
-  <a href="?page=tasks" class="<?= $page === 'tasks' ? 'active' : '' ?>"><?= icon('tasks', 'ic') ?>مهام</a>
+  <a href="?page=apps" class="<?= in_array($page, ['apps', 'app', 'app_download'], true) ? 'active' : '' ?>"><?= icon('android', 'ic') ?>تطبيقات</a>
+  <a href="?page=store" class="<?= $page === 'store' ? 'active' : '' ?>"><?= icon('cart', 'ic') ?>المتجر</a>
   <a href="?page=wallet" class="<?= $page === 'wallet' ? 'active' : '' ?>"><?= icon('wallet', 'ic') ?>محفظتي</a>
   <a href="?page=orders" class="<?= $page === 'orders' ? 'active' : '' ?>"><?= icon('orders', 'ic') ?>طلباتي</a>
 </div>
