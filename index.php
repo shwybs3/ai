@@ -227,6 +227,8 @@ function migrate(): void
         rating_avg DECIMAL(3,2) NOT NULL DEFAULT 0,
         views INT NOT NULL DEFAULT 0,
         downloads INT NOT NULL DEFAULT 0,
+        likes_count INT NOT NULL DEFAULT 0,
+        dislikes_count INT NOT NULL DEFAULT 0,
         status VARCHAR(20) NOT NULL DEFAULT 'published',
         publisher_id INT NULL,
         created_at $ts
@@ -303,6 +305,8 @@ function migrate(): void
     add_column_if_missing($pdo, 'users', 'last_spin_date', 'VARCHAR(10) NULL');
     add_column_if_missing($pdo, 'users', 'signup_fingerprint', 'VARCHAR(64) NULL');
     add_column_if_missing($pdo, 'users', 'referral_bonus_given', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'apps', 'likes_count', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'apps', 'dislikes_count', 'INT NOT NULL DEFAULT 0');
 
     // فهارس على الأعمدة الأكثر استخداماً في الاستعلامات لتسريع تحميل الصفحات وتقليل تجمّد الموقع
     $indexes = [
@@ -385,6 +389,8 @@ function migrate(): void
         'ad_zone_id' => '11185011',
         'auto_translate_enabled' => '1',
         'support_telegram' => '@layos_he',
+        'telegram_channel_url' => '',
+        'app_notify_enabled' => '1',
         'google_site_verification' => '',
         'openrouter_api_key' => '',
         'openrouter_model' => 'openai/gpt-4o',
@@ -456,16 +462,28 @@ function migrate(): void
             ->execute();
     }
 
+    $siteNameForSeed = setting('site_name', 'Yassota');
     $pagesSeed = [
-        'privacy' => 'سياسة الخصوصية الخاصة بمنصة Yassota...',
-        'terms' => 'شروط الاستخدام الخاصة بمنصة Yassota...',
-        'about' => 'Yassota منصة عربية للتسوق وكسب النقاط مقابل إنجاز مهام بسيطة، نلتزم بالشفافية والجودة في جميع خدماتنا.',
-        'contact' => 'لأي استفسار أو دعم فني يمكنك التواصل معنا عبر تيليجرام: ' . ($defaults['support_telegram'] ?? '@layos_he') . ' وسيتم الرد عليك في أقرب وقت ممكن.',
-        'faq' => "س: كيف أشحن منتجاً؟\nج: اختر المنتج واضغط طلب شراء، ثم أكمل عملية الدفع وأرفق إيصال التحويل.\n\nس: كم تستغرق معالجة الطلب؟\nج: عادة بين دقائق وحتى 24 ساعة بحسب نوع المنتج.\n\nس: كيف أسحب أرباحي؟\nج: من صفحة المحفظة بعد الوصول للحد الأدنى للسحب، وعبر USDT أو الشام كاش.\n\nس: نسيت كلمة المرور، ماذا أفعل؟\nج: استخدم رابط استعادة كلمة المرور من صفحة تسجيل الدخول.",
+        'privacy' => "نحن في {$siteNameForSeed} نحترم خصوصيتك ونلتزم بحماية بياناتك الشخصية. توضّح هذه السياسة كيفية جمع واستخدام وحماية معلوماتك عند استخدام الموقع.\n\nالمعلومات التي نجمعها: عند التسجيل نجمع الاسم، البريد الإلكتروني، واسم المستخدم. عند استخدام تسجيل الدخول عبر جوجل أو تيليجرام نستلم فقط البيانات الأساسية للملف العام (الاسم والبريد/الصورة). كما نسجّل بيانات تقنية تلقائية مثل عنوان IP ونوع المتصفح لأغراض الأمان ومنع الاحتيال.\n\nاستخدام البيانات: نستخدم بياناتك لتفعيل حسابك، معالجة الطلبات والتحميلات، التواصل معك بخصوص الدعم الفني، وتحسين تجربة الاستخدام. لا نبيع بياناتك الشخصية لأي طرف ثالث.\n\nملفات تعريف الارتباط (Cookies): يستخدم الموقع ملفات تعريف الارتباط لحفظ جلسة تسجيل الدخول وتفضيلات اللغة، وقد تستخدمها شبكات الإعلانات الخارجية (مثل Google Translate وشبكات الإعلانات المعروضة) لأغراض تحسين المحتوى المعروض.\n\nالإعلانات وأطراف ثالثة: قد يعرض الموقع إعلانات من شبكات إعلانية خارجية، وقد تستخدم هذه الشبكات تقنياتها الخاصة لجمع بيانات غير شخصية لتحسين الإعلانات المعروضة. كما تُستخدم خدمة الذكاء الاصطناعي (OpenRouter) لتوليد محتوى وصفي للتطبيقات دون إرسال أي بيانات شخصية للمستخدمين إليها.\n\nملفات APK ومحتوى التطبيقات: روابط التحميل المتوفرة على الموقع يقدّمها أو يرفعها ناشرو المحتوى، ونوصي دوماً بفحص أي ملف قبل تثبيته. الموقع غير مسؤول عن محتوى التطبيقات الخارجية بعد تحميلها.\n\nحقوقك: يمكنك طلب تعديل أو حذف بياناتك أو حسابك بالتواصل معنا عبر صفحة الدعم الفني.\n\nالتعديلات: قد نقوم بتحديث سياسة الخصوصية من وقت لآخر، وسيتم نشر أي تعديل على هذه الصفحة.",
+        'terms' => "باستخدامك لموقع {$siteNameForSeed} فإنك توافق على الالتزام بشروط الاستخدام التالية. يرجى قراءتها بعناية قبل استخدام الموقع.\n\n1) طبيعة الخدمة: يقدّم الموقع روابط تحميل لتطبيقات وألعاب أندرويد ومنتجات رقمية، بعضها معدّل (مهكّر/مود) لأغراض تجريبية وتعليمية. استخدامك لهذه التطبيقات يقع على مسؤوليتك الخاصة بالكامل.\n\n2) لا ضمانات: يُقدَّم المحتوى \"كما هو\" دون أي ضمان صريح أو ضمني بشأن خلوّه من الأخطاء أو ملاءمته لغرض معيّن. لا نضمن استمرار عمل أي رابط تحميل أو توافقه مع جميع الأجهزة.\n\n3) حقوق الملكية الفكرية: جميع العلامات التجارية وأسماء التطبيقات المذكورة في الموقع مملوكة لأصحابها الأصليين، ولا يمثّل عرضها أي ارتباط أو تأييد رسمي من تلك الشركات للموقع.\n\n4) سلوك المستخدم: يُمنع استخدام الموقع لأي غرض غير قانوني، أو محاولة اختراقه، أو نشر محتوى مخالف عبر التعليقات أو الحسابات.\n\n5) الحسابات: أنت مسؤول عن سرية بيانات حسابك وكل نشاط يتم من خلاله. نحتفظ بحق تعليق أو حذف أي حساب يخالف هذه الشروط.\n\n6) الإعلانات والروابط الخارجية: قد يحتوي الموقع على إعلانات أو روابط لمواقع خارجية، ولسنا مسؤولين عن محتوى أو سياسات تلك المواقع.\n\n7) حدود المسؤولية: لا يتحمل {$siteNameForSeed} أي مسؤولية عن أضرار مباشرة أو غير مباشرة تنتج عن استخدام التطبيقات أو الملفات المحمّلة من الموقع.\n\n8) التعديلات: نحتفظ بحق تعديل هذه الشروط في أي وقت، ويُعتبر استمرارك باستخدام الموقع موافقة على التعديلات.\n\n9) التواصل: لأي استفسار قانوني يمكنك التواصل معنا عبر صفحة الدعم الفني.",
+        'about' => "{$siteNameForSeed} هو متجر عربي شامل لتطبيقات وألعاب أندرويد، يقدّم نسخاً أصلية ومعدّلة (مهكّرة) لأشهر التطبيقات والألعاب مع شرح مفصّل لكل تطبيق: المميزات، الصلاحيات المطلوبة، لقطات الشاشة، وروابط تحميل مباشرة وسريعة دون تعقيد.\n\nماذا نقدّم؟\n• تحميل تطبيقات وألعاب أندرويد محدّثة باستمرار.\n• وصف تفصيلي ومولّد بالذكاء الاصطناعي لكل تطبيق لمساعدتك على فهم مميزاته بسرعة.\n• متجر منتجات رقمية مستقل (بطاقات شحن، خدمات رقمية) مع نظام محفظة ونقاط ومهام يومية.\n• نظام تقييم شفاف (إعجاب/عدم إعجاب) لكل تطبيق يعكس رأي المستخدمين الحقيقيين.\n• دعم فني سريع عبر تيليجرام.\n\nنحرص في {$siteNameForSeed} على تحديث المحتوى باستمرار وتقديم تجربة استخدام سريعة وسلسة بدون تعقيدات.",
+        'contact' => 'لأي استفسار أو دعم فني يمكنك التواصل معنا عبر تيليجرام: ' . ($defaults['support_telegram'] ?? '@layos_he') . ' وسيتم الرد عليك في أقرب وقت ممكن. فريق الدعم متاح للإجابة عن استفساراتك المتعلقة بالتحميلات، الحسابات، أو المنتجات الرقمية على مدار الأسبوع.',
+        'faq' => "س: كيف أحمّل تطبيقاً أو لعبة؟\nج: افتح صفحة التطبيق، اضغط «تحميل الآن»، انتظر العد التنازلي القصير ثم اضغط رابط التحميل المباشر.\n\nس: هل التطبيقات المعدّلة (المهكّرة) آمنة؟\nج: نحرص على فحص الروابط المعروضة، لكننا ننصح دوماً بفحص أي ملف بعد التحميل قبل تثبيته كإجراء احتياطي.\n\nس: التطبيق لا يعمل بعد التثبيت، ما الحل؟\nج: تأكد من توافق إصدار أندرويد لديك مع المتطلبات المذكورة بصفحة التطبيق، وتأكد من تفعيل «تثبيت من مصادر غير معروفة».\n\nس: كيف أشحن منتجاً؟\nج: اختر المنتج واضغط طلب شراء، ثم أكمل عملية الدفع وأرفق إيصال التحويل.\n\nس: كم تستغرق معالجة الطلب؟\nج: عادة بين دقائق وحتى 24 ساعة بحسب نوع المنتج.\n\nس: كيف أسحب أرباحي؟\nج: من صفحة المحفظة بعد الوصول للحد الأدنى للسحب، وعبر USDT أو الشام كاش.\n\nس: نسيت كلمة المرور، ماذا أفعل؟\nج: استخدم رابط استعادة كلمة المرور من صفحة تسجيل الدخول.",
     ];
     foreach ($pagesSeed as $slug => $content) {
         $st = $pdo->prepare("INSERT INTO pages (slug, content) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = ?)");
         $st->execute([$slug, $content, $slug]);
+    }
+
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='pages_content_v2_migrated'")->fetchColumn() === '') {
+        foreach (['privacy', 'terms', 'about'] as $slug) {
+            $pdo->prepare("UPDATE pages SET content = ? WHERE slug = ? AND (content LIKE '%...' OR content = '')")
+                ->execute([$pagesSeed[$slug], $slug]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('pages_content_v2_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('pages_content_v2_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
     }
 
     $walletCount = (int)$pdo->query("SELECT COUNT(*) c FROM wallets")->fetch()['c'];
@@ -760,6 +778,10 @@ function icon(string $name, string $class = 'ic'): string
         'download' => '<path d="M12 4v11M7.5 11.5 12 16l4.5-4.5"/><path d="M4 19h16"/>',
         'eye' => '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
         'play' => '<path d="M7 4.5v15l13-7.5z"/>',
+        'thumb-up' => '<path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z"/><path d="M7 11l4-7a2 2 0 0 1 3.6 1.7L13.7 9H19a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H10a3 3 0 0 1-3-3"/>',
+        'thumb-down' => '<path d="M17 13V4h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1z"/><path d="M17 13l-4 7a2 2 0 0 1-3.6-1.7L10.3 15H5a2 2 0 0 1-2-2.3l1.2-7A2 2 0 0 1 6.2 4H14a3 3 0 0 1 3 3"/>',
+        'bell' => '<path d="M6 16V10a6 6 0 1 1 12 0v6l1.5 2.5h-15z"/><path d="M9.5 19a2.5 2.5 0 0 0 5 0"/>',
+        'telegram' => '<path d="M21 4.5 2.7 11.6c-.9.36-.9 1.55.05 1.85l4.5 1.45 1.7 5.5c.3.95 1.55 1.15 2.1.3l2.4-3.6 4.5 3.3c.85.6 2.05.15 2.25-.85l3-15.4c.2-1.05-.85-1.85-1.7-1.6z"/><path d="M7.25 14.9 17 7.5"/>',
     ];
     $body = $paths[$name] ?? $paths['check'];
     return '<svg class="' . e($class) . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $body . '</svg>';
@@ -1367,6 +1389,25 @@ if ($action === 'sitemap') {
         echo '<priority>' . $u['priority'] . '</priority></url>' . "\n";
     }
     echo '</urlset>';
+    exit;
+}
+
+if ($action === 'app_vote') {
+    header('Content-Type: application/json; charset=utf-8');
+    csrf_check();
+    $appId = (int)($_POST['id'] ?? 0);
+    $dir = $_POST['dir'] ?? '';
+    if (!$appId || !in_array($dir, ['up', 'down'], true)) { echo json_encode(['ok' => false, 'msg' => 'طلب غير صالح.']); exit; }
+    $voted = $_SESSION['voted_apps'] ?? [];
+    if (isset($voted[$appId])) { echo json_encode(['ok' => false, 'msg' => 'لقد قيّمت هذا التطبيق مسبقاً.']); exit; }
+    $col = $dir === 'up' ? 'likes_count' : 'dislikes_count';
+    db()->prepare("UPDATE apps SET $col = $col + 1 WHERE id=?")->execute([$appId]);
+    $voted[$appId] = $dir;
+    $_SESSION['voted_apps'] = $voted;
+    $row = db()->prepare("SELECT likes_count, dislikes_count FROM apps WHERE id=?");
+    $row->execute([$appId]);
+    $r = $row->fetch();
+    echo json_encode(['ok' => true, 'likes' => (int)$r['likes_count'], 'dislikes' => (int)$r['dislikes_count']]);
     exit;
 }
 
@@ -2492,6 +2533,24 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .app-info-grid div{background:#18223a;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
 .app-info-grid span{color:var(--muted);font-size:12px}
 .app-info-grid strong{font-size:13px;word-break:break-all}
+.app-stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}
+.app-stat-box{background:#18223a;border:1px solid #232f4d;border-radius:14px;padding:12px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:4px}
+.app-stat-box .ic-sm{color:var(--accent)}
+.app-stat-box span{color:var(--muted);font-size:12px}
+.app-stat-box strong{font-size:14px}
+.app-popularity-bar{position:relative;background:#18223a;border-radius:30px;height:34px;overflow:hidden;margin-bottom:14px}
+.app-popularity-fill{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,#16a34a,#22c55e);border-radius:30px}
+.app-popularity-bar span{position:relative;z-index:1;display:flex;height:100%;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff}
+.app-vote-row{display:flex;gap:10px;margin-bottom:14px}
+.app-vote-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border-radius:14px;border:1px solid #232f4d;background:#18223a;color:var(--text);font-weight:700;cursor:pointer}
+.app-vote-btn.down{color:#f87171}
+.app-vote-btn.up{color:#4ade80}
+.app-vote-btn:disabled{opacity:.6;cursor:default}
+.app-action-buttons{display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
+.app-action-buttons .btn{width:100%;justify-content:center}
+.app-btn-download{background:linear-gradient(135deg,#06b6d4,#0ea5e9);color:#fff}
+.app-btn-telegram{background:#2563eb;color:#fff}
+.app-btn-notify{background:#16a34a;color:#fff}
 .download-page{display:flex;justify-content:center;padding:30px 18px 50px}
 .download-card{width:100%;max-width:440px;background:var(--card);border-radius:var(--radius);padding:30px 24px;text-align:center;box-shadow:var(--shadow)}
 .download-app-icon{width:90px;height:90px;border-radius:22px;object-fit:cover;margin:0 auto 14px}
@@ -2864,7 +2923,7 @@ function render_product_card(array $p): void
       <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" onclick="toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
       <a href="?page=product&id=<?= (int)$p['id'] ?>">
         <?php if ($p['image']): ?>
-          <img class="pimg" loading="lazy" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+          <img class="pimg" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
         <?php elseif (!empty($p['icon'])): ?>
           <div class="icon-wrap emoji-icon"><?= e($p['icon']) ?></div>
         <?php else: ?>
@@ -2889,7 +2948,7 @@ function render_app_card(array $a): void
       <span class="tag app-kind-tag"><?= e($kindLabel) ?></span>
       <a href="?page=app&id=<?= (int)$a['id'] ?>">
         <?php if ($a['icon']): ?>
-          <img class="pimg app-icon-img" loading="lazy" decoding="async" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
+          <img class="pimg app-icon-img" decoding="async" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
         <?php else: ?>
           <div class="icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
         <?php endif; ?>
@@ -2960,7 +3019,7 @@ case 'home':
             <div class="cat-tiles">
               <?php foreach ($tileCats as $c): ?>
                 <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#18223a') ?>">
-                  <img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>" loading="lazy" decoding="async">
+                  <img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>" decoding="async">
                   <span class="cat-tile-label"><?= e($c['name']) ?></span>
                 </a>
               <?php endforeach; ?>
@@ -2981,7 +3040,7 @@ case 'home':
             <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
               <div class="banner-carousel-track">
                 <?php foreach ($banners as $i => $b): ?>
-                  <a class="banner-carousel-slide" href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" <?= $i === 0 ? 'loading="eager" fetchpriority="high"' : 'loading="lazy"' ?> decoding="async" alt=""></a>
+                  <a class="banner-carousel-slide" href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" fetchpriority="<?= $i === 0 ? 'high' : 'auto' ?>" decoding="async" alt=""></a>
                 <?php endforeach; ?>
               </div>
               <?php if (count($banners) > 1): ?>
@@ -3201,6 +3260,10 @@ case 'app':
     db()->prepare("UPDATE apps SET views = views + 1 WHERE id=?")->execute([$a['id']]);
     $screenshots = array_filter(explode(',', (string)$a['screenshots']));
     $permissions = array_filter(explode(',', (string)$a['permissions']));
+    $likes = (int)$a['likes_count']; $dislikes = (int)$a['dislikes_count'];
+    $totalVotes = $likes + $dislikes;
+    $popularity = $totalVotes > 0 ? round($likes / $totalVotes * 100) : 99;
+    $hasVoted = isset($_SESSION['voted_apps'][$a['id']]);
     ?>
     <div class="breadcrumb" style="padding:14px 18px;font-size:13px;color:var(--muted)">
       <a href="?">الرئيسية</a> / <a href="?page=apps"><?= $a['kind'] === 'game' ? 'ألعاب' : 'تطبيقات' ?></a> / <span><?= e($a['name']) ?></span>
@@ -3216,21 +3279,44 @@ case 'app':
           <h1><?= e($a['name']) ?></h1>
           <div class="app-detail-meta">
             <?php if ($a['developer_name']): ?><span><?= icon('users', 'ic-sm') ?><?= e($a['developer_name']) ?></span><?php endif; ?>
-            <?php if ($a['version']): ?><span>الإصدار <?= e($a['version']) ?></span><?php endif; ?>
           </div>
-          <div class="app-stats app-detail-stats">
-            <?php if ($a['rating_avg']): ?><span><?= icon('star', 'ic-sm') ?><?= e(number_format((float)$a['rating_avg'], 1)) ?></span><?php endif; ?>
-            <span><?= icon('eye', 'ic-sm') ?><?= number_format((int)$a['views'] + 1) ?> مشاهدة</span>
-            <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads']) ?> تحميل</span>
-            <?php if ($a['size_label']): ?><span><?= e($a['size_label']) ?></span><?php endif; ?>
-          </div>
-          <a class="btn btn-primary app-download-btn" href="?page=app_download&id=<?= (int)$a['id'] ?>"><?= icon('download', 'ic-sm') ?>تحميل الآن</a>
         </div>
+      </div>
+
+      <div class="app-stat-grid">
+        <?php if ($a['version']): ?><div class="app-stat-box"><?= icon('rocket', 'ic-sm') ?><span>النسخة</span><strong><?= e($a['version']) ?></strong></div><?php endif; ?>
+        <div class="app-stat-box"><?= icon('history', 'ic-sm') ?><span>تحديث</span><strong><?= e(date('d/m/Y', strtotime((string)$a['created_at']))) ?></strong></div>
+        <?php if ($a['min_android']): ?><div class="app-stat-box"><?= icon('android', 'ic-sm') ?><span>المتطلبات</span><strong>أندرويد <?= e($a['min_android']) ?></strong></div><?php endif; ?>
+        <?php if ($a['size_label']): ?><div class="app-stat-box"><?= icon('download', 'ic-sm') ?><span>الحجم</span><strong><?= e($a['size_label']) ?></strong></div><?php endif; ?>
+        <?php if ($a['category']): ?><div class="app-stat-box"><?= icon('chart', 'ic-sm') ?><span>التصنيف</span><strong><?= e($a['category']) ?></strong></div><?php endif; ?>
+        <div class="app-stat-box"><?= icon('eye', 'ic-sm') ?><span>المشاهدات</span><strong><?= number_format((int)$a['views'] + 1) ?></strong></div>
+      </div>
+
+      <div class="app-popularity-bar"><div class="app-popularity-fill" style="width:<?= $popularity ?>%"></div><span><?= $popularity ?>% الشعبية</span></div>
+
+      <div class="app-vote-row">
+        <button type="button" class="app-vote-btn down" id="appVoteDown" onclick="appVote(<?= (int)$a['id'] ?>,'down')" <?= $hasVoted ? 'disabled' : '' ?>><?= icon('thumb-down', 'ic-sm') ?><span id="appDislikeCount"><?= number_format($dislikes) ?></span></button>
+        <button type="button" class="app-vote-btn up" id="appVoteUp" onclick="appVote(<?= (int)$a['id'] ?>,'up')" <?= $hasVoted ? 'disabled' : '' ?>><?= icon('thumb-up', 'ic-sm') ?><span id="appLikeCount"><?= number_format($likes) ?></span></button>
+      </div>
+
+      <div class="app-detail-stats" style="margin-bottom:14px">
+        <?php if ($a['rating_avg']): ?><span><?= icon('star', 'ic-sm') ?><?= e(number_format((float)$a['rating_avg'], 1)) ?></span><?php endif; ?>
+        <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads']) ?> تحميل</span>
+      </div>
+
+      <div class="app-action-buttons">
+        <a class="btn app-btn-download" href="?page=app_download&id=<?= (int)$a['id'] ?>"><?= icon('download', 'ic-sm') ?>تحميل الآن</a>
+        <?php if (setting('telegram_channel_url')): ?>
+          <a class="btn app-btn-telegram" href="<?= e(setting('telegram_channel_url')) ?>" target="_blank" rel="nofollow noopener"><?= icon('telegram', 'ic-sm') ?>اشترك في قناة تيليجرام</a>
+        <?php endif; ?>
+        <?php if (setting('app_notify_enabled', '1') === '1'): ?>
+          <button type="button" class="btn app-btn-notify" onclick="appNotifySubscribe(this)"><?= icon('bell', 'ic-sm') ?>اشترك في التحديثات</button>
+        <?php endif; ?>
       </div>
 
       <?php if ($screenshots): ?>
       <div class="app-screens">
-        <?php foreach ($screenshots as $s): ?><img src="<?= e($s) ?>" loading="lazy" decoding="async" alt="لقطة شاشة"><?php endforeach; ?>
+        <?php foreach ($screenshots as $s): ?><img src="<?= e($s) ?>" decoding="async" alt="لقطة شاشة"><?php endforeach; ?>
       </div>
       <?php endif; ?>
 
@@ -4369,6 +4455,13 @@ case 'admin':
             </select>
           </label>
           <label>تيليجرام خدمة العملاء<input name="support_telegram" value="<?= e(setting('support_telegram')) ?>" placeholder="@username"></label>
+          <label>رابط قناة تيليجرام (يظهر كزر بصفحة التطبيق)<input name="telegram_channel_url" value="<?= e(setting('telegram_channel_url')) ?>" placeholder="https://t.me/yourchannel"></label>
+          <label>زر «الاشتراك في التحديثات» بصفحة التطبيق
+            <select name="app_notify_enabled">
+              <option value="1" <?= setting('app_notify_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('app_notify_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
           <label>اسم بوت تيليجرام لتسجيل الدخول (بدون @)<input name="telegram_bot_username" value="<?= e(setting('telegram_bot_username')) ?>" placeholder="مثال: YassotaBot"></label>
           <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="" placeholder="<?= setting('bot_token') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'من @BotFather' ?>" autocomplete="off"></label>
           <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
@@ -4875,6 +4968,23 @@ function aiGenerateAppIcon(){
     document.getElementById('apicon').value = res.url;
     toast('تم توليد الأيقونة بنجاح');
   });
+}
+function appVote(id, dir){
+  const d = new FormData(); d.append('csrf', CSRF); d.append('id', id); d.append('dir', dir);
+  fetch('?action=app_vote', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    document.getElementById('appLikeCount').textContent = res.likes.toLocaleString();
+    document.getElementById('appDislikeCount').textContent = res.dislikes.toLocaleString();
+    document.getElementById('appVoteUp').disabled = true;
+    document.getElementById('appVoteDown').disabled = true;
+    toast('شكراً لتقييمك!');
+  });
+}
+function appNotifySubscribe(btn){
+  localStorage.setItem('app_notify_' + window.location.search, '1');
+  btn.disabled = true;
+  btn.innerHTML = btn.innerHTML.replace('اشترك في التحديثات', 'تم تفعيل التنبيهات');
+  toast('تم تفعيل تنبيهات التحديثات لهذا التطبيق');
 }
 function copyAddr(btn){
   const addr = btn.getAttribute('data-addr');
