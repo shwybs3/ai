@@ -1,4 +1,23 @@
+<IfModule mod_headers.c>
+    Header set X-Content-Type-Options "nosniff"
+    Header set X-Frame-Options "SAMEORIGIN"
+    Header set Referrer-Policy "strict-origin-when-cross-origin"
+    Header set Permissions-Policy "geolocation=(), microphone=(), camera=()"
+</IfModule>
+
+<FilesMatch "\.(sqlite|sqlite3|db|log|env)$">
+    Require all denied
+</FilesMatch>
+<Files "config.php">
+    Require all denied
+</Files>
+<Files "config.sample.php">
+    Require all denied
+</Files>
+
+<IfModule mod_rewrite.c>
 RewriteEngine On
 RewriteRule ^robots\.txt$ index.php?action=robots [L,QSA]
 RewriteRule ^sitemap\.xml$ index.php?action=sitemap [L,QSA]
 RewriteRule ^ads\.txt$ index.php?action=ads_txt [L,QSA]
+</IfModule>

@@ -1,12 +1,22 @@
 <?php
 /**
- * Yassota Store — منصة متجر إلكتروني + نظام أرباح ومحفظة + لوحة إدارة
+ * zanxpk — متجر تطبيقات وألعاب أندرويد + متجر منتجات رقمية + لوحة إدارة
  * ملف واحد يحتوي كل شيء: PHP + HTML + CSS + JS
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-session_set_cookie_params(60 * 60 * 24 * 7); // أسبوع
+session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 7, // أسبوع
+    'path' => '/',
+    'secure' => !empty($_SERVER['HTTPS']),
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
+
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
 
 if (!file_exists(__DIR__ . '/config.php')) {
     die('يرجى إنشاء config.php من config.sample.php أولاً.');
@@ -280,6 +290,19 @@ function migrate(): void
         last_error VARCHAR(255) NULL,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS login_attempts (
+        id $id,
+        identity VARCHAR(190) NOT NULL,
+        ip VARCHAR(64) NOT NULL,
+        success TINYINT NOT NULL DEFAULT 0,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS blocked_ips (
+        id $id,
+        ip VARCHAR(64) NOT NULL UNIQUE,
+        reason VARCHAR(255) NULL,
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -342,6 +365,9 @@ function migrate(): void
         'idx_userdownloads_user' => ['user_downloads', 'user_id'],
         'idx_userdownloads_app' => ['user_downloads', 'app_id'],
         'idx_app_reports_app' => ['app_reports', 'app_id'],
+        'idx_login_attempts_identity' => ['login_attempts', 'identity'],
+        'idx_login_attempts_ip' => ['login_attempts', 'ip'],
+        'idx_login_attempts_created' => ['login_attempts', 'created_at'],
     ];
     foreach ($indexes as $name => [$table, $cols]) {
         try {
@@ -916,6 +942,44 @@ function csrf_check(): void
     if (!$t || !hash_equals($_SESSION['csrf'] ?? '', $t)) { http_response_code(419); die('انتهت صلاحية الجلسة، أعد تحميل الصفحة.'); }
 }
 
+/* ---- نظام الحماية من تخمين كلمات المرور (Brute-force protection) ---- */
+function client_ip(): string
+{
+    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
+}
+
+function is_ip_blocked(string $ip): bool
+{
+    $st = db()->prepare("SELECT id FROM blocked_ips WHERE ip = ?");
+    $st->execute([$ip]);
+    return (bool)$st->fetch();
+}
+
+function login_attempts_limit(): int { return (int)setting('login_max_attempts', 5); }
+function login_lockout_minutes(): int { return (int)setting('login_lockout_minutes', 15); }
+
+// يتحقق إن كانت هوية/IP معينة تجاوزت عدد المحاولات الفاشلة المسموح بها خلال فترة القفل
+function is_login_locked(string $identity, string $ip): bool
+{
+    if (is_ip_blocked($ip)) return true;
+    $limit = login_attempts_limit();
+    if ($limit <= 0) return false;
+    $since = date('Y-m-d H:i:s', time() - login_lockout_minutes() * 60);
+    $st = db()->prepare("SELECT COUNT(*) c FROM login_attempts WHERE (identity = ? OR ip = ?) AND success = 0 AND created_at >= ?");
+    $st->execute([$identity, $ip, $since]);
+    return (int)$st->fetch()['c'] >= $limit;
+}
+
+function record_login_attempt(string $identity, string $ip, bool $success): void
+{
+    db()->prepare("INSERT INTO login_attempts (identity, ip, success) VALUES (?,?,?)")
+        ->execute([$identity, $ip, $success ? 1 : 0]);
+    if ($success) {
+        db()->prepare("DELETE FROM login_attempts WHERE (identity = ? OR ip = ?) AND success = 0")
+            ->execute([$identity, $ip]);
+    }
+}
+
 /* ---- Telegram ----
    البوت أصبح عملية مستقلة تعمل على سيرفر VPS منفصل (telegram_bot.php)
    ويستخدم فقط نفس قاعدة البيانات. هذا الملف لا يتصل بـ Telegram API مباشرة إطلاقاً؛
@@ -1299,6 +1363,7 @@ function handle_register(): void
     $email = trim($_POST['email'] ?? '');
     $password = (string)($_POST['password'] ?? '');
 
+    if (is_ip_blocked(client_ip())) { flash('عذراً، لا يمكن التسجيل من هذا العنوان حالياً.', 'error'); redirect('?'); }
     if (!turnstile_verify()) { flash('فشل التحقق الأمني (الكابتشا)، يرجى المحاولة مجدداً.', 'error'); redirect('?'); }
     if (!$username || !$email || !$password) { flash('يرجى تعبئة جميع الحقول.', 'error'); redirect('?'); }
     if (!filter_var($email, FILTER_VALIDATE_EMAIL)) { flash('البريد الإلكتروني غير صالح.', 'error'); redirect('?'); }
@@ -1336,6 +1401,12 @@ function handle_login(): void
     csrf_check();
     $identity = trim($_POST['identity'] ?? '');
     $password = (string)($_POST['password'] ?? '');
+    $ip = client_ip();
+
+    if (is_login_locked($identity, $ip)) {
+        flash('تم حظر تسجيل الدخول مؤقتاً بسبب محاولات فاشلة كثيرة، حاول بعد ' . login_lockout_minutes() . ' دقيقة.', 'error');
+        redirect('?');
+    }
     if (!turnstile_verify()) { flash('فشل التحقق الأمني (الكابتشا)، يرجى المحاولة مجدداً.', 'error'); redirect('?'); }
     if (!$identity || !$password) { flash('يرجى تعبئة جميع الحقول.', 'error'); redirect('?'); }
 
@@ -1344,10 +1415,12 @@ function handle_login(): void
     $u = $st->fetch();
 
     if (!$u || !$u['password_hash'] || !password_verify($password, $u['password_hash'])) {
+        record_login_attempt($identity, $ip, false);
         flash('بيانات الدخول غير صحيحة.', 'error'); redirect('?');
     }
     if ($u['is_banned']) { flash('هذا الحساب محظور.', 'error'); redirect('?'); }
 
+    record_login_attempt($identity, $ip, true);
     $role = ($u['email'] === ADMIN_EMAIL) ? 'admin' : $u['role'];
     db()->prepare("UPDATE users SET role=?, last_login=" . (DB_DRIVER === 'sqlite' ? "datetime('now')" : 'NOW()') . " WHERE id=?")
         ->execute([$role, $u['id']]);
@@ -1358,6 +1431,8 @@ function handle_login(): void
 /* ======================================================================
    4) ROUTING
    ====================================================================== */
+if (is_ip_blocked(client_ip())) { http_response_code(403); die('عذراً، تم حظر هذا العنوان من الوصول للموقع.'); }
+
 $action = $_GET['action'] ?? '';
 $page = $_GET['page'] ?? 'home';
 $appsKindNav = $_GET['kind'] ?? '';
@@ -2077,6 +2152,22 @@ if ($action && str_starts_with($action, 'admin_')) {
         case 'admin_report_decision':
             db()->prepare("UPDATE app_reports SET status='resolved' WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=reports');
+
+        case 'admin_block_ip':
+            $blockIp = trim($_POST['ip'] ?? '');
+            if ($blockIp !== '' && filter_var($blockIp, FILTER_VALIDATE_IP)) {
+                $sqlBlock = DB_DRIVER === 'sqlite'
+                    ? "INSERT INTO blocked_ips (ip, reason) VALUES (?,?) ON CONFLICT(ip) DO UPDATE SET reason=excluded.reason"
+                    : "INSERT INTO blocked_ips (ip, reason) VALUES (?,?) ON DUPLICATE KEY UPDATE reason=VALUES(reason)";
+                db()->prepare($sqlBlock)->execute([$blockIp, trim($_POST['reason'] ?? '')]);
+                flash('تم حظر العنوان.');
+            }
+            redirect('?page=admin&tab=security');
+
+        case 'admin_unblock_ip':
+            db()->prepare("DELETE FROM blocked_ips WHERE id=?")->execute([(int)$_POST['id']]);
+            flash('تم إلغاء الحظر.');
+            redirect('?page=admin&tab=security');
 
         case 'admin_save_settings':
             $redirectTab = preg_replace('/[^a-z_]/', '', $_POST['redirect_tab'] ?? 'settings') ?: 'settings';
@@ -3700,7 +3791,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -4317,6 +4408,72 @@ case 'admin':
             <td><?= e($r['created_at']) ?></td>
             <td><form method="post" action="?action=admin_report_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>"><button class="btn btn-ghost">تم الحل</button></form></td>
           </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'security'):
+        $recentFails = db()->query("SELECT * FROM login_attempts WHERE success=0 ORDER BY id DESC LIMIT 30")->fetchAll();
+        $blockedIps = db()->query("SELECT * FROM blocked_ips ORDER BY id DESC")->fetchAll();
+        $failCounts = db()->query("SELECT identity, ip, COUNT(*) c FROM login_attempts WHERE success=0 GROUP BY identity, ip ORDER BY c DESC LIMIT 15")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('shield', 'ic') ?>إعدادات الحماية من تخمين كلمات المرور</h3>
+        <form method="post" action="?action=admin_save_settings" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="redirect_tab" value="security">
+          <label>الحد الأقصى للمحاولات الفاشلة <input type="number" name="login_max_attempts" value="<?= e(setting('login_max_attempts', 5)) ?>" min="0"></label>
+          <label>مدة الحظر المؤقت (دقائق) <input type="number" name="login_lockout_minutes" value="<?= e(setting('login_lockout_minutes', 15)) ?>" min="1"></label>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
+        </form>
+        <p class="muted" style="margin-top:8px">ضع الحد الأقصى = 0 لتعطيل الحظر التلقائي بالكامل (يبقى الحظر اليدوي بالأسفل فعالاً).</p>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('shield', 'ic') ?>حظر عنوان IP يدوياً</h3>
+        <form method="post" action="?action=admin_block_ip" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="text" name="ip" placeholder="عنوان IP" required>
+          <input type="text" name="reason" placeholder="السبب (اختياري)">
+          <button class="btn btn-danger"><?= icon('close', 'ic-sm') ?>حظر</button>
+        </form>
+        <?php if (!$blockedIps): ?><div class="empty">لا توجد عناوين محظورة حالياً.</div><?php endif; ?>
+        <table>
+          <tr><th>IP</th><th>السبب</th><th>تاريخ الحظر</th><th>إجراء</th></tr>
+          <?php foreach ($blockedIps as $b): ?>
+          <tr>
+            <td><?= e($b['ip']) ?></td>
+            <td><?= e($b['reason'] ?: '—') ?></td>
+            <td><?= e($b['created_at']) ?></td>
+            <td><form method="post" action="?action=admin_unblock_ip"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-ghost">إلغاء الحظر</button></form></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('shield', 'ic') ?>أكثر المحاولات الفاشلة تكراراً</h3>
+        <?php if (!$failCounts): ?><div class="empty">لا توجد محاولات فاشلة مسجّلة.</div><?php endif; ?>
+        <table>
+          <tr><th>الهوية</th><th>IP</th><th>عدد المحاولات الفاشلة</th><th>إجراء</th></tr>
+          <?php foreach ($failCounts as $f): ?>
+          <tr>
+            <td><?= e($f['identity']) ?></td>
+            <td><?= e($f['ip']) ?></td>
+            <td><?= (int)$f['c'] ?></td>
+            <td><form method="post" action="?action=admin_block_ip"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="ip" value="<?= e($f['ip']) ?>"><input type="hidden" name="reason" value="محاولات تسجيل دخول فاشلة متكررة"><button class="btn btn-danger">حظر هذا IP</button></form></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('shield', 'ic') ?>آخر المحاولات الفاشلة</h3>
+        <?php if (!$recentFails): ?><div class="empty">لا توجد محاولات فاشلة مسجّلة.</div><?php endif; ?>
+        <table>
+          <tr><th>الهوية</th><th>IP</th><th>الوقت</th></tr>
+          <?php foreach ($recentFails as $f): ?>
+          <tr><td><?= e($f['identity']) ?></td><td><?= e($f['ip']) ?></td><td><?= e($f['created_at']) ?></td></tr>
           <?php endforeach; ?>
         </table>
       </div>
