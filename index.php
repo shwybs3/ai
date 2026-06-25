@@ -1266,14 +1266,14 @@ function http_get(string $url): array
     return ['body' => $body, 'error' => $err, 'code' => $code];
 }
 
-function http_post_json(string $url, array $payload, array $headers = []): array
+function http_post_json(string $url, array $payload, array $headers = [], int $timeout = 30): array
 {
     $ch = curl_init($url);
     curl_setopt_array($ch, [
         CURLOPT_POST => true,
         CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
         CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 30,
+        CURLOPT_TIMEOUT => $timeout,
         CURLOPT_SSL_VERIFYPEER => true,
         CURLOPT_HTTPHEADER => array_merge(['Content-Type: application/json'], $headers),
     ]);
@@ -1793,7 +1793,7 @@ function openrouter_mark_error(int $keyId, string $msg): void
  * يجري الطلب عبر كل المفاتيح النشطة بالتتابع (round-robin بحسب sort_order) حتى ينجح أحدها،
  * لتفادي توقف الخدمة بالكامل إذا انتهى حد استخدام مفتاح واحد أو تعطّل.
  */
-function openrouter_request(array $payload): array
+function openrouter_request(array $payload, int $timeout = 30): array
 {
     $keys = openrouter_active_keys();
     if (!$keys) {
@@ -1807,7 +1807,7 @@ function openrouter_request(array $payload): array
         $res = http_post_json('https://openrouter.ai/api/v1/chat/completions', $payload, [
             'Authorization: Bearer ' . $k['api_key'],
             'HTTP-Referer: ' . (defined('SITE_URL') ? SITE_URL : 'https://yassota.com'),
-        ]);
+        ], $timeout);
         $data = json_decode((string)$res['body'], true);
         $hasContent = !empty($data['choices'][0]['message']['content']) || !empty($data['choices'][0]['message']['images']);
         if ($hasContent) return ['ok' => true, 'data' => $data];
@@ -1863,7 +1863,7 @@ function openrouter_free_models(): array
     return OPENROUTER_FREE_FALLBACK_MODELS;
 }
 
-function openrouter_chat(string $prompt, bool $jsonMode = false): array
+function openrouter_chat(string $prompt, bool $jsonMode = false, int $maxTokens = 0, int $timeout = 30): array
 {
     $primary = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
     $models = array_values(array_unique(array_merge([$primary], openrouter_free_models(), OPENROUTER_FREE_FALLBACK_MODELS)));
@@ -1875,7 +1875,8 @@ function openrouter_chat(string $prompt, bool $jsonMode = false): array
             'messages' => [['role' => 'user', 'content' => $prompt]],
         ];
         if ($jsonMode) $payload['response_format'] = ['type' => 'json_object'];
-        $r = openrouter_request($payload);
+        if ($maxTokens > 0) $payload['max_tokens'] = $maxTokens;
+        $r = openrouter_request($payload, $timeout);
         if ($r['ok']) {
             $data = $r['data'];
             if (!empty($data['choices'][0]['message']['content'])) {
@@ -2004,6 +2005,48 @@ if ($action === 'admin_ai_generate_app') {
     $json = json_decode(trim($text), true);
     if (!$json) { echo json_encode(['ok' => false, 'msg' => 'تعذر فهم استجابة الذكاء الاصطناعي، حاول مجدداً.']); exit; }
     echo json_encode(array_merge(['ok' => true], $json));
+    exit;
+}
+
+if ($action === 'admin_ai_seo_boost') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    set_time_limit(180);
+    $name = trim($_POST['name'] ?? '');
+    $kindRaw = ($_POST['kind'] ?? 'app');
+    $kind = $kindRaw === 'game' ? 'لعبة' : 'تطبيق';
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    $category = trim($_POST['category'] ?? '');
+    $version = trim($_POST['version'] ?? '');
+
+    $seoPrompt = "أنت خبير ASO/SEO محترف في متاجر تطبيقات أندرويد الكبيرة (مثل APKPure وAPKMirror وUptodown). "
+        . "لـ$kind اسمه \"$name\"" . ($category ? " (تصنيف: $category)" : '') . ($version ? " (إصدار: $version)" : '') . "، "
+        . "أنشئ عنوان SEO قوي جداً وطويل نسبياً (بين 80 و160 حرفاً) يختلف عن مجرد اسم $kind، ويحتوي كلمات بحث فعلية يستخدمها المستخدمون (مثل: تحميل، آخر إصدار، مهكرة/مود إن كان مناسباً للسياق، مجاناً، APK، 2026)، بنفس أسلوب عناوين نتائج جوجل القوية المنافسة، بالإضافة لوصف SEO جذاب (140-160 حرفاً) وكلمات مفتاحية. "
+        . "أعد الإجابة بصيغة JSON فقط بدون أي نص إضافي وبدون Markdown، بالمفاتيح: "
+        . '{"seo_title":"عنوان SEO قوي 80-160 حرفاً","seo_description":"وصف SEO 140-160 حرفاً","seo_keywords":"8-12 كلمة مفتاحية مفصولة بفاصلة"}';
+    $seoRes = openrouter_chat($seoPrompt, true, 600, 40);
+    if (!$seoRes['ok']) { echo json_encode(['ok' => false, 'msg' => $seoRes['msg']]); exit; }
+    $seoText = preg_replace('/^```json|```$/m', '', trim($seoRes['text']));
+    $seoJson = json_decode(trim($seoText), true);
+    if (!$seoJson) { echo json_encode(['ok' => false, 'msg' => 'تعذر فهم استجابة عنوان SEO، حاول مجدداً.']); exit; }
+
+    $contentPrompt = "اكتب محتوى تسويقي وتعريفي طويل جداً وعالي الجودة بالعربية لصفحة $kind اسمه \"$name\" على متجر تطبيقات أندرويد، بهدف تحسين ظهوره في محركات البحث (SEO Content). "
+        . "اكتب نص عادي متصل بدون Markdown وبدون عناوين بـ # وبدون أكواد، فقط فقرات وأسطر نصية عربية مفصولة بفواصل أسطر. "
+        . "يجب ألا يقل عدد الأسطر الناتجة عن 500 سطر، فاكتب بتفصيل كبير يغطي كل هذه المحاور بفقرات وقوائم مطولة: نظرة عامة شاملة عن $kind، أهم المزايا والمميزات (قائمة مطولة جداً مع شرح كل ميزة بعدة أسطر)، طريقة التحميل والتثبيت خطوة بخطوة بالتفصيل، المتطلبات والمواصفات التقنية، الفروقات بين هذا الإصدار والإصدارات السابقة، نصائح وحلول للمشاكل الشائعة عند التشغيل، أسئلة شائعة وأجوبتها (لا يقل عدد الأسئلة عن 15 سؤال مع إجابة مفصلة لكل سؤال)، مقارنة مع تطبيقات/ألعاب مشابهة، ولماذا يُفضَّل تحميله من هذا الموقع، وخاتمة تحفيزية للتحميل. "
+        . "لا تكتب أي تحذير أو ملاحظة عن كونك ذكاء اصطناعي، اكتب المحتوى النهائي مباشرة فقط.";
+    $contentRes = openrouter_chat($contentPrompt, false, 8000, 150);
+    if (!$contentRes['ok']) { echo json_encode(['ok' => false, 'msg' => $contentRes['msg']]); exit; }
+    $description = trim($contentRes['text']);
+    $description = preg_replace('/^```\w*|```$/m', '', $description);
+
+    echo json_encode([
+        'ok' => true,
+        'seo_title' => $seoJson['seo_title'] ?? '',
+        'seo_description' => $seoJson['seo_description'] ?? '',
+        'seo_keywords' => $seoJson['seo_keywords'] ?? '',
+        'description' => trim($description),
+    ]);
     exit;
 }
 
@@ -4142,6 +4185,7 @@ case 'admin':
             <input type="text" name="download_url" id="apdownload" placeholder="رابط ملف APK / التحميل المباشر" required>
             <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" style="display:none" onchange="uploadInto(this,'apdownload')"></label>
           </div>
+          <button type="button" class="btn btn-ai" onclick="aiSeoBoost()"><?= icon('rocket', 'ic-sm') ?>تعزيز SEO بالذكاء الاصطناعي (عنوان قوي مختلف عن الاسم + محتوى كامل ٥٠٠+ سطر)</button>
           <div class="upload-row"><input name="seo_title" id="apseotitle" placeholder="عنوان SEO لمحركات البحث (اختياري)"><button type="button" class="btn-ai-icon" title="توليد عنوان SEO بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
           <div class="upload-row"><textarea name="seo_description" id="apseodesc" placeholder="وصف SEO لمحركات البحث (اختياري)" rows="2"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
           <div class="upload-row"><input name="seo_keywords" id="apseokw" placeholder="كلمات مفتاحية SEO مفصولة بفواصل (اختياري)"><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
@@ -5387,6 +5431,23 @@ function aiGenerateApp(){
     if (res.seo_keywords) document.getElementById('apseokw').value = res.seo_keywords;
     toast('تم توليد المحتوى بنجاح بالذكاء الاصطناعي');
   });
+}
+function aiSeoBoost(){
+  const name = document.getElementById('apname').value.trim();
+  const kind = document.getElementById('apkind').value;
+  const category = document.getElementById('apcategory').value.trim();
+  const version = document.getElementById('apversion').value.trim();
+  if (!name) return toast('أدخل اسم التطبيق أولاً.');
+  toast('جاري توليد عنوان SEO قوي ومحتوى طويل بالذكاء الاصطناعي... قد يستغرق دقيقة');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('kind', kind); d.append('category', category); d.append('version', version);
+  fetch('?action=admin_ai_seo_boost', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    if (res.seo_title) document.getElementById('apseotitle').value = res.seo_title;
+    if (res.seo_description) document.getElementById('apseodesc').value = res.seo_description;
+    if (res.seo_keywords) document.getElementById('apseokw').value = res.seo_keywords;
+    if (res.description) document.getElementById('apdesc').value = res.description;
+    toast('تم تعزيز SEO وتوليد المحتوى الكامل بنجاح');
+  }).catch(() => toast('انتهت المهلة أو حدث خطأ، حاول مجدداً.'));
 }
 function aiGenerateAppIcon(){
   const name = document.getElementById('apname').value.trim();
