@@ -1,6 +1,6 @@
 <?php
 /**
- * Yassota Bot — بوت تيليجرام مستقل (Webhook) لربح النقاط
+ * zanxpk Bot — بوت تيليجرام مستقل (Webhook) لتصفح أحدث التطبيقات والألعاب
  * يستخدم نفس config.php الخاص بالموقع، ونفس قاعدة البيانات.
  *
  * تفعيل الـWebhook بعد رفع الملف وملء BOT_TOKEN في config.php:
@@ -33,9 +33,8 @@ function db(): PDO
 function migrate_bot(): void
 {
     $pdo = db();
-    $id = DB_DRIVER === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INT AUTO_INCREMENT PRIMARY KEY';
-    $engine = DB_DRIVER === 'sqlite' ? '' : ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
     $ts = DB_DRIVER === 'sqlite' ? "TEXT DEFAULT (datetime('now'))" : 'DATETIME DEFAULT CURRENT_TIMESTAMP';
+    $engine = DB_DRIVER === 'sqlite' ? '' : ' ENGINE=InnoDB DEFAULT CHARSET=utf8mb4';
 
     // الجدول الأساسي قد يكون أُنشئ من index.php، فقط نضمن وجوده هنا أيضاً
     $pdo->exec("CREATE TABLE IF NOT EXISTS telegram_users (
@@ -46,24 +45,6 @@ function migrate_bot(): void
     )$engine");
 
     $pdo->exec("CREATE TABLE IF NOT EXISTS settings (k VARCHAR(80) PRIMARY KEY, v TEXT NULL)$engine");
-    $pdo->exec("CREATE TABLE IF NOT EXISTS tasks (
-        id $id, title VARCHAR(190) NOT NULL, url VARCHAR(500) NOT NULL,
-        seconds INT NOT NULL DEFAULT 15, reward INT NOT NULL DEFAULT 50, active TINYINT NOT NULL DEFAULT 1
-    )$engine");
-    $pdo->exec("CREATE TABLE IF NOT EXISTS wallets (
-        id $id, type VARCHAR(20) NOT NULL, label VARCHAR(120) NOT NULL, address VARCHAR(190) NOT NULL, active TINYINT NOT NULL DEFAULT 1
-    )$engine");
-    $pdo->exec("CREATE TABLE IF NOT EXISTS telegram_task_done (
-        id $id, chat_id VARCHAR(40) NOT NULL, task_id INT NOT NULL, day VARCHAR(10) NOT NULL
-    )$engine");
-    $pdo->exec("CREATE TABLE IF NOT EXISTS telegram_captcha_logs (
-        id $id, chat_id VARCHAR(40) NOT NULL, day VARCHAR(10) NOT NULL, count INT NOT NULL DEFAULT 0
-    )$engine");
-    $pdo->exec("CREATE TABLE IF NOT EXISTS telegram_withdraw_requests (
-        id $id, chat_id VARCHAR(40) NOT NULL, amount_points INT NOT NULL, amount_usd DECIMAL(12,4) NOT NULL,
-        wallet_type VARCHAR(20) NOT NULL, wallet_address VARCHAR(190) NOT NULL, status VARCHAR(20) NOT NULL DEFAULT 'pending',
-        created_at $ts
-    )$engine");
 
     // أعمدة إضافية على telegram_users — تُضاف فقط إن لم تكن موجودة
     $existing = [];
@@ -75,11 +56,8 @@ function migrate_bot(): void
     } catch (Throwable $e) {}
 
     $wanted = [
-        'points'         => 'INT NOT NULL DEFAULT 0',
-        'wallet_type'    => 'VARCHAR(20) NULL',
-        'wallet_address' => 'VARCHAR(190) NULL',
-        'is_banned'      => 'TINYINT NOT NULL DEFAULT 0',
-        'state'          => 'TEXT NULL',
+        'is_banned' => 'TINYINT NOT NULL DEFAULT 0',
+        'state'     => 'TEXT NULL',
     ];
     foreach ($wanted as $col => $def) {
         if (!in_array($col, $existing, true)) {
@@ -99,7 +77,6 @@ function setting(string $k, $default = '')
     $row = $st->fetch();
     return $row ? $row['v'] : $default;
 }
-function points_to_usd($pts): float { return round($pts * (float)setting('points_rate', 0.001), 4); }
 
 function tg_api(string $method, array $params = [])
 {
@@ -129,10 +106,9 @@ function tg_answer_cb(string $cbId, string $text = '', bool $alert = false): voi
 function main_keyboard(): array
 {
     return ['keyboard' => [
-        [['text' => '💰 رصيدي'], ['text' => '🪙 كسب نقاط']],
-        [['text' => '📋 المهام'], ['text' => '🛍️ المنتجات']],
-        [['text' => '💳 محفظتي'], ['text' => '💸 سحب الرصيد']],
-        [['text' => '❓ مساعدة']],
+        [['text' => '📱 أحدث التطبيقات'], ['text' => '🎮 أحدث الألعاب']],
+        [['text' => '🔍 بحث عن تطبيق'], ['text' => '🛍️ المنتجات']],
+        [['text' => '📣 قناتنا'], ['text' => '❓ مساعدة']],
     ], 'resize_keyboard' => true];
 }
 
@@ -147,11 +123,27 @@ function set_state(string $chatId, ?array $state): void
     db()->prepare("UPDATE telegram_users SET state = ? WHERE chat_id = ?")
         ->execute([$state ? json_encode($state) : null, $chatId]);
 }
-function add_points(string $chatId, int $amount): void
-{
-    db()->prepare("UPDATE telegram_users SET points = points + ? WHERE chat_id = ?")->execute([$amount, $chatId]);
-}
 function is_owner(string $chatId): bool { return OWNER_ID && (string)OWNER_ID === $chatId; }
+
+function app_link(int $id): string
+{
+    return rtrim(SITE_URL, '/') . '/index.php?page=app&id=' . $id;
+}
+
+function send_apps_list(string $chatId, string $kind): void
+{
+    $st = db()->prepare("SELECT * FROM apps WHERE status='published' AND kind=? ORDER BY id DESC LIMIT 8");
+    $st->execute([$kind]);
+    $apps = $st->fetchAll();
+    if (!$apps) { tg_send($chatId, $kind === 'game' ? '🎮 لا توجد ألعاب منشورة حالياً.' : '📱 لا توجد تطبيقات منشورة حالياً.'); return; }
+    $textOut = ($kind === 'game' ? "🎮 <b>أحدث الألعاب</b>\n\n" : "📱 <b>أحدث التطبيقات</b>\n\n");
+    $kb = [];
+    foreach ($apps as $a) {
+        $textOut .= "▫️ <b>" . e_($a['name']) . "</b>" . ($a['version'] ? " — v" . e_($a['version']) : '') . "\n";
+        $kb[] = [['text' => '⬇️ ' . $a['name'], 'url' => app_link((int)$a['id'])]];
+    }
+    tg_send($chatId, $textOut, ['inline_keyboard' => $kb]);
+}
 
 /* ---------------------------------------------------------------------
    Update intake
@@ -182,9 +174,8 @@ if ($tgUser && $tgUser['is_banned']) { echo 'ok'; exit; }
 if ($text === '/start') {
     set_state($chatId, null);
     tg_send($chatId,
-        "👋 <b>أهلاً بك في " . e_(setting('site_name', 'Yassota')) . "!</b>\n\n" .
-        "💎 اجمع <b>عملات Yassota</b> عبر:\n🪙 كسب نقاط (كابتشا) · 📋 المهام اليومية\n\n" .
-        "💸 واسحبها دولاراً حقيقياً عبر USDT أو الشام كاش، الحد الأدنى " . e_(setting('min_withdraw_usd', 25)) . "$.\n\n" .
+        "👋 <b>أهلاً بك في " . e_(setting('site_name', 'zanxpk')) . "!</b>\n\n" .
+        "📱 تصفّح أحدث التطبيقات والألعاب وحمّلها مباشرة، أو ابحث عن اسم تطبيق معيّن.\n\n" .
         "استخدم الأزرار بالأسفل:",
         main_keyboard()
     );
@@ -194,123 +185,69 @@ if ($text === '/start') {
 if ($text === '/admin') {
     if (!is_owner($chatId)) { tg_send($chatId, '⛔ هذا الأمر للمالك فقط.'); exit; }
     $totalUsers = db()->query("SELECT COUNT(*) c FROM telegram_users")->fetch()['c'];
-    $pendingW = db()->query("SELECT COUNT(*) c FROM telegram_withdraw_requests WHERE status='pending'")->fetch()['c'];
+    $appsCount = db()->query("SELECT COUNT(*) c FROM apps WHERE status='published'")->fetch()['c'];
+    $pendingOrders = db()->query("SELECT COUNT(*) c FROM orders WHERE status='pending'")->fetch()['c'];
     tg_send($chatId,
-        "🎛️ <b>لوحة تحكم البوت</b>\n\n👥 المستخدمون: <b>$totalUsers</b>\n💸 طلبات سحب معلّقة: <b>$pendingW</b>\n\n" .
-        "لإدارة الموقع كاملاً (منتجات، طلبات، إعدادات) ادخل من لوحة التحكم على الموقع."
+        "🎛️ <b>لوحة تحكم البوت</b>\n\n👥 مستخدمو البوت: <b>$totalUsers</b>\n📱 تطبيقات منشورة: <b>$appsCount</b>\n🛍️ طلبات معلّقة: <b>$pendingOrders</b>\n\n" .
+        "لإدارة الموقع كاملاً (تطبيقات، منتجات، طلبات، إعدادات) ادخل من لوحة التحكم على الموقع."
     );
     exit;
 }
 
-// التحقق من حالة بانتظار إدخال (محفظة، إجابة كابتشا...)
+// التحقق من حالة بانتظار إدخال (بحث...)
 $state = $tgUser['state'] ? json_decode($tgUser['state'], true) : null;
 
-if ($state && ($state['awaiting'] ?? '') === 'wallet_address') {
-    if (mb_strlen($text) < 5) { tg_send($chatId, '❌ عنوان غير صالح، أعد الإرسال:'); exit; }
-    db()->prepare("UPDATE telegram_users SET wallet_type=?, wallet_address=? WHERE chat_id=?")
-        ->execute([$state['wallet_type'], $text, $chatId]);
+if ($state && ($state['awaiting'] ?? '') === 'search') {
     set_state($chatId, null);
-    tg_send($chatId, "✅ تم حفظ محفظتك بنجاح.", main_keyboard());
-    exit;
-}
-
-if ($state && ($state['awaiting'] ?? '') === 'captcha') {
-    $day = date('Y-m-d');
-    if ($text !== ($state['code'] ?? '')) {
-        tg_send($chatId, '❌ رقم خاطئ، حاول مجدداً من زر «🪙 كسب نقاط».');
-        set_state($chatId, null);
-        exit;
+    $q = '%' . $text . '%';
+    $st = db()->prepare("SELECT * FROM apps WHERE status='published' AND name LIKE ? ORDER BY id DESC LIMIT 8");
+    $st->execute([$q]);
+    $apps = $st->fetchAll();
+    if (!$apps) { tg_send($chatId, '❌ لم يتم العثور على نتائج لـ «' . e_($text) . '».', main_keyboard()); exit; }
+    $textOut = "🔍 <b>نتائج البحث عن «" . e_($text) . "»</b>\n\n";
+    $kb = [];
+    foreach ($apps as $a) {
+        $textOut .= "▫️ <b>" . e_($a['name']) . "</b>\n";
+        $kb[] = [['text' => '⬇️ ' . $a['name'], 'url' => app_link((int)$a['id'])]];
     }
-    set_state($chatId, null);
-    $reward = (int)setting('captcha_reward', 10);
-    add_points($chatId, $reward);
-    $st = db()->prepare("SELECT * FROM telegram_captcha_logs WHERE chat_id=? AND day=?");
-    $st->execute([$chatId, $day]);
-    $log = $st->fetch();
-    if ($log) db()->prepare("UPDATE telegram_captcha_logs SET count=count+1 WHERE id=?")->execute([$log['id']]);
-    else db()->prepare("INSERT INTO telegram_captcha_logs (chat_id, day, count) VALUES (?,?,1)")->execute([$chatId, $day]);
-    tg_send($chatId, "✅ صحيح! +<b>$reward</b> عملة Yassota 🎉");
+    tg_send($chatId, $textOut, ['inline_keyboard' => $kb]);
     exit;
 }
 
 switch ($text) {
-    case '💰 رصيدي':
-        $pts = (int)($tgUser['points'] ?? 0);
-        $usd = points_to_usd($pts);
-        tg_send($chatId, "💰 <b>رصيدك</b>\n\n🪙 النقاط: <b>$pts</b>\n💵 القيمة: <b>{$usd}$</b>");
+    case '📱 أحدث التطبيقات':
+        send_apps_list($chatId, 'app');
         break;
 
-    case '🪙 كسب نقاط':
-        $day = date('Y-m-d');
-        $st = db()->prepare("SELECT count FROM telegram_captcha_logs WHERE chat_id=? AND day=?");
-        $st->execute([$chatId, $day]);
-        $done = $st->fetch()['count'] ?? 0;
-        $max = (int)setting('captcha_max_per_day', 40);
-        if ($done >= $max) { tg_send($chatId, "✅ أكملت {$max}/{$max} كابتشا اليوم. عُد غداً."); break; }
-        $code = (string)random_int(1000, 9999);
-        set_state($chatId, ['awaiting' => 'captcha', 'code' => $code]);
-        tg_send($chatId, "🔢 أدخل هذا الرقم كما هو:\n\n<b>$code</b>\n\n(" . ($done) . "/$max اليوم)");
+    case '🎮 أحدث الألعاب':
+        send_apps_list($chatId, 'game');
         break;
 
-    case '📋 المهام':
-        $tasks = db()->query("SELECT * FROM tasks WHERE active=1")->fetchAll();
-        if (!$tasks) { tg_send($chatId, '📋 لا توجد مهام حالياً.'); break; }
-        $day = date('Y-m-d');
-        $kb = [];
-        $textOut = "📋 <b>المهام اليومية</b>\n\n";
-        foreach ($tasks as $t) {
-            $st = db()->prepare("SELECT 1 FROM telegram_task_done WHERE chat_id=? AND task_id=? AND day=?");
-            $st->execute([$chatId, $t['id'], $day]);
-            $done = (bool)$st->fetch();
-            $textOut .= ($done ? '✅' : '🔵') . " <b>" . e_($t['title']) . "</b> (+{$t['reward']})\n";
-            if (!$done) {
-                $kb[] = [
-                    ['text' => '🔗 فتح', 'url' => $t['url']],
-                    ['text' => "✅ جمعت +{$t['reward']}", 'callback_data' => 'task:' . $t['id']],
-                ];
-            }
-        }
-        tg_send($chatId, $textOut, $kb ? ['inline_keyboard' => $kb] : null);
+    case '🔍 بحث عن تطبيق':
+        set_state($chatId, ['awaiting' => 'search']);
+        tg_send($chatId, '✏️ اكتب اسم التطبيق أو اللعبة الذي تبحث عنه:');
         break;
 
     case '🛍️ المنتجات':
-        $products = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC LIMIT 5")->fetchAll();
+        $products = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC LIMIT 8")->fetchAll();
         if (!$products) { tg_send($chatId, '🛍️ لا توجد منتجات حالياً.'); break; }
         $textOut = "🛍️ <b>أحدث المنتجات</b>\n\n";
         foreach ($products as $p) {
-            $textOut .= ($p['icon'] ?: '📦') . " <b>" . e_($p['name']) . "</b> — {$p['price']}$\n";
+            $textOut .= "▫️ <b>" . e_($p['name']) . "</b> — {$p['price']}$\n";
         }
-        $textOut .= "\n🌐 للشراء سجّل دخولك على الموقع: " . e_(SITE_URL);
+        $textOut .= "\n🌐 لطلب الشراء زر المتجر على الموقع: " . e_(rtrim(SITE_URL, '/') . '/index.php?page=store');
         tg_send($chatId, $textOut);
         break;
 
-    case '💳 محفظتي':
-        $wt = $tgUser['wallet_type'] ?? null;
-        $wa = $tgUser['wallet_address'] ?? null;
-        $textOut = $wa ? "💳 محفظتك الحالية:\n" . ($wt === 'usdt' ? '💎 USDT' : '📱 شام كاش') . "\n<code>" . e_($wa) . "</code>"
-            : '❌ لم تُضف محفظة بعد.';
-        tg_send($chatId, $textOut, ['inline_keyboard' => [
-            [['text' => '💎 USDT (TRC20)', 'callback_data' => 'wset:usdt'], ['text' => '📱 شام كاش', 'callback_data' => 'wset:sham']],
-        ]]);
-        break;
-
-    case '💸 سحب الرصيد':
-        $pts = (int)($tgUser['points'] ?? 0);
-        $usd = points_to_usd($pts);
-        $min = (float)setting('min_withdraw_usd', 25);
-        if ($usd < $min) { tg_send($chatId, "❌ رصيدك ({$usd}$) أقل من الحد الأدنى ({$min}$)."); break; }
-        if (empty($tgUser['wallet_address'])) { tg_send($chatId, '❌ أضف محفظتك أولاً من «💳 محفظتي».'); break; }
-        db()->prepare("INSERT INTO telegram_withdraw_requests (chat_id, amount_points, amount_usd, wallet_type, wallet_address) VALUES (?,?,?,?,?)")
-            ->execute([$chatId, $pts, $usd, $tgUser['wallet_type'], $tgUser['wallet_address']]);
-        db()->prepare("UPDATE telegram_users SET points = 0 WHERE chat_id = ?")->execute([$chatId]);
-        tg_send($chatId, "✅ تم إرسال طلب سحب بقيمة {$usd}$، بانتظار موافقة الإدارة.");
-        if (OWNER_ID) tg_send((string)OWNER_ID, "💸 طلب سحب جديد من @{$username} ({$chatId})\nالمبلغ: {$usd}$");
+    case '📣 قناتنا':
+        $ch = setting('telegram_channel_url', '');
+        tg_send($chatId, $ch ? "📣 تابع قناتنا للحصول على آخر التحديثات:\n" . e_($ch) : '📣 لا توجد قناة مضافة حالياً.');
         break;
 
     case '❓ مساعدة':
         tg_send($chatId,
-            "❓ <b>دليل الاستخدام</b>\n\n🪙 كسب نقاط: كابتشا أرقام بسيطة\n📋 المهام: زيارة روابط مقابل نقاط\n" .
-            "💳 محفظتي: لإضافة عنوان USDT/شام كاش\n💸 سحب: من " . e_(setting('min_withdraw_usd', 25)) . "$ فأكثر\n\n" .
+            "❓ <b>دليل الاستخدام</b>\n\n📱 أحدث التطبيقات / 🎮 أحدث الألعاب: عرض آخر الإضافات مع رابط تحميل مباشر\n" .
+            "🔍 بحث عن تطبيق: اكتب اسم التطبيق للبحث عنه\n🛍️ المنتجات: تصفّح متجر المنتجات الرقمية\n\n" .
             "🌐 الموقع: " . e_(SITE_URL)
         );
         break;
@@ -326,34 +263,7 @@ exit;
    --------------------------------------------------------------------- */
 function handle_callback(array $cb): void
 {
-    $chatId = (string)$cb['message']['chat']['id'];
-    $data = $cb['data'] ?? '';
     $cbId = $cb['id'];
-
-    if (str_starts_with($data, 'task:')) {
-        $tid = (int)substr($data, 5);
-        $day = date('Y-m-d');
-        $st = db()->prepare("SELECT * FROM tasks WHERE id=? AND active=1");
-        $st->execute([$tid]);
-        $task = $st->fetch();
-        if (!$task) { tg_answer_cb($cbId, '❌ المهمة غير موجودة.', true); return; }
-        $st = db()->prepare("SELECT 1 FROM telegram_task_done WHERE chat_id=? AND task_id=? AND day=?");
-        $st->execute([$chatId, $tid, $day]);
-        if ($st->fetch()) { tg_answer_cb($cbId, '✅ أنجزتها بالفعل اليوم.', true); return; }
-        db()->prepare("INSERT INTO telegram_task_done (chat_id, task_id, day) VALUES (?,?,?)")->execute([$chatId, $tid, $day]);
-        add_points($chatId, (int)$task['reward']);
-        tg_answer_cb($cbId, "✅ +{$task['reward']} عملة!", true);
-        return;
-    }
-
-    if (str_starts_with($data, 'wset:')) {
-        $type = substr($data, 5);
-        set_state($chatId, ['awaiting' => 'wallet_address', 'wallet_type' => $type]);
-        tg_answer_cb($cbId);
-        tg_send($chatId, $type === 'usdt' ? '💎 أرسل عنوان USDT (TRC20):' : '📱 أرسل رقم الشام كاش:');
-        return;
-    }
-
     tg_answer_cb($cbId);
 }
 
