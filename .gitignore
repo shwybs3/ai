@@ -3,3 +3,4 @@ uploads/products/*
 !uploads/products/.gitkeep
 *.sqlite
 *.log
+/sw.js

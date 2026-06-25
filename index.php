@@ -361,6 +361,8 @@ function migrate(): void
         'theme_accent_color' => '#2563eb',
         'theme_accent2_color' => '#06b6d4',
         'moneytag_script' => '',
+        'moneytag_sw_enabled' => '0',
+        'moneytag_sw_content' => '',
         'turnstile_site_key' => '',
         'turnstile_secret_key' => '',
         'app_download_wait_seconds' => '5',
@@ -699,6 +701,7 @@ function migrate(): void
     }
 }
 migrate();
+if (setting('moneytag_sw_enabled', '0') === '1' && !is_file(__DIR__ . '/sw.js')) write_moneytag_sw_file();
 
 /* ======================================================================
    2) HELPERS
@@ -915,6 +918,22 @@ function satofill_fetch_catalog(): array
 
 // ضغط/تصغير الصور المرفوعة لتقليل حجمها وتسريع تحميلها (السبب الرئيسي لتجمّد الموقع أثناء عرض الصور).
 // يُعاد ترميز الصورة بجودة مضغوطة وتُصغَّر أبعادها إذا تجاوزت الحد الأقصى، مع الحفاظ على نوع الملف.
+/**
+ * يكتب ملف sw.js (Service Worker) في جذر الموقع حسب محتوى وحالة التفعيل المضبوطة من لوحة الإدارة،
+ * لأن service worker لا يعمل إلا إذا قُدّم فعلياً من مسار جذر الموقع (/sw.js) لا عبر index.php?...
+ */
+function write_moneytag_sw_file(): void
+{
+    $path = __DIR__ . '/sw.js';
+    if (setting('moneytag_sw_enabled', '0') !== '1') {
+        if (is_file($path)) @unlink($path);
+        return;
+    }
+    $content = setting('moneytag_sw_content', '');
+    if (trim($content) === '') $content = "self.addEventListener('install', () => self.skipWaiting());\nself.addEventListener('activate', () => self.clients.claim());";
+    @file_put_contents($path, $content);
+}
+
 function compress_image_file(string $path, int $maxDim = 1280, int $quality = 75): void
 {
     $info = @getimagesize($path);
@@ -1834,6 +1853,29 @@ if ($action === 'admin_test_openrouter') {
     exit;
 }
 
+if ($action === 'admin_clear_cache') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $cleared = [];
+    if (function_exists('opcache_reset') && opcache_reset()) $cleared[] = 'OPcache (شيفرة PHP المخزّنة)';
+    clearstatcache();
+    $cacheDir = __DIR__ . '/uploads/cache';
+    $removed = 0;
+    if (is_dir($cacheDir)) {
+        foreach (glob($cacheDir . '/*') as $f) { if (is_file($f) && @unlink($f)) $removed++; }
+    }
+    if ($removed) $cleared[] = "$removed صورة مؤقتة من ذاكرة التخزين المؤقت";
+    $newVersion = (string)(((int)setting('asset_version', '1')) + 1);
+    db()->prepare(DB_DRIVER === 'sqlite'
+        ? "INSERT INTO settings (k, v) VALUES ('asset_version', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+        : "INSERT INTO settings (k, v) VALUES ('asset_version', ?) ON DUPLICATE KEY UPDATE v=?")
+        ->execute([$newVersion, $newVersion]);
+    $cleared[] = 'رقم إصدار الموقع (لإجبار المتصفحات على تحميل نسخة جديدة)';
+    echo json_encode(['ok' => true, 'msg' => 'تم تفريغ الكاش بنجاح: ' . implode('، ', $cleared) . '.']);
+    exit;
+}
+
 if ($action === 'admin_ai_generate') {
     require_admin();
     csrf_check();
@@ -2122,6 +2164,9 @@ if ($action && str_starts_with($action, 'admin_')) {
                 if ($k === 'action' || $k === 'csrf' || $k === 'redirect_tab') continue;
                 if ($k === 'bot_token' && $v === '') continue; // حقل التوكن لا يُفرَّغ إذا تُرك خالياً
                 set_setting($k, $v);
+            }
+            if (array_key_exists('moneytag_sw_enabled', $_POST) || array_key_exists('moneytag_sw_content', $_POST)) {
+                write_moneytag_sw_file();
             }
             flash('تم حفظ الإعدادات.');
             redirect('?page=admin&tab=' . $redirectTab);
@@ -4459,6 +4504,13 @@ case 'admin':
           <label>اللون الأساسي للموقع<input type="color" id="themeAccentColor" name="theme_accent_color" value="<?= e(setting('theme_accent_color')) ?>"></label>
           <label>لون التمييز الثانوي<input type="color" id="themeAccent2Color" name="theme_accent2_color" value="<?= e(setting('theme_accent2_color')) ?>"></label>
           <label>كود إعلانات MoneyTag (يظهر فقط في صفحة تحميل التطبيقات)<textarea name="moneytag_script" rows="3" placeholder="ألصق كود/سكربت MoneyTag هنا"><?= e(setting('moneytag_script')) ?></textarea></label>
+          <label>تفعيل Service Worker الخاص بـ MoneyTag (sw.js)
+            <select name="moneytag_sw_enabled">
+              <option value="1" <?= setting('moneytag_sw_enabled', '0') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('moneytag_sw_enabled', '0') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <label>محتوى ملف sw.js (الصق الكود الذي يطلبه MoneyTag حرفياً، يُكتب تلقائياً في جذر الموقع عند الحفظ)<textarea name="moneytag_sw_content" rows="4" placeholder="self.addEventListener(...)"><?= e(setting('moneytag_sw_content')) ?></textarea></label>
           <label>ثواني الانتظار بصفحة التحميل قبل ظهور رابط التحميل<input type="number" name="app_download_wait_seconds" value="<?= e(setting('app_download_wait_seconds')) ?>" min="0" max="30"></label>
           <label>مفتاح Cloudflare Turnstile العلني (Site Key) — كابتشا عالمية حقيقية<input name="turnstile_site_key" value="<?= e(setting('turnstile_site_key')) ?>" placeholder="0x4AAAAAAA..."></label>
           <label>مفتاح Cloudflare Turnstile السري (Secret Key)<input type="password" name="turnstile_secret_key" value="<?= e(setting('turnstile_secret_key')) ?>" autocomplete="off"></label>
@@ -4541,6 +4593,7 @@ case 'admin':
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()"><?= icon('check', 'ic-sm') ?>حفظ الإعدادات</button>
           <button type="button" class="btn btn-ghost" onclick="testOpenRouter()"><?= icon('rocket', 'ic-sm') ?>اختبار الاتصال بـ OpenRouter</button>
+          <button type="button" class="btn btn-ghost" onclick="clearCache()"><?= icon('refresh', 'ic-sm') ?>تفريغ الكاش (لإظهار آخر التعديلات فوراً)</button>
         </div>
         <hr style="border-color:#28304a;margin:18px 0">
         <h4 style="margin:0 0 8px">مفاتيح OpenRouter API (عدد غير محدود)</h4>
@@ -4630,6 +4683,11 @@ loadAdNetworkOnce();
 document.addEventListener('click', (e) => {
   if (e.target.closest('.btn, button')) loadAdNetworkOnce();
 }, { capture: true });
+<?php if (setting('moneytag_sw_enabled', '0') === '1'): ?>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+<?php endif; ?>
 function openAuthModal(){ window.location.href = '?page=login'; }
 function switchAuthTab(tab){
   const lf = document.getElementById('loginForm'), rf = document.getElementById('registerForm');
@@ -4958,6 +5016,11 @@ function requestTopup(){
   d.append('amount', document.getElementById('topupAmount').value);
   d.append('note', document.getElementById('topupNote').value);
   post('api_request_topup', d).then(res => toast(res.msg));
+}
+function clearCache(){
+  toast('جاري تفريغ الكاش...');
+  const d = new FormData(); d.append('csrf', CSRF);
+  fetch('?action=admin_clear_cache', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
 }
 function testOpenRouter(){
   toast('جاري الاختبار...');
