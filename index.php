@@ -393,7 +393,7 @@ function migrate(): void
         'app_notify_enabled' => '1',
         'google_site_verification' => '',
         'openrouter_api_key' => '',
-        'openrouter_model' => 'openai/gpt-4o',
+        'openrouter_model' => 'meta-llama/llama-3.3-70b-instruct:free',
         'openrouter_image_model' => '',
         'product_image_height' => '96',
         'cat_tile_size' => '108',
@@ -402,6 +402,8 @@ function migrate(): void
         'banner_height' => '160',
         'home_sections_order' => 'search,carousel,ticker,live_ticker,latest_apps,cat_chips',
         'home_sections_hidden' => 'hero',
+        'banner_carousel_enabled' => '1',
+        'news_ticker_enabled' => '1',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -447,18 +449,54 @@ function migrate(): void
             ->execute();
     }
 
-    // ترحيل لمرة واحدة: تغيير موديل الذكاء الاصطناعي الافتراضي إلى gpt-4o
+    // ترحيل لمرة واحدة (قديم، أصبح ملغياً): كان يفرض موديل gpt-4o المدفوع، وهذا ما كان يسبب رسائل
+    // "رصيد غير كافٍ" لمستخدمي المفاتيح المجانية. تم إلغاؤه بالترحيل التالي.
     if ((string)$pdo->query("SELECT v FROM settings WHERE k='ai_model_default_migrated'")->fetchColumn() === '') {
-        $curModel = (string)$pdo->query("SELECT v FROM settings WHERE k='openrouter_model'")->fetchColumn();
-        if ($curModel === '' || $curModel === 'meta-llama/llama-3.3-70b-instruct:free') {
-            $pdo->prepare(DB_DRIVER === 'sqlite'
-                ? "INSERT INTO settings (k, v) VALUES ('openrouter_model', 'openai/gpt-4o') ON CONFLICT(k) DO UPDATE SET v='openai/gpt-4o'"
-                : "INSERT INTO settings (k, v) VALUES ('openrouter_model', 'openai/gpt-4o') ON DUPLICATE KEY UPDATE v='openai/gpt-4o'")
-                ->execute();
-        }
         $pdo->prepare(DB_DRIVER === 'sqlite'
             ? "INSERT INTO settings (k, v) VALUES ('ai_model_default_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
             : "INSERT INTO settings (k, v) VALUES ('ai_model_default_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: إصلاح مشكلة "رصيد غير كافٍ" — الترحيل السابق كان يفرض موديل openai/gpt-4o المدفوع
+    // على كل المواقع، وهو موديل لا تعمل معه المفاتيح المجانية لـ OpenRouter. نعيد الموديل الافتراضي
+    // إلى موديل مجاني يعمل فعلياً مع مفاتيح OpenRouter المجانية، ونفعّل أيضاً نظام التبديل التلقائي
+    // بين عدة موديلات مجانية عند فشل الموديل المختار (انظر openrouter_chat).
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='ai_free_model_fix_migrated'")->fetchColumn() === '') {
+        $curModel = (string)$pdo->query("SELECT v FROM settings WHERE k='openrouter_model'")->fetchColumn();
+        if ($curModel === '' || $curModel === 'openai/gpt-4o') {
+            $freeModel = 'meta-llama/llama-3.3-70b-instruct:free';
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('openrouter_model', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+                : "INSERT INTO settings (k, v) VALUES ('openrouter_model', ?) ON DUPLICATE KEY UPDATE v=?")
+                ->execute([$freeModel, $freeModel]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('ai_free_model_fix_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('ai_free_model_fix_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: ضمان ظهور شريط البنرات الدوّار (carousel) فوق قسم "أحدث التطبيقات" دوماً،
+    // وإضافة مفاتيح تفعيل/تعطيل دائمة للبنرات والشريط الإخباري.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='banner_top_fix_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_values(array_filter(array_map('trim', explode(',', $order))));
+        $carouselPos = array_search('carousel', $orderParts, true);
+        $appsPos = array_search('latest_apps', $orderParts, true);
+        if ($carouselPos !== false && $appsPos !== false && $carouselPos > $appsPos) {
+            array_splice($orderParts, $carouselPos, 1);
+            $appsPos = array_search('latest_apps', $orderParts, true);
+            array_splice($orderParts, $appsPos, 0, ['carousel']);
+            $newOrder = implode(',', $orderParts);
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+                : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v=?")
+                ->execute([$newOrder, $newOrder]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('banner_top_fix_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('banner_top_fix_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
             ->execute();
     }
 
@@ -547,151 +585,117 @@ function migrate(): void
         }
     }
 
-    $productCount = (int)$pdo->query("SELECT COUNT(*) c FROM products")->fetch()['c'];
-    if ($productCount === 0) {
-        $seedCats = ['الألعاب', 'بطاقات الهدايا', 'الاشتراكات', 'التطبيقات والخدمات', 'عام'];
-        $catIds = [];
-        foreach ($seedCats as $i => $cname) {
-            $pdo->prepare("INSERT INTO categories (name, sort_order) VALUES (?,?)")->execute([$cname, $i]);
-            $catIds[$cname] = $pdo->lastInsertId();
-        }
-        $seedProducts = [
-            // [name, icon, price, old_price, category]
-            ['شحن ببجي موبايل 60 UC', '🎮', 1.5, null, 'الألعاب'],
-            ['شحن ببجي موبايل 325 UC', '🎮', 7, 8, 'الألعاب'],
-            ['شحن ببجي موبايل 660 UC', '🎮', 14, 16, 'الألعاب'],
-            ['شحن فري فاير 100 جوهرة', '💎', 1.2, null, 'الألعاب'],
-            ['شحن فري فاير 520 جوهرة', '💎', 6, 7, 'الألعاب'],
-            ['شحن فورتنايت 1000 V-Bucks', '🎮', 9, null, 'الألعاب'],
-            ['شحن كول أوف ديوتي موبايل 80 CP', '🔫', 1.5, null, 'الألعاب'],
-            ['شحن ليج أوف ليجندز RP', '🎮', 5, null, 'الألعاب'],
-            ['شحن جواهر كلاش أوف كلانس', '💎', 4, 5, 'الألعاب'],
-            ['شحن نقاط فيفا موبايل', '⚽', 6, null, 'الألعاب'],
-            ['شحن روبلوكس 400 Robux', '🧩', 5, 6, 'الألعاب'],
-            ['شحن ماين كرافت كوينز', '⛏️', 3, null, 'الألعاب'],
-            ['شحن جواكر شدات', '♠️', 2, null, 'الألعاب'],
-            ['شحن سوبر سيل جواهر', '💎', 3, null, 'الألعاب'],
-            ['شحن جواهر متفرقة (عام)', '🎮', 2, null, 'الألعاب'],
-            ['بطاقة آيتونز 10$', '🍏', 11, null, 'بطاقات الهدايا'],
-            ['بطاقة آيتونز 25$', '🍏', 27, 30, 'بطاقات الهدايا'],
-            ['بطاقة جوجل بلاي 10$', '▶️', 11, null, 'بطاقات الهدايا'],
-            ['بطاقة جوجل بلاي 25$', '▶️', 27, 30, 'بطاقات الهدايا'],
-            ['بطاقة ستيم 10$', '🎮', 11, null, 'بطاقات الهدايا'],
-            ['بطاقة ستيم 20$', '🎮', 22, 25, 'بطاقات الهدايا'],
-            ['بطاقة أمازون 25$', '📦', 27, null, 'بطاقات الهدايا'],
-            ['بطاقة بلايستيشن 10$', '🎮', 11, null, 'بطاقات الهدايا'],
-            ['بطاقة إكس بوكس 10$', '🎮', 11, null, 'بطاقات الهدايا'],
-            ['بطاقة نتفليكس هدية', '🎬', 15, null, 'بطاقات الهدايا'],
-            ['اشتراك نتفليكس شهر', '🎬', 5, 6, 'الاشتراكات'],
-            ['اشتراك نتفليكس 3 أشهر', '🎬', 13, 16, 'الاشتراكات'],
-            ['اشتراك شاهد VIP شهر', '📺', 4, null, 'الاشتراكات'],
-            ['اشتراك سبوتيفاي بريميوم شهر', '🎵', 3, null, 'الاشتراكات'],
-            ['اشتراك يوتيوب بريميوم شهر', '▶️', 3, null, 'الاشتراكات'],
-            ['اشتراك ديزني بلس شهر', '🏰', 5, null, 'الاشتراكات'],
-            ['اشتراك كانفا برو شهر', '🎨', 4, null, 'الاشتراكات'],
-            ['اشتراك ChatGPT Plus شهر', '🤖', 20, null, 'الاشتراكات'],
-            ['اشتراك مايكروسوفت 365 شهر', '💼', 6, null, 'الاشتراكات'],
-            ['اشتراك آيكلود تخزين 50GB', '☁️', 1, null, 'الاشتراكات'],
-            ['شحن تيك توك كوينز', '🎵', 2, null, 'التطبيقات والخدمات'],
-            ['متابعين انستقرام 1000', '📷', 4, 5, 'التطبيقات والخدمات'],
-            ['اشتراك تيليجرام بريميوم شهر', '✈️', 4, null, 'التطبيقات والخدمات'],
-            ['اشتراك ديسكورد نيترو شهر', '🎮', 5, null, 'التطبيقات والخدمات'],
-            ['اشتراك زووم برو شهر', '📹', 7, null, 'التطبيقات والخدمات'],
-            ['حماية كاسبرسكي سنة', '🛡️', 15, 18, 'التطبيقات والخدمات'],
-            ['اشتراك VPN بريميوم شهر', '🔒', 3, null, 'التطبيقات والخدمات'],
-            ['اشتراك أدوبي فوتوشوب شهر', '🖌️', 10, null, 'التطبيقات والخدمات'],
-            ['اشتراك WPS Office بريميوم', '📄', 5, null, 'التطبيقات والخدمات'],
-            ['اشتراك Grammarly بريميوم', '✍️', 10, 12, 'التطبيقات والخدمات'],
-            ['شحن رصيد سيرياتيل 5$', '📱', 5.5, null, 'عام'],
-            ['شحن رصيد MTN سوريا 5$', '📱', 5.5, null, 'عام'],
-            ['بطاقة Visa افتراضية 10$', '💳', 11, null, 'عام'],
-            ['قسيمة شحن عام 5$', '🎁', 5.5, null, 'عام'],
-            ['قسيمة شحن عام 10$', '🎁', 11, 12, 'عام'],
+    // ترحيل لمرة واحدة: حذف منتجات المتجر الافتراضية/الوهمية التي كانت تُضاف تلقائياً عند أول تشغيل
+    // (كانت تُسبب صعوبة تمييز منتجات الأدمن الحقيقية وسط بيانات تجريبية). لا تُضاف أي منتجات افتراضية بعد الآن.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='fake_products_removed_migrated'")->fetchColumn() === '') {
+        $fakeNames = [
+        'شحن ببجي موبايل 60 UC',
+        'شحن ببجي موبايل 325 UC',
+        'شحن ببجي موبايل 660 UC',
+        'شحن فري فاير 100 جوهرة',
+        'شحن فري فاير 520 جوهرة',
+        'شحن فورتنايت 1000 V-Bucks',
+        'شحن كول أوف ديوتي موبايل 80 CP',
+        'شحن ليج أوف ليجندز RP',
+        'شحن جواهر كلاش أوف كلانس',
+        'شحن نقاط فيفا موبايل',
+        'شحن روبلوكس 400 Robux',
+        'شحن ماين كرافت كوينز',
+        'شحن جواكر شدات',
+        'شحن سوبر سيل جواهر',
+        'شحن جواهر متفرقة (عام)',
+        'بطاقة آيتونز 10$',
+        'بطاقة آيتونز 25$',
+        'بطاقة جوجل بلاي 10$',
+        'بطاقة جوجل بلاي 25$',
+        'بطاقة ستيم 10$',
+        'بطاقة ستيم 20$',
+        'بطاقة أمازون 25$',
+        'بطاقة بلايستيشن 10$',
+        'بطاقة إكس بوكس 10$',
+        'بطاقة نتفليكس هدية',
+        'اشتراك نتفليكس شهر',
+        'اشتراك نتفليكس 3 أشهر',
+        'اشتراك شاهد VIP شهر',
+        'اشتراك سبوتيفاي بريميوم شهر',
+        'اشتراك يوتيوب بريميوم شهر',
+        'اشتراك ديزني بلس شهر',
+        'اشتراك كانفا برو شهر',
+        'اشتراك ChatGPT Plus شهر',
+        'اشتراك مايكروسوفت 365 شهر',
+        'اشتراك آيكلود تخزين 50GB',
+        'شحن تيك توك كوينز',
+        'متابعين انستقرام 1000',
+        'اشتراك تيليجرام بريميوم شهر',
+        'اشتراك ديسكورد نيترو شهر',
+        'اشتراك زووم برو شهر',
+        'حماية كاسبرسكي سنة',
+        'اشتراك VPN بريميوم شهر',
+        'اشتراك أدوبي فوتوشوب شهر',
+        'اشتراك WPS Office بريميوم',
+        'اشتراك Grammarly بريميوم',
+        'شحن رصيد سيرياتيل 5$',
+        'شحن رصيد MTN سوريا 5$',
+        'بطاقة Visa افتراضية 10$',
+        'قسيمة شحن عام 5$',
+        'قسيمة شحن عام 10$',
+        'شحن ببجي موبايل 1800 UC',
+        'شحن ببجي موبايل 3850 UC',
+        'شحن فري فاير 1080 جوهرة',
+        'نجوم تيليجرام Telegram Stars',
+        'شحن جواهر جواكر 100 ألف',
+        'اشتراك بلايستيشن بلس شهر',
+        'اشتراك Xbox Game Pass Ultimate شهر',
+        'اشتراك أمازون برايم شهر',
+        'اشتراك سبوتيفاي عائلي شهر',
+        'اشتراك يوتيوب بريميوم عائلي',
+        'اشتراك آبل ميوزك شهر',
+        'اشتراك ديسكورد نيترو سنة',
+        'متابعين تيك توك 1000',
+        'لايكات انستقرام 1000',
+        'اشتراك X (تويتر) بريميوم شهر',
+        'اشتراك LinkedIn بريميوم شهر',
+        'اشتراك Duolingo Super شهر',
+        'بطاقة Google Play 50$',
+        'بطاقة ستيم 50$',
+        'شحن رصيد سيرياتيل 10$',
+        'بطاقة Valorant Points 10$',
+        'بطاقة فري فاير الذهبية',
+        'بطاقة Razer Gold 10$',
+        'بطاقة Garena Shells',
+        'بطاقة eBay 25$',
+        'بطاقة Walmart 25$',
+        'بطاقة Target 25$',
+        'بطاقة Roblox 25$',
+        'اشتراك Twitch Turbo شهر',
+        'اشتراك Hulu شهر',
+        'اشتراك HBO Max شهر',
+        'اشتراك Audible شهر',
+        'اشتراك NordVPN سنة',
+        'شحن متابعين تويتر 1000',
+        'شحن مشاهدات يوتيوب 1000',
+        'اشتراك Notion Plus شهر',
+        'اشتراك Canva Teams شهر',
+        'شحن رصيد فودافون مصر',
+        'شحن رصيد أورنج مصر',
+        'شحن رصيد STC السعودية',
+        'شحن رصيد موبايلي السعودية',
+        'شحن رصيد زين السعودية',
+        'شحن رصيد دو الإمارات',
+        'شحن رصيد اتصالات الإمارات',
+        'شحن رصيد Ooredoo قطر',
+        'شحن رصيد Zain العراق',
+        'بطاقة Visa افتراضية 25$',
+        'بطاقة Visa افتراضية 50$',
+        'قسيمة شحن عام 25$',
+        'قسيمة شحن عام 50$'
         ];
-        $ins = $pdo->prepare("INSERT INTO products (name, icon, price, old_price, category_id, status) VALUES (?,?,?,?,?,'active')");
-        foreach ($seedProducts as [$pname, $picon, $price, $oldPrice, $pcat]) {
-            $ins->execute([$pname, $picon, $price, $oldPrice, $catIds[$pcat] ?? null]);
-        }
-    }
-
-    // منتجات مطلوبة بكثرة (تُضاف مرة واحدة فقط لكل منتج، ولا تُكرَّر حتى على موقع يعمل مسبقاً)
-    $reqCatNames = ['الألعاب', 'بطاقات الهدايا', 'الاشتراكات', 'التطبيقات والخدمات', 'عام'];
-    $reqCatIds = [];
-    foreach ($reqCatNames as $cn) {
-        $st = $pdo->prepare("SELECT id FROM categories WHERE name = ?");
-        $st->execute([$cn]);
-        $row = $st->fetch();
-        if ($row) { $reqCatIds[$cn] = $row['id']; continue; }
-        $pdo->prepare("INSERT INTO categories (name, sort_order) VALUES (?, 99)")->execute([$cn]);
-        $reqCatIds[$cn] = $pdo->lastInsertId();
-    }
-    $highDemandProducts = [
-        ['شحن ببجي موبايل 1800 UC', '🎮', 38, 42, 'الألعاب'],
-        ['شحن ببجي موبايل 3850 UC', '🎮', 76, 85, 'الألعاب'],
-        ['شحن فري فاير 1080 جوهرة', '💎', 12, 14, 'الألعاب'],
-        ['نجوم تيليجرام Telegram Stars', '✈️', 4, null, 'الألعاب'],
-        ['شحن جواهر جواكر 100 ألف', '♠️', 6, null, 'الألعاب'],
-        ['اشتراك بلايستيشن بلس شهر', '🎮', 12, 14, 'الاشتراكات'],
-        ['اشتراك Xbox Game Pass Ultimate شهر', '🎮', 14, 16, 'الاشتراكات'],
-        ['اشتراك أمازون برايم شهر', '📦', 7, null, 'الاشتراكات'],
-        ['اشتراك سبوتيفاي عائلي شهر', '🎵', 8, 10, 'الاشتراكات'],
-        ['اشتراك يوتيوب بريميوم عائلي', '▶️', 9, 11, 'الاشتراكات'],
-        ['اشتراك آبل ميوزك شهر', '🎵', 4, null, 'الاشتراكات'],
-        ['اشتراك ديسكورد نيترو سنة', '🎮', 45, 50, 'التطبيقات والخدمات'],
-        ['متابعين تيك توك 1000', '🎵', 4, 5, 'التطبيقات والخدمات'],
-        ['لايكات انستقرام 1000', '📷', 2, null, 'التطبيقات والخدمات'],
-        ['اشتراك X (تويتر) بريميوم شهر', '🐦', 8, null, 'التطبيقات والخدمات'],
-        ['اشتراك LinkedIn بريميوم شهر', '💼', 12, null, 'التطبيقات والخدمات'],
-        ['اشتراك Duolingo Super شهر', '🦉', 5, null, 'التطبيقات والخدمات'],
-        ['بطاقة Google Play 50$', '▶️', 53, 58, 'بطاقات الهدايا'],
-        ['بطاقة ستيم 50$', '🎮', 53, 58, 'بطاقات الهدايا'],
-        ['شحن رصيد سيرياتيل 10$', '📱', 10.5, null, 'عام'],
-    ];
-    $exists = $pdo->prepare("SELECT 1 FROM products WHERE name = ?");
-    $insReq = $pdo->prepare("INSERT INTO products (name, icon, price, old_price, category_id, status) VALUES (?,?,?,?,?,'active')");
-    foreach ($highDemandProducts as [$pname, $picon, $price, $oldPrice, $pcat]) {
-        $exists->execute([$pname]);
-        if ($exists->fetch()) continue;
-        $insReq->execute([$pname, $picon, $price, $oldPrice, $reqCatIds[$pcat] ?? null]);
-    }
-
-    // تكملة كل قسم حتى يصل لحوالي 20 منتجاً (إضافة مرة واحدة فقط لكل منتج، حتى على موقع يعمل مسبقاً)
-    $catalogFillProducts = [
-        ['بطاقة Valorant Points 10$', '🎮', 11, null, 'بطاقات الهدايا'],
-        ['بطاقة فري فاير الذهبية', '💎', 6, null, 'بطاقات الهدايا'],
-        ['بطاقة Razer Gold 10$', '🎮', 11, null, 'بطاقات الهدايا'],
-        ['بطاقة Garena Shells', '🛡️', 6, null, 'بطاقات الهدايا'],
-        ['بطاقة eBay 25$', '🛒', 27, null, 'بطاقات الهدايا'],
-        ['بطاقة Walmart 25$', '🛒', 27, null, 'بطاقات الهدايا'],
-        ['بطاقة Target 25$', '🎯', 27, null, 'بطاقات الهدايا'],
-        ['بطاقة Roblox 25$', '🧩', 27, 30, 'بطاقات الهدايا'],
-        ['اشتراك Twitch Turbo شهر', '🎮', 9, null, 'الاشتراكات'],
-        ['اشتراك Hulu شهر', '🎬', 6, null, 'الاشتراكات'],
-        ['اشتراك HBO Max شهر', '🎬', 8, null, 'الاشتراكات'],
-        ['اشتراك Audible شهر', '🎧', 8, null, 'الاشتراكات'],
-        ['اشتراك NordVPN سنة', '🔒', 35, 40, 'الاشتراكات'],
-        ['شحن متابعين تويتر 1000', '🐦', 4, 5, 'التطبيقات والخدمات'],
-        ['شحن مشاهدات يوتيوب 1000', '▶️', 2, null, 'التطبيقات والخدمات'],
-        ['اشتراك Notion Plus شهر', '📝', 5, null, 'التطبيقات والخدمات'],
-        ['اشتراك Canva Teams شهر', '🎨', 8, null, 'التطبيقات والخدمات'],
-        ['شحن رصيد فودافون مصر', '📱', 5.5, null, 'عام'],
-        ['شحن رصيد أورنج مصر', '📱', 5.5, null, 'عام'],
-        ['شحن رصيد STC السعودية', '📱', 5.5, null, 'عام'],
-        ['شحن رصيد موبايلي السعودية', '📱', 5.5, null, 'عام'],
-        ['شحن رصيد زين السعودية', '📱', 5.5, null, 'عام'],
-        ['شحن رصيد دو الإمارات', '📱', 5.5, null, 'عام'],
-        ['شحن رصيد اتصالات الإمارات', '📱', 5.5, null, 'عام'],
-        ['شحن رصيد Ooredoo قطر', '📱', 5.5, null, 'عام'],
-        ['شحن رصيد Zain العراق', '📱', 5.5, null, 'عام'],
-        ['بطاقة Visa افتراضية 25$', '💳', 27, null, 'عام'],
-        ['بطاقة Visa افتراضية 50$', '💳', 53, 58, 'عام'],
-        ['قسيمة شحن عام 25$', '🎁', 27, null, 'عام'],
-        ['قسيمة شحن عام 50$', '🎁', 53, 58, 'عام'],
-    ];
-    foreach ($catalogFillProducts as [$pname, $picon, $price, $oldPrice, $pcat]) {
-        $exists->execute([$pname]);
-        if ($exists->fetch()) continue;
-        $insReq->execute([$pname, $picon, $price, $oldPrice, $reqCatIds[$pcat] ?? null]);
+        $delStmt = $pdo->prepare("DELETE FROM products WHERE name = ? AND source IS NULL");
+        foreach ($fakeNames as $fn) $delStmt->execute([$fn]);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('fake_products_removed_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('fake_products_removed_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
     }
 }
 migrate();
@@ -1755,21 +1759,43 @@ function openrouter_request(array $payload): array
     return ['ok' => false, 'msg' => $lastErr];
 }
 
+/**
+ * موديلات مجانية معروفة على OpenRouter تُجرَّب تلقائياً كخط دفاع أخير عندما يفشل الموديل
+ * المختار من الإعدادات (مثلاً لأنه موديل مدفوع ولا يوجد رصيد كافٍ على المفتاح)، لضمان عدم توقف
+ * توليد المحتوى بالذكاء الاصطناعي بالكامل حتى مع مفاتيح OpenRouter المجانية المحدودة.
+ */
+const OPENROUTER_FREE_FALLBACK_MODELS = [
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'google/gemini-2.0-flash-exp:free',
+    'qwen/qwen-2.5-72b-instruct:free',
+    'deepseek/deepseek-chat:free',
+    'mistralai/mistral-7b-instruct:free',
+    'google/gemma-2-9b-it:free',
+];
+
 function openrouter_chat(string $prompt, bool $jsonMode = false): array
 {
-    $model = setting('openrouter_model', 'openai/gpt-4o');
-    $payload = [
-        'model' => $model,
-        'messages' => [['role' => 'user', 'content' => $prompt]],
-    ];
-    if ($jsonMode) $payload['response_format'] = ['type' => 'json_object'];
-    $r = openrouter_request($payload);
-    if (!$r['ok']) return $r;
-    $data = $r['data'];
-    if (empty($data['choices'][0]['message']['content'])) {
-        return ['ok' => false, 'msg' => $data['error']['message'] ?? 'استجابة غير متوقعة من OpenRouter.'];
+    $primary = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
+    $models = array_values(array_unique(array_merge([$primary], OPENROUTER_FREE_FALLBACK_MODELS)));
+    $lastErr = 'تعذر الاتصال بـ OpenRouter.';
+    foreach ($models as $model) {
+        $payload = [
+            'model' => $model,
+            'messages' => [['role' => 'user', 'content' => $prompt]],
+        ];
+        if ($jsonMode) $payload['response_format'] = ['type' => 'json_object'];
+        $r = openrouter_request($payload);
+        if ($r['ok']) {
+            $data = $r['data'];
+            if (!empty($data['choices'][0]['message']['content'])) {
+                return ['ok' => true, 'text' => $data['choices'][0]['message']['content']];
+            }
+            $lastErr = $data['error']['message'] ?? 'استجابة غير متوقعة من OpenRouter.';
+            continue;
+        }
+        $lastErr = $r['msg'];
     }
-    return ['ok' => true, 'text' => $data['choices'][0]['message']['content']];
+    return ['ok' => false, 'msg' => $lastErr];
 }
 
 function openrouter_image(string $prompt, string $destSubdir = 'products'): array
@@ -3036,6 +3062,7 @@ case 'home':
             <?php
         },
         'carousel' => function () use ($banners) {
+            if (setting('banner_carousel_enabled', '1') !== '1') return;
             if (!$banners) return; ?>
             <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
               <div class="banner-carousel-track">
@@ -3052,6 +3079,7 @@ case 'home':
             <?php
         },
         'ticker' => function () use ($tickers) {
+            if (setting('news_ticker_enabled', '1') !== '1') return;
             if (!$tickers) return; ?>
             <div class="ticker-bar">
               <span class="ticker-badge"><?= icon('megaphone', 'ic-sm') ?>جديد</span>
@@ -4454,6 +4482,18 @@ case 'admin':
               <option value="0" <?= setting('live_ticker_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
             </select>
           </label>
+          <label>بنرات الصور المتحركة (الرئيسية)
+            <select name="banner_carousel_enabled">
+              <option value="1" <?= setting('banner_carousel_enabled', '1') === '1' ? 'selected' : '' ?>>مفعّلة</option>
+              <option value="0" <?= setting('banner_carousel_enabled', '1') === '0' ? 'selected' : '' ?>>معطّلة (إيقاف نهائي)</option>
+            </select>
+          </label>
+          <label>الشريط الإخباري المتحرك (الرئيسية)
+            <select name="news_ticker_enabled">
+              <option value="1" <?= setting('news_ticker_enabled', '1') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('news_ticker_enabled', '1') === '0' ? 'selected' : '' ?>>معطّل (إيقاف نهائي)</option>
+            </select>
+          </label>
           <label>تيليجرام خدمة العملاء<input name="support_telegram" value="<?= e(setting('support_telegram')) ?>" placeholder="@username"></label>
           <label>رابط قناة تيليجرام (يظهر كزر بصفحة التطبيق)<input name="telegram_channel_url" value="<?= e(setting('telegram_channel_url')) ?>" placeholder="https://t.me/yourchannel"></label>
           <label>زر «الاشتراك في التحديثات» بصفحة التطبيق
@@ -4466,7 +4506,7 @@ case 'admin':
           <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="" placeholder="<?= setting('bot_token') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'من @BotFather' ?>" autocomplete="off"></label>
           <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
-          <label>موديل OpenRouter (الافتراضي: gpt-4o)<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="openai/gpt-4o">
+          <label>موديل OpenRouter (الافتراضي موديل مجاني يعمل مع المفاتيح المجانية. عند فشله يبدّل النظام تلقائياً لموديلات مجانية أخرى)<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
             <datalist id="orModels">
               <option value="openai/gpt-4o">
               <option value="openai/gpt-4o-mini">
