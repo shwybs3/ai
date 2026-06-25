@@ -3,6 +3,8 @@ uploads/products/*
 !uploads/products/.gitkeep
 uploads/bots/*
 !uploads/bots/.gitkeep
+uploads/apps/*
+!uploads/apps/.gitkeep
 *.sqlite
 *.log
 /sw.js

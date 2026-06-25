@@ -316,6 +316,17 @@ function migrate(): void
         status VARCHAR(20) NOT NULL DEFAULT 'active',
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS app_imports (
+        id $id,
+        source VARCHAR(30) NOT NULL DEFAULT 'telegram',
+        channel_id VARCHAR(40) NULL,
+        message_id VARCHAR(40) NULL,
+        app_id INT NULL,
+        app_name VARCHAR(190) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'ok',
+        note VARCHAR(255) NULL,
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -357,6 +368,7 @@ function migrate(): void
     add_column_if_missing($pdo, 'users', 'referral_bonus_given', 'INT NOT NULL DEFAULT 0');
     add_column_if_missing($pdo, 'apps', 'likes_count', 'INT NOT NULL DEFAULT 0');
     add_column_if_missing($pdo, 'apps', 'dislikes_count', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'apps', 'source', "VARCHAR(20) NULL");
 
     // فهارس على الأعمدة الأكثر استخداماً في الاستعلامات لتسريع تحميل الصفحات وتقليل تجمّد الموقع
     $indexes = [
@@ -466,6 +478,9 @@ function migrate(): void
         'home_sections_hidden' => 'hero',
         'banner_carousel_enabled' => '1',
         'news_ticker_enabled' => '1',
+        'telegram_import_enabled' => '0',
+        'telegram_import_channel_id' => '',
+        'telegram_import_auto_publish' => '0',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -4770,6 +4785,44 @@ case 'admin':
             </datalist>
           </label>
         </form>
+        <hr style="border-color:#28304a;margin:18px 0">
+        <h4 style="margin:0 0 8px">الاستيراد التلقائي للتطبيقات عبر تيليجرام</h4>
+        <p style="color:#9aa3b8;font-size:13px;margin:0 0 10px">
+          اجعل البوت مشرفاً (Admin) في قناتك الخاصة على تيليجرام، وكل منشور تنشره فيها (ملف APK أو رابط تحميل + اسم في النص/الوصف) سيتم استيراده تلقائياً كتطبيق جديد، مع توليد الوصف وبيانات SEO بالذكاء الاصطناعي تلقائياً عبر OpenRouter.
+          للحصول على آيدي القناة: أضف البوت كمشرف في القناة، ثم أرسل أي منشور فيها وراجع سجل الاستيراد بالأسفل، أو استخدم أي أداة لمعرفة آيدي القناة (يبدأ عادة بـ -100).
+        </p>
+        <form method="post" action="?action=admin_save_settings" class="formrow" id="telegramImportForm">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="redirect_tab" value="settings">
+          <label>تفعيل الاستيراد التلقائي من تيليجرام
+            <select name="telegram_import_enabled">
+              <option value="1" <?= setting('telegram_import_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('telegram_import_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <label>آيدي قناة المصدر (Channel ID)<input name="telegram_import_channel_id" value="<?= e(setting('telegram_import_channel_id')) ?>" placeholder="مثال: -1001234567890"></label>
+          <label>عند الاستيراد
+            <select name="telegram_import_auto_publish">
+              <option value="0" <?= setting('telegram_import_auto_publish') === '0' ? 'selected' : '' ?>>وضعه «قيد المراجعة» (يدوي قبل النشر)</option>
+              <option value="1" <?= setting('telegram_import_auto_publish') === '1' ? 'selected' : '' ?>>نشره مباشرة تلقائياً</option>
+            </select>
+          </label>
+        </form>
+        <button class="btn btn-primary" onclick="document.getElementById('telegramImportForm').submit()" style="margin-bottom:14px"><?= icon('check', 'ic-sm') ?>حفظ إعدادات الاستيراد</button>
+        <?php $importLog = db()->query("SELECT * FROM app_imports ORDER BY id DESC LIMIT 15")->fetchAll(); ?>
+        <?php if ($importLog): ?>
+        <table>
+          <tr><th>التاريخ</th><th>الاسم</th><th>الحالة</th><th>ملاحظة</th></tr>
+          <?php foreach ($importLog as $im): ?>
+          <tr>
+            <td><?= e($im['created_at']) ?></td>
+            <td><?= e($im['app_name'] ?: '-') ?></td>
+            <td><?= $im['status'] === 'ok' ? '✅ تم' : '❌ فشل' ?></td>
+            <td><?= e($im['note'] ?: '-') ?></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php endif; ?>
         <div style="display:flex;gap:10px;flex-wrap:wrap">
           <button class="btn btn-primary" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()"><?= icon('check', 'ic-sm') ?>حفظ الإعدادات</button>
           <button type="button" class="btn btn-ghost" onclick="testOpenRouter()"><?= icon('rocket', 'ic-sm') ?>اختبار الاتصال بـ OpenRouter</button>

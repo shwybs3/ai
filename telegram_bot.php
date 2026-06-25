@@ -64,6 +64,20 @@ function migrate_bot(): void
             try { $pdo->exec("ALTER TABLE telegram_users ADD COLUMN $col $def"); } catch (Throwable $e) {}
         }
     }
+
+    // جدول سجل الاستيراد التلقائي (قد يكون أُنشئ من index.php، نضمن وجوده هنا أيضاً)
+    $id = DB_DRIVER === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INT AUTO_INCREMENT PRIMARY KEY';
+    $pdo->exec("CREATE TABLE IF NOT EXISTS app_imports (
+        id $id,
+        source VARCHAR(30) NOT NULL DEFAULT 'telegram',
+        channel_id VARCHAR(40) NULL,
+        message_id VARCHAR(40) NULL,
+        app_id INT NULL,
+        app_name VARCHAR(190) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'ok',
+        note VARCHAR(255) NULL,
+        created_at $ts
+    )$engine");
 }
 migrate_bot();
 
@@ -146,10 +160,151 @@ function send_apps_list(string $chatId, string $kind): void
 }
 
 /* ---------------------------------------------------------------------
+   الاستيراد التلقائي للتطبيقات من قناة تيليجرام (إن كان مفعّلاً من لوحة الإدارة)
+   --------------------------------------------------------------------- */
+function import_log(string $channelId, ?string $msgId, ?int $appId, string $name, string $status, string $note): void
+{
+    db()->prepare("INSERT INTO app_imports (source, channel_id, message_id, app_id, app_name, status, note) VALUES ('telegram',?,?,?,?,?,?)")
+        ->execute([$channelId, $msgId, $appId, mb_substr($name, 0, 190), $status, mb_substr($note, 0, 255)]);
+}
+
+function import_already_done(string $channelId, string $msgId): bool
+{
+    $st = db()->prepare("SELECT id FROM app_imports WHERE channel_id=? AND message_id=? LIMIT 1");
+    $st->execute([$channelId, $msgId]);
+    return (bool)$st->fetch();
+}
+
+/** نسخة مبسّطة من استدعاء OpenRouter (نفس مفاتيح وموديل الموقع) خاصة بملف البوت المستقل هذا. */
+function import_ai_chat(string $prompt): array
+{
+    $keys = db()->query("SELECT api_key FROM openrouter_keys WHERE active=1 ORDER BY sort_order ASC, id ASC")->fetchAll();
+    $apiKey = $keys[0]['api_key'] ?? setting('openrouter_api_key', '');
+    if (!$apiKey) return ['ok' => false, 'msg' => 'لا يوجد مفتاح OpenRouter مفعّل.'];
+    $model = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
+    $ch = curl_init('https://openrouter.ai/api/v1/chat/completions');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode([
+            'model' => $model,
+            'messages' => [['role' => 'user', 'content' => $prompt]],
+            'response_format' => ['type' => 'json_object'],
+        ]),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json', 'Authorization: Bearer ' . $apiKey],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 30,
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    $data = json_decode((string)$res, true);
+    $text = $data['choices'][0]['message']['content'] ?? '';
+    if (!$text) return ['ok' => false, 'msg' => $data['error']['message'] ?? 'تعذر الاتصال بـ OpenRouter.'];
+    return ['ok' => true, 'text' => $text];
+}
+
+function import_generate_app_content(string $name, string $kind): array
+{
+    $kindAr = $kind === 'game' ? 'لعبة' : 'تطبيق';
+    $prompt = "أنت خبير ASO/SEO لمتاجر تطبيقات أندرويد. لـ$kindAr اسمه \"$name\"، أنشئ محتوى نشر كامل بالعربية مناسب لمتجر تطبيقات. "
+        . "أعد الإجابة بصيغة JSON فقط بالمفاتيح التالية فقط: "
+        . '{"short_description":"جملة واحدة جذابة أقل من 80 حرفاً","description":"وصف تفصيلي 4-6 جمل","category":"تصنيف التطبيق المناسب","seo_title":"عنوان SEO أقل من 65 حرفاً","seo_description":"وصف SEO أقل من 155 حرفاً","seo_keywords":"5-8 كلمات مفتاحية مفصولة بفاصلة"}';
+    $r = import_ai_chat($prompt);
+    if (!$r['ok']) return [];
+    $text = preg_replace('/^```json|```$/m', '', trim($r['text']));
+    $json = json_decode(trim($text), true);
+    return is_array($json) ? $json : [];
+}
+
+/** يحمّل ملف من تيليجرام (مثل APK) محلياً داخل uploads/apps ويعيد المسار النسبي. */
+function import_download_telegram_file(string $fileId): ?string
+{
+    $info = tg_api('getFile', ['file_id' => $fileId]);
+    $filePath = $info['result']['file_path'] ?? null;
+    if (!$filePath) return null;
+    $url = 'https://api.telegram.org/file/bot' . BOT_TOKEN . '/' . $filePath;
+    $destDir = __DIR__ . '/uploads/apps';
+    if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+    $ext = strtolower(pathinfo($filePath, PATHINFO_EXTENSION)) ?: 'apk';
+    $filename = bin2hex(random_bytes(8)) . '.' . preg_replace('/[^a-z0-9]/', '', $ext);
+    $ch = curl_init($url);
+    $fp = fopen($destDir . '/' . $filename, 'w');
+    curl_setopt_array($ch, [CURLOPT_FILE => $fp, CURLOPT_TIMEOUT => 120]);
+    $ok = curl_exec($ch);
+    curl_close($ch);
+    fclose($fp);
+    if (!$ok || filesize($destDir . '/' . $filename) < 100) { @unlink($destDir . '/' . $filename); return null; }
+    return 'uploads/apps/' . $filename;
+}
+
+function handle_channel_post(array $post): void
+{
+    if (setting('telegram_import_enabled', '0') !== '1') return;
+    $configuredChannel = (string)setting('telegram_import_channel_id', '');
+    $channelId = (string)($post['chat']['id'] ?? '');
+    if (!$configuredChannel || $channelId !== $configuredChannel) return;
+
+    $msgId = (string)($post['message_id'] ?? '');
+    if ($msgId === '' || import_already_done($channelId, $msgId)) return;
+
+    $caption = trim($post['caption'] ?? $post['text'] ?? '');
+    $doc = $post['document'] ?? null;
+
+    // الاسم: أول سطر من النص/الوصف، أو اسم الملف بدون الامتداد إن لم يوجد نص
+    $name = $caption !== '' ? trim(strtok($caption, "\n")) : '';
+    if ($name === '' && $doc && !empty($doc['file_name'])) {
+        $name = trim(pathinfo($doc['file_name'], PATHINFO_FILENAME));
+    }
+    if ($name === '') { import_log($channelId, $msgId, null, '', 'failed', 'لا يوجد اسم واضح في المنشور.'); return; }
+    $name = mb_substr($name, 0, 150);
+
+    // مصدر التحميل: ملف APK مرفق، أو أول رابط داخل النص
+    $downloadUrl = '';
+    if ($doc) {
+        $downloadUrl = (string)import_download_telegram_file($doc['file_id']);
+    }
+    if ($downloadUrl === '' && preg_match('#https?://\S+#i', $caption, $m)) {
+        $downloadUrl = $m[0];
+    }
+    if ($downloadUrl === '') { import_log($channelId, $msgId, null, $name, 'failed', 'لم يتم العثور على ملف أو رابط تحميل.'); return; }
+
+    $kind = (mb_stripos($caption, 'لعبة') !== false || mb_stripos($caption, 'game') !== false) ? 'game' : 'app';
+    $content = import_generate_app_content($name, $kind);
+    $autoPublish = setting('telegram_import_auto_publish', '0') === '1';
+
+    $slug = trim(preg_replace('/[^a-z0-9-]+/', '-', strtolower($name)), '-') ?: 'app';
+    db()->prepare("INSERT INTO apps (name, kind, category, short_description, description, seo_title, seo_description, seo_keywords, download_url, status, source) VALUES (?,?,?,?,?,?,?,?,?,?,'telegram')")
+        ->execute([
+            $name, $kind,
+            $content['category'] ?? null,
+            $content['short_description'] ?? null,
+            $content['description'] ?? null,
+            $content['seo_title'] ?? null,
+            $content['seo_description'] ?? null,
+            $content['seo_keywords'] ?? null,
+            $downloadUrl,
+            $autoPublish ? 'published' : 'pending',
+        ]);
+    $appId = (int)db()->lastInsertId();
+    db()->prepare("UPDATE apps SET slug=? WHERE id=?")->execute([$slug . '-' . $appId, $appId]);
+
+    import_log($channelId, $msgId, $appId, $name, 'ok', $autoPublish ? 'تم النشر مباشرة.' : 'بانتظار مراجعة الإدارة.');
+
+    if (OWNER_ID) {
+        tg_send((string)OWNER_ID, "✅ تم استيراد " . ($kind === 'game' ? 'لعبة' : 'تطبيق') . " جديد تلقائياً: <b>" . e_($name) . "</b>\n"
+            . ($autoPublish ? 'تم نشره مباشرة.' : 'بانتظار مراجعتك في لوحة الإدارة.'));
+    }
+}
+
+/* ---------------------------------------------------------------------
    Update intake
    --------------------------------------------------------------------- */
 $update = json_decode(file_get_contents('php://input'), true);
 if (!$update) { echo 'ok'; exit; }
+
+if (!empty($update['channel_post'])) {
+    handle_channel_post($update['channel_post']);
+    echo 'ok'; exit;
+}
 
 if (!empty($update['callback_query'])) {
     handle_callback($update['callback_query']);
