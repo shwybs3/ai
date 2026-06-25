@@ -239,6 +239,12 @@ function migrate(): void
         product_id INT NOT NULL,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS user_downloads (
+        id $id,
+        user_id INT NOT NULL,
+        app_id INT NOT NULL,
+        created_at $ts
+    )$engine",
     "CREATE TABLE IF NOT EXISTS coupons (
         id $id,
         code VARCHAR(40) NOT NULL,
@@ -325,6 +331,8 @@ function migrate(): void
         'idx_wallets_type_active' => ['wallets', 'type, active'],
         'idx_earnlogs_user' => ['earn_logs', 'user_id'],
         'idx_reviews_product' => ['reviews', 'product_id'],
+        'idx_userdownloads_user' => ['user_downloads', 'user_id'],
+        'idx_userdownloads_app' => ['user_downloads', 'app_id'],
     ];
     foreach ($indexes as $name => [$table, $cols]) {
         try {
@@ -348,12 +356,12 @@ function migrate(): void
 
     // seed default settings
     $defaults = [
-        'site_name' => 'Yassota Store',
-        'site_description' => 'منصة Yassota للتسوق وكسب العملات الرقمية مجاناً',
-        'site_keywords' => 'متجر,تسوق,أرباح,عملات,Yassota',
+        'site_name' => 'zanxpk',
+        'site_description' => 'منصة zanxpk لتحميل أفضل التطبيقات والألعاب والتسوّق الإلكتروني',
+        'site_keywords' => 'متجر,تطبيقات,ألعاب,تحميل,zanxpk',
         'logo_url' => '',
-        'banner_title' => 'مرحباً بك في Yassota',
-        'banner_subtitle' => 'تسوّق، اربح نقاط، واسحبها أموالاً حقيقية',
+        'banner_title' => 'مرحباً بك في zanxpk',
+        'banner_subtitle' => 'حمّل أفضل التطبيقات والألعاب وتسوّق منتجاتك المفضّلة',
         'banner_bg_image' => '',
         'footer_text' => '',
         'buy_button_text' => 'طلب شراء',
@@ -366,6 +374,7 @@ function migrate(): void
         'turnstile_site_key' => '',
         'turnstile_secret_key' => '',
         'app_download_wait_seconds' => '5',
+        'thankyou_ads_html' => '',
         'satofill_markup_percent' => '15',
         'satofill_api_base' => 'https://satofill.com/api',
         'referral_bonus_points' => '100',
@@ -506,9 +515,9 @@ function migrate(): void
     $pagesSeed = [
         'privacy' => "نحن في {$siteNameForSeed} نحترم خصوصيتك ونلتزم بحماية بياناتك الشخصية. توضّح هذه السياسة كيفية جمع واستخدام وحماية معلوماتك عند استخدام الموقع.\n\nالمعلومات التي نجمعها: عند التسجيل نجمع الاسم، البريد الإلكتروني، واسم المستخدم. عند استخدام تسجيل الدخول عبر جوجل أو تيليجرام نستلم فقط البيانات الأساسية للملف العام (الاسم والبريد/الصورة). كما نسجّل بيانات تقنية تلقائية مثل عنوان IP ونوع المتصفح لأغراض الأمان ومنع الاحتيال.\n\nاستخدام البيانات: نستخدم بياناتك لتفعيل حسابك، معالجة الطلبات والتحميلات، التواصل معك بخصوص الدعم الفني، وتحسين تجربة الاستخدام. لا نبيع بياناتك الشخصية لأي طرف ثالث.\n\nملفات تعريف الارتباط (Cookies): يستخدم الموقع ملفات تعريف الارتباط لحفظ جلسة تسجيل الدخول وتفضيلات اللغة، وقد تستخدمها شبكات الإعلانات الخارجية (مثل Google Translate وشبكات الإعلانات المعروضة) لأغراض تحسين المحتوى المعروض.\n\nالإعلانات وأطراف ثالثة: قد يعرض الموقع إعلانات من شبكات إعلانية خارجية، وقد تستخدم هذه الشبكات تقنياتها الخاصة لجمع بيانات غير شخصية لتحسين الإعلانات المعروضة. كما تُستخدم خدمة الذكاء الاصطناعي (OpenRouter) لتوليد محتوى وصفي للتطبيقات دون إرسال أي بيانات شخصية للمستخدمين إليها.\n\nملفات APK ومحتوى التطبيقات: روابط التحميل المتوفرة على الموقع يقدّمها أو يرفعها ناشرو المحتوى، ونوصي دوماً بفحص أي ملف قبل تثبيته. الموقع غير مسؤول عن محتوى التطبيقات الخارجية بعد تحميلها.\n\nحقوقك: يمكنك طلب تعديل أو حذف بياناتك أو حسابك بالتواصل معنا عبر صفحة الدعم الفني.\n\nالتعديلات: قد نقوم بتحديث سياسة الخصوصية من وقت لآخر، وسيتم نشر أي تعديل على هذه الصفحة.",
         'terms' => "باستخدامك لموقع {$siteNameForSeed} فإنك توافق على الالتزام بشروط الاستخدام التالية. يرجى قراءتها بعناية قبل استخدام الموقع.\n\n1) طبيعة الخدمة: يقدّم الموقع روابط تحميل لتطبيقات وألعاب أندرويد ومنتجات رقمية، بعضها معدّل (مهكّر/مود) لأغراض تجريبية وتعليمية. استخدامك لهذه التطبيقات يقع على مسؤوليتك الخاصة بالكامل.\n\n2) لا ضمانات: يُقدَّم المحتوى \"كما هو\" دون أي ضمان صريح أو ضمني بشأن خلوّه من الأخطاء أو ملاءمته لغرض معيّن. لا نضمن استمرار عمل أي رابط تحميل أو توافقه مع جميع الأجهزة.\n\n3) حقوق الملكية الفكرية: جميع العلامات التجارية وأسماء التطبيقات المذكورة في الموقع مملوكة لأصحابها الأصليين، ولا يمثّل عرضها أي ارتباط أو تأييد رسمي من تلك الشركات للموقع.\n\n4) سلوك المستخدم: يُمنع استخدام الموقع لأي غرض غير قانوني، أو محاولة اختراقه، أو نشر محتوى مخالف عبر التعليقات أو الحسابات.\n\n5) الحسابات: أنت مسؤول عن سرية بيانات حسابك وكل نشاط يتم من خلاله. نحتفظ بحق تعليق أو حذف أي حساب يخالف هذه الشروط.\n\n6) الإعلانات والروابط الخارجية: قد يحتوي الموقع على إعلانات أو روابط لمواقع خارجية، ولسنا مسؤولين عن محتوى أو سياسات تلك المواقع.\n\n7) حدود المسؤولية: لا يتحمل {$siteNameForSeed} أي مسؤولية عن أضرار مباشرة أو غير مباشرة تنتج عن استخدام التطبيقات أو الملفات المحمّلة من الموقع.\n\n8) التعديلات: نحتفظ بحق تعديل هذه الشروط في أي وقت، ويُعتبر استمرارك باستخدام الموقع موافقة على التعديلات.\n\n9) التواصل: لأي استفسار قانوني يمكنك التواصل معنا عبر صفحة الدعم الفني.",
-        'about' => "{$siteNameForSeed} هو متجر عربي شامل لتطبيقات وألعاب أندرويد، يقدّم نسخاً أصلية ومعدّلة (مهكّرة) لأشهر التطبيقات والألعاب مع شرح مفصّل لكل تطبيق: المميزات، الصلاحيات المطلوبة، لقطات الشاشة، وروابط تحميل مباشرة وسريعة دون تعقيد.\n\nماذا نقدّم؟\n• تحميل تطبيقات وألعاب أندرويد محدّثة باستمرار.\n• وصف تفصيلي ومولّد بالذكاء الاصطناعي لكل تطبيق لمساعدتك على فهم مميزاته بسرعة.\n• متجر منتجات رقمية مستقل (بطاقات شحن، خدمات رقمية) مع نظام محفظة ونقاط ومهام يومية.\n• نظام تقييم شفاف (إعجاب/عدم إعجاب) لكل تطبيق يعكس رأي المستخدمين الحقيقيين.\n• دعم فني سريع عبر تيليجرام.\n\nنحرص في {$siteNameForSeed} على تحديث المحتوى باستمرار وتقديم تجربة استخدام سريعة وسلسة بدون تعقيدات.",
+        'about' => "{$siteNameForSeed} هو متجر عربي شامل لتطبيقات وألعاب أندرويد، يقدّم نسخاً أصلية ومعدّلة (مهكّرة) لأشهر التطبيقات والألعاب مع شرح مفصّل لكل تطبيق: المميزات، الصلاحيات المطلوبة، لقطات الشاشة، وروابط تحميل مباشرة وسريعة دون تعقيد.\n\nماذا نقدّم؟\n• تحميل تطبيقات وألعاب أندرويد محدّثة باستمرار.\n• وصف تفصيلي ومولّد بالذكاء الاصطناعي لكل تطبيق لمساعدتك على فهم مميزاته بسرعة.\n• متجر منتجات رقمية مستقل (بطاقات شحن، خدمات رقمية).\n• نظام تقييم شفاف (إعجاب/عدم إعجاب) لكل تطبيق يعكس رأي المستخدمين الحقيقيين.\n• دعم فني سريع عبر تيليجرام.\n\nنحرص في {$siteNameForSeed} على تحديث المحتوى باستمرار وتقديم تجربة استخدام سريعة وسلسة بدون تعقيدات.",
         'contact' => 'لأي استفسار أو دعم فني يمكنك التواصل معنا عبر تيليجرام: ' . ($defaults['support_telegram'] ?? '@layos_he') . ' وسيتم الرد عليك في أقرب وقت ممكن. فريق الدعم متاح للإجابة عن استفساراتك المتعلقة بالتحميلات، الحسابات، أو المنتجات الرقمية على مدار الأسبوع.',
-        'faq' => "س: كيف أحمّل تطبيقاً أو لعبة؟\nج: افتح صفحة التطبيق، اضغط «تحميل الآن»، انتظر العد التنازلي القصير ثم اضغط رابط التحميل المباشر.\n\nس: هل التطبيقات المعدّلة (المهكّرة) آمنة؟\nج: نحرص على فحص الروابط المعروضة، لكننا ننصح دوماً بفحص أي ملف بعد التحميل قبل تثبيته كإجراء احتياطي.\n\nس: التطبيق لا يعمل بعد التثبيت، ما الحل؟\nج: تأكد من توافق إصدار أندرويد لديك مع المتطلبات المذكورة بصفحة التطبيق، وتأكد من تفعيل «تثبيت من مصادر غير معروفة».\n\nس: كيف أشحن منتجاً؟\nج: اختر المنتج واضغط طلب شراء، ثم أكمل عملية الدفع وأرفق إيصال التحويل.\n\nس: كم تستغرق معالجة الطلب؟\nج: عادة بين دقائق وحتى 24 ساعة بحسب نوع المنتج.\n\nس: كيف أسحب أرباحي؟\nج: من صفحة المحفظة بعد الوصول للحد الأدنى للسحب، وعبر USDT أو الشام كاش.\n\nس: نسيت كلمة المرور، ماذا أفعل؟\nج: استخدم رابط استعادة كلمة المرور من صفحة تسجيل الدخول.",
+        'faq' => "س: كيف أحمّل تطبيقاً أو لعبة؟\nج: افتح صفحة التطبيق، اضغط «تحميل الآن»، انتظر العد التنازلي القصير ثم اضغط رابط التحميل المباشر.\n\nس: هل التطبيقات المعدّلة (المهكّرة) آمنة؟\nج: نحرص على فحص الروابط المعروضة، لكننا ننصح دوماً بفحص أي ملف بعد التحميل قبل تثبيته كإجراء احتياطي.\n\nس: التطبيق لا يعمل بعد التثبيت، ما الحل؟\nج: تأكد من توافق إصدار أندرويد لديك مع المتطلبات المذكورة بصفحة التطبيق، وتأكد من تفعيل «تثبيت من مصادر غير معروفة».\n\nس: كيف أشتري منتجاً من المتجر؟\nج: اختر المنتج واضغط طلب شراء، ثم أكمل عملية الدفع عبر أحد طرق الدفع المتاحة وأرفق إيصال التحويل، وسيقوم فريقنا بمراجعة الطلب وتفعيله.\n\nس: كم تستغرق معالجة الطلب؟\nج: عادة بين دقائق وحتى 24 ساعة بحسب نوع المنتج.\n\nس: هل يلزم تسجيل الدخول للتحميل؟\nج: لا، يمكنك تحميل أي تطبيق أو لعبة مباشرة بدون تسجيل دخول. التسجيل مطلوب فقط للشراء أو حفظ المفضّلة.\n\nس: نسيت كلمة المرور، ماذا أفعل؟\nج: استخدم رابط استعادة كلمة المرور من صفحة تسجيل الدخول.",
     ];
     foreach ($pagesSeed as $slug => $content) {
         $st = $pdo->prepare("INSERT INTO pages (slug, content) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = ?)");
@@ -523,6 +532,18 @@ function migrate(): void
         $pdo->prepare(DB_DRIVER === 'sqlite'
             ? "INSERT INTO settings (k, v) VALUES ('pages_content_v2_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
             : "INSERT INTO settings (k, v) VALUES ('pages_content_v2_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: تعديل اسم الموقع إلى zanxpk حتى للمواقع المثبّتة مسبقاً بالاسم القديم.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='site_rename_zanxpk_migrated'")->fetchColumn() === '') {
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('site_name', 'zanxpk') ON CONFLICT(k) DO UPDATE SET v='zanxpk'"
+            : "INSERT INTO settings (k, v) VALUES ('site_name', 'zanxpk') ON DUPLICATE KEY UPDATE v='zanxpk'")
+            ->execute();
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('site_rename_zanxpk_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('site_rename_zanxpk_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
             ->execute();
     }
 
@@ -1061,11 +1082,6 @@ function gen_username(string $base): string
     }
 }
 
-function award_welcome_bonus(int $uid): void
-{
-    $bonus = (int)setting('welcome_bonus_points', 200);
-    if ($bonus > 0) add_points($uid, $bonus, 'welcome', 'هدية الترحيب بالتسجيل');
-}
 
 function google_login_url(): string
 {
@@ -1176,10 +1192,9 @@ function google_handle_callback(string $code): void
         db()->prepare("INSERT INTO users (google_id, email, name, avatar, role, username) VALUES (?,?,?,?,?,?)")
             ->execute([$gid, $email, $name, $avatar, $role, $username]);
         $uid = db()->lastInsertId();
-        award_welcome_bonus((int)$uid);
     }
     $_SESSION['uid'] = $uid;
-    redirect($isNew ? '?page=welcome' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
+    redirect($isNew ? '?' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
 }
 
 function telegram_handle_login(): void
@@ -1221,10 +1236,9 @@ function telegram_handle_login(): void
             ->execute([$tgId, $email, $name, $avatar, 'user', $username]);
         $uid = db()->lastInsertId();
         $role = 'user';
-        award_welcome_bonus((int)$uid);
     }
     $_SESSION['uid'] = $uid;
-    redirect($isNew ? '?page=welcome' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
+    redirect($isNew ? '?' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
 }
 
 // تجزئة بسيطة لعنوان IP + متصفح المستخدم لمنع تكرار الإحالة من نفس الجهاز.
@@ -1297,31 +1311,9 @@ function handle_register(): void
     db()->prepare("INSERT INTO users (username, email, password_hash, name, role, referral_code, referred_by, signup_fingerprint) VALUES (?,?,?,?,?,?,?,?)")
         ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role, $refCode, $referredBy, $fingerprint]);
     $uid = db()->lastInsertId();
-    award_welcome_bonus((int)$uid);
-    if ($referredBy) {
-        // الحماية من احتيال الإحالة: لا مكافأة إذا كان جهاز المستخدم الجديد نفس جهاز الداعي (حساب وهمي على نفس الجهاز)،
-        // ولا مكافأة بعد بلوغ الداعي الحد الأقصى لعدد الإحالات المربحة.
-        $st = db()->prepare("SELECT signup_fingerprint FROM users WHERE id = ?");
-        $st->execute([$referredBy]);
-        $referrerFingerprint = $st->fetch()['signup_fingerprint'] ?? null;
-        $sameDevice = $referrerFingerprint && $referrerFingerprint === $fingerprint;
-
-        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by = ? AND referral_bonus_given = 1");
-        $st->execute([$referredBy]);
-        $successfulReferrals = (int)$st->fetch()['c'];
-        $maxReferrals = (int)setting('referral_max_count', 5);
-
-        if (!$sameDevice && $successfulReferrals < $maxReferrals) {
-            $bonus = (int)setting('referral_bonus_points', 100);
-            add_points($referredBy, $bonus, 'referral', 'مكافأة دعوة صديق: ' . $username);
-            $cut = (int)setting('referral_referred_cut_points', 50);
-            if ($cut > 0) add_points((int)$uid, $cut, 'referral', 'مكافأة الانضمام عبر دعوة صديق');
-            db()->prepare("UPDATE users SET referral_bonus_given = 1 WHERE id = ?")->execute([$uid]);
-        }
-    }
     unset($_SESSION['ref_code']);
     $_SESSION['uid'] = $uid;
-    redirect('?page=welcome');
+    redirect('?');
 }
 
 function handle_login(): void
@@ -1353,6 +1345,7 @@ function handle_login(): void
    ====================================================================== */
 $action = $_GET['action'] ?? '';
 $page = $_GET['page'] ?? 'home';
+$appsKindNav = $_GET['kind'] ?? '';
 
 if (!empty($_GET['ref']) && preg_match('/^[A-Z0-9]{4,20}$/', $_GET['ref'])) {
     $_SESSION['ref_code'] = $_GET['ref'];
@@ -1444,15 +1437,6 @@ if ($action && str_starts_with($action, 'api_')) {
     }
 
     switch ($action) {
-        case 'api_claim_daily_bonus':
-            csrf_check();
-            $today = date('Y-m-d');
-            if ($u['last_bonus_date'] === $today) { echo json_encode(['ok' => false, 'msg' => 'لقد حصلت على مكافأتك اليوم.']); exit; }
-            $amt = (int)setting('daily_bonus_points', 20);
-            add_points((int)$u['id'], $amt, 'daily_bonus', 'مكافأة تسجيل دخول يومية');
-            db()->prepare("UPDATE users SET last_bonus_date = ? WHERE id = ?")->execute([$today, $u['id']]);
-            echo json_encode(['ok' => true, 'msg' => "تم إضافة +{$amt} عملة!"]); exit;
-
         case 'api_update_profile':
             csrf_check();
             $newName = trim($_POST['name'] ?? '');
@@ -1463,21 +1447,7 @@ if ($action && str_starts_with($action, 'api_')) {
             $st->execute([$newUsername, $u['id']]);
             if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'اسم المستخدم هذا مستخدم من قبل.']); exit; }
             db()->prepare("UPDATE users SET name=?, username=?, bio=? WHERE id=?")->execute([$newName, $newUsername, $newBio, $u['id']]);
-            $bonusMsg = '';
-            if ($newBio !== '' && !$u['bonus_bio_claimed']) {
-                $bonus = (int)setting('bio_bonus_points', 100);
-                add_points((int)$u['id'], $bonus, 'bio_bonus', 'إضافة نبذة شخصية');
-                db()->prepare("UPDATE users SET bonus_bio_claimed=1 WHERE id=?")->execute([$u['id']]);
-                $bonusMsg .= " +{$bonus} عملة (النبذة)";
-            }
-            $st = db()->prepare("SELECT bonus_profile_claimed FROM users WHERE id=?"); $st->execute([$u['id']]); $claimed = (int)$st->fetch()['bonus_profile_claimed'];
-            if (!$claimed && $newBio !== '' && $u['avatar']) {
-                $bonus2 = (int)setting('profile_complete_bonus_points', 350);
-                add_points((int)$u['id'], $bonus2, 'profile_complete_bonus', 'اكتمال الملف الشخصي');
-                db()->prepare("UPDATE users SET bonus_profile_claimed=1 WHERE id=?")->execute([$u['id']]);
-                $bonusMsg .= " +{$bonus2} عملة (اكتمال الملف)";
-            }
-            echo json_encode(['ok' => true, 'msg' => 'تم حفظ التعديلات.' . $bonusMsg]); exit;
+            echo json_encode(['ok' => true, 'msg' => 'تم حفظ التعديلات.']); exit;
 
         case 'api_submit_suggestion':
             csrf_check();
@@ -1486,18 +1456,6 @@ if ($action && str_starts_with($action, 'api_')) {
             if ($title === '') { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم المنتج المقترح.']); exit; }
             db()->prepare("INSERT INTO product_suggestions (user_id, title, details) VALUES (?,?,?)")->execute([$u['id'], $title, $details]);
             echo json_encode(['ok' => true, 'msg' => 'تم إرسال اقتراحك، شكراً لك!']); exit;
-
-        case 'api_spin_wheel':
-            csrf_check();
-            $today = date('Y-m-d');
-            $maxPerDay = (int)setting('spin_max_per_day', 1);
-            if ($maxPerDay > 0 && $u['last_spin_date'] === $today) { echo json_encode(['ok' => false, 'msg' => 'لقد استخدمت دورتك اليوم، عُد غداً.']); exit; }
-            $min = (int)setting('spin_reward_min', 5);
-            $max = (int)setting('spin_reward_max', 200);
-            $won = random_int($min, $max);
-            add_points((int)$u['id'], $won, 'spin', 'عجلة الحظ');
-            db()->prepare("UPDATE users SET last_spin_date=? WHERE id=?")->execute([$today, $u['id']]);
-            echo json_encode(['ok' => true, 'won' => $won, 'msg' => "ربحت {$won} عملة!"]); exit;
 
         case 'api_toggle_wishlist':
             csrf_check();
@@ -1570,10 +1528,6 @@ if ($action && str_starts_with($action, 'api_')) {
                 $finalPrice = round($finalPrice * (1 - $coupon['discount_percent'] / 100), 2);
             }
 
-            $usd_balance = points_to_usd($u['points']);
-            if ($usd_balance < $finalPrice) {
-                echo json_encode(['ok' => false, 'msg' => 'رصيدك غير كافٍ لإتمام الشراء، يمكنك شحن المحفظة من صفحة "محفظتي".']); exit;
-            }
             db()->prepare("INSERT INTO orders (user_id, product_id, price, account_id, receipt_image, tx_note, coupon_code) VALUES (?,?,?,?,?,?,?)")
                 ->execute([$u['id'], $pid, $finalPrice, $accountId, $receipt, $txNote, $couponCode ?: null]);
             if ($coupon) db()->prepare("UPDATE coupons SET used_count = used_count + 1 WHERE id = ?")->execute([$coupon['id']]);
@@ -1618,84 +1572,6 @@ if ($action && str_starts_with($action, 'api_')) {
             $url = 'uploads/avatars/' . $filename;
             db()->prepare("UPDATE users SET avatar=? WHERE id=?")->execute([$url, $u['id']]);
             echo json_encode(['ok' => true, 'url' => $url, 'msg' => 'تم تحديث صورة الملف الشخصي.']);
-            exit;
-
-        case 'api_solve_captcha':
-            csrf_check();
-            $answer = trim($_POST['answer'] ?? '');
-            $expected = $_SESSION['captcha_code'] ?? null;
-            $day = date('Y-m-d');
-            $st = db()->prepare("SELECT * FROM captcha_logs WHERE user_id=? AND day=?");
-            $st->execute([$u['id'], $day]);
-            $log = $st->fetch();
-            $count = $log['count'] ?? 0;
-            $max = (int)setting('captcha_max_per_day', 40);
-            if ($count >= $max) { echo json_encode(['ok' => false, 'msg' => 'وصلت للحد اليومي من الكابتشا.']); exit; }
-            if (!$expected || $answer !== $expected) { echo json_encode(['ok' => false, 'msg' => 'الرقم غير صحيح، حاول مجدداً.']); exit; }
-            unset($_SESSION['captcha_code']);
-            $reward = (int)setting('captcha_reward', 10);
-            add_points($u['id'], $reward, 'captcha', 'إنجاز كابتشا');
-            if ($log) db()->prepare("UPDATE captcha_logs SET count=count+1 WHERE id=?")->execute([$log['id']]);
-            else db()->prepare("INSERT INTO captcha_logs (user_id, day, count) VALUES (?,?,1)")->execute([$u['id'], $day]);
-            echo json_encode(['ok' => true, 'msg' => "تم! +{$reward} عملة Yassota", 'reward' => $reward, 'remaining' => $max - $count - 1]);
-            exit;
-
-        case 'api_new_captcha':
-            $code = (string)random_int(1000, 9999);
-            $_SESSION['captcha_code'] = $code;
-            echo json_encode(['ok' => true, 'code' => $code]);
-            exit;
-
-        case 'api_complete_task':
-            csrf_check();
-            $tid = (int)($_POST['task_id'] ?? 0);
-            $day = date('Y-m-d');
-            $st = db()->prepare("SELECT * FROM tasks WHERE id=? AND active=1");
-            $st->execute([$tid]);
-            $task = $st->fetch();
-            if (!$task) { echo json_encode(['ok' => false, 'msg' => 'المهمة غير موجودة.']); exit; }
-            $st = db()->prepare("SELECT * FROM task_completions WHERE user_id=? AND task_id=? AND day=?");
-            $st->execute([$u['id'], $tid, $day]);
-            if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'أنجزت هذه المهمة اليوم بالفعل.']); exit; }
-            $st = db()->prepare("SELECT COUNT(*) c FROM task_completions WHERE user_id=? AND day=?");
-            $st->execute([$u['id'], $day]);
-            if ($st->fetch()['c'] >= (int)setting('task_max_per_day', 10)) {
-                echo json_encode(['ok' => false, 'msg' => 'وصلت للحد اليومي من المهام.']); exit;
-            }
-            db()->prepare("INSERT INTO task_completions (user_id, task_id, day) VALUES (?,?,?)")->execute([$u['id'], $tid, $day]);
-            add_points($u['id'], (int)$task['reward'], 'task', 'مهمة: ' . $task['title']);
-            echo json_encode(['ok' => true, 'msg' => "+{$task['reward']} عملة Yassota"]);
-            exit;
-
-        case 'api_request_topup':
-            csrf_check();
-            $amount = (float)($_POST['amount'] ?? 0);
-            $wid = (int)($_POST['wallet_id'] ?? 0);
-            $note = trim($_POST['note'] ?? '');
-            if ($amount <= 0) { echo json_encode(['ok' => false, 'msg' => 'أدخل مبلغاً صحيحاً.']); exit; }
-            db()->prepare("INSERT INTO topup_requests (user_id, wallet_id, amount, note) VALUES (?,?,?,?)")
-                ->execute([$u['id'], $wid, $amount, $note]);
-            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب الشحن، بانتظار مراجعة الإدارة.']);
-            exit;
-
-        case 'api_save_wallet':
-            csrf_check();
-            $type = $_POST['type'] ?? '';
-            $addr = trim($_POST['address'] ?? '');
-            db()->prepare("UPDATE users SET wallet_type=?, wallet_address=? WHERE id=?")->execute([$type, $addr, $u['id']]);
-            echo json_encode(['ok' => true, 'msg' => 'تم حفظ المحفظة.']);
-            exit;
-
-        case 'api_request_withdraw':
-            csrf_check();
-            $min = (float)setting('min_withdraw_usd', 25);
-            $usd = points_to_usd($u['points']);
-            if ($usd < $min) { echo json_encode(['ok' => false, 'msg' => "الحد الأدنى للسحب {$min}$"]); exit; }
-            if (!$u['wallet_address']) { echo json_encode(['ok' => false, 'msg' => 'أضف محفظتك أولاً.']); exit; }
-            db()->prepare("INSERT INTO withdraw_requests (user_id, amount_points, amount_usd, wallet_type, wallet_address) VALUES (?,?,?,?,?)")
-                ->execute([$u['id'], $u['points'], $usd, $u['wallet_type'], $u['wallet_address']]);
-            db()->prepare("UPDATE users SET points = 0 WHERE id = ?")->execute([$u['id']]);
-            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب السحب.']);
             exit;
 
         default:
@@ -1779,24 +1655,54 @@ function openrouter_request(array $payload): array
 }
 
 /**
- * موديلات مجانية معروفة على OpenRouter تُجرَّب تلقائياً كخط دفاع أخير عندما يفشل الموديل
- * المختار من الإعدادات (مثلاً لأنه موديل مدفوع ولا يوجد رصيد كافٍ على المفتاح)، لضمان عدم توقف
- * توليد المحتوى بالذكاء الاصطناعي بالكامل حتى مع مفاتيح OpenRouter المجانية المحدودة.
+ * قائمة احتياطية ثابتة تُستخدم فقط إذا تعذّر جلب قائمة الموديلات المجانية الفعلية من OpenRouter
+ * (مثلاً بسبب انقطاع الشبكة). أسماء موديلات OpenRouter المجانية تتغيّر بمرور الوقت (تقاعد/إعادة تسمية)،
+ * لذلك الاعتماد الأساسي يكون على openrouter_free_models() التي تجلب القائمة الحقيقية الحالية مباشرة.
  */
 const OPENROUTER_FREE_FALLBACK_MODELS = [
     'meta-llama/llama-3.3-70b-instruct:free',
-    'google/gemini-2.0-flash-exp:free',
     'qwen/qwen-2.5-72b-instruct:free',
-    'deepseek/deepseek-chat:free',
     'mistralai/mistral-7b-instruct:free',
-    'google/gemma-2-9b-it:free',
+    'deepseek/deepseek-r1:free',
 ];
+
+/**
+ * يجلب قائمة الموديلات المجانية الحقيقية والمتاحة حالياً من واجهة OpenRouter العامة (بدون مفتاح)،
+ * ويخزّنها مؤقتاً في الإعدادات لمدة 6 ساعات لتجنّب إرسال طلب لكل محادثة. هذا يحل مشكلة فشل موديلات
+ * تم تقاعدها أو تغيير اسمها من طرف OpenRouter (مثل ظهور خطأ "No endpoints found" لموديل قديم).
+ */
+function openrouter_free_models(): array
+{
+    $cachedAt = (int)setting('openrouter_free_models_at', 0);
+    $cached = setting('openrouter_free_models_list', '');
+    if ($cached !== '' && (time() - $cachedAt) < 6 * 3600) {
+        return array_values(array_filter(array_map('trim', explode(',', $cached))));
+    }
+    $list = [];
+    $res = http_get('https://openrouter.ai/api/v1/models');
+    $data = json_decode((string)$res['body'], true);
+    if (is_array($data['data'] ?? null)) {
+        foreach ($data['data'] as $m) {
+            $id = $m['id'] ?? '';
+            $pricing = $m['pricing'] ?? [];
+            $isFree = str_ends_with($id, ':free') || ((float)($pricing['prompt'] ?? 1) === 0.0 && (float)($pricing['completion'] ?? 1) === 0.0);
+            if ($id && $isFree) $list[] = $id;
+        }
+    }
+    if ($list) {
+        set_setting('openrouter_free_models_list', implode(',', $list));
+        set_setting('openrouter_free_models_at', (string)time());
+        return $list;
+    }
+    return OPENROUTER_FREE_FALLBACK_MODELS;
+}
 
 function openrouter_chat(string $prompt, bool $jsonMode = false): array
 {
     $primary = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
-    $models = array_values(array_unique(array_merge([$primary], OPENROUTER_FREE_FALLBACK_MODELS)));
+    $models = array_values(array_unique(array_merge([$primary], openrouter_free_models(), OPENROUTER_FREE_FALLBACK_MODELS)));
     $lastErr = 'تعذر الاتصال بـ OpenRouter.';
+    $triedNoEndpoint = [];
     foreach ($models as $model) {
         $payload = [
             'model' => $model,
@@ -1812,7 +1718,14 @@ function openrouter_chat(string $prompt, bool $jsonMode = false): array
             $lastErr = $data['error']['message'] ?? 'استجابة غير متوقعة من OpenRouter.';
             continue;
         }
+        if (stripos($r['msg'], 'no endpoints') !== false || stripos($r['msg'], 'not found') !== false) {
+            $triedNoEndpoint[] = $model;
+            continue; // موديل متقاعد/غير موجود، جرّب التالي فوراً بدون اعتباره الخطأ النهائي
+        }
         $lastErr = $r['msg'];
+    }
+    if ($triedNoEndpoint && $lastErr === 'تعذر الاتصال بـ OpenRouter.') {
+        $lastErr = 'كل الموديلات المجانية المتاحة حالياً غير صالحة أو منتهية لدى OpenRouter حالياً (تمت تجربة: ' . implode(', ', $triedNoEndpoint) . '). يرجى مراجعة مفتاح OpenRouter API أو تجربة موديل آخر من القائمة.';
     }
     return ['ok' => false, 'msg' => $lastErr];
 }
@@ -2057,27 +1970,6 @@ if ($action && str_starts_with($action, 'admin_')) {
             flash('تم تحديث حالة الطلب.');
             redirect('?page=admin&tab=orders');
 
-        case 'admin_topup_decision':
-            $tid = (int)$_POST['id']; $dec = $_POST['decision'];
-            $st = db()->prepare("SELECT * FROM topup_requests WHERE id=?"); $st->execute([$tid]); $tr = $st->fetch();
-            if ($tr && $dec === 'approve' && $tr['status'] === 'pending') {
-                $pts = (int)round($tr['amount'] / max((float)setting('points_rate', 0.001), 0.0000001));
-                add_points($tr['user_id'], $pts, 'topup', 'شحن رصيد معتمد');
-            }
-            db()->prepare("UPDATE topup_requests SET status=? WHERE id=?")->execute([$dec === 'approve' ? 'approved' : 'rejected', $tid]);
-            flash('تم تحديث طلب الشحن.');
-            redirect('?page=admin&tab=topups');
-
-        case 'admin_withdraw_decision':
-            $wid = (int)$_POST['id']; $dec = $_POST['decision'];
-            $st = db()->prepare("SELECT * FROM withdraw_requests WHERE id=?"); $st->execute([$wid]); $wr = $st->fetch();
-            if ($wr && $dec === 'reject' && $wr['status'] === 'pending') {
-                add_points($wr['user_id'], $wr['amount_points'], 'refund', 'إرجاع بعد رفض السحب');
-            }
-            db()->prepare("UPDATE withdraw_requests SET status=? WHERE id=?")->execute([$dec === 'approve' ? 'approved' : 'rejected', $wid]);
-            flash('تم تحديث طلب السحب.');
-            redirect('?page=admin&tab=withdraws');
-
         case 'admin_save_wallet':
             // ضمان عدم تفعيل أكثر من محفظة واحدة لنفس وسيلة الدفع (مثل الشام كاش) في نفس الوقت
             db()->prepare("UPDATE wallets SET active=0 WHERE type=?")->execute([$_POST['type']]);
@@ -2123,16 +2015,6 @@ if ($action && str_starts_with($action, 'admin_')) {
             set_setting('home_sections_hidden', preg_replace('/[^a-z_,]/', '', $_POST['hidden'] ?? ''));
             flash('تم حفظ تخطيط الصفحة الرئيسية.');
             redirect('?page=admin&tab=homepage');
-
-        case 'admin_save_task':
-            db()->prepare("INSERT INTO tasks (title, url, seconds, reward) VALUES (?,?,?,?)")
-                ->execute([$_POST['title'], $_POST['url'], (int)$_POST['seconds'], (int)$_POST['reward']]);
-            flash('تمت إضافة المهمة.');
-            redirect('?page=admin&tab=tasks');
-
-        case 'admin_toggle_task':
-            db()->prepare("UPDATE tasks SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
-            redirect('?page=admin&tab=tasks');
 
         case 'admin_save_banner':
             db()->prepare("INSERT INTO banners (image, link) VALUES (?,?)")->execute([$_POST['image'], $_POST['link']]);
@@ -2185,7 +2067,6 @@ if ($action && str_starts_with($action, 'admin_')) {
             $uid = (int)$_POST['id'];
             if ($_POST['op'] === 'ban') db()->prepare("UPDATE users SET is_banned=1 WHERE id=?")->execute([$uid]);
             if ($_POST['op'] === 'unban') db()->prepare("UPDATE users SET is_banned=0 WHERE id=?")->execute([$uid]);
-            if ($_POST['op'] === 'addpoints') add_points($uid, (int)$_POST['points'], 'admin', 'إضافة يدوية من الإدارة');
             redirect('?page=admin&tab=users');
 
         default:
@@ -2201,7 +2082,6 @@ if ($page === 'login' && $user) { redirect('?'); }
 $siteName = setting('site_name');
 $logo = setting('logo_url');
 $activeWallets = db()->query("SELECT * FROM wallets WHERE active=1")->fetchAll();
-$userUsdBalance = $user ? points_to_usd($user['points']) : 0;
 
 /* ---- SEO: per-page title / description / canonical / structured data ---- */
 $seoProduct = null;
@@ -2218,7 +2098,7 @@ if (in_array($page, ['app', 'app_download'], true)) {
     $seoApp = $st->fetch();
     if (!$seoApp) { http_response_code(404); }
 }
-$pageLabels = ['home' => 'الرئيسية', 'earn' => 'اكسب عملات', 'tasks' => 'المهام اليومية', 'wallet' => 'محفظتي', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'welcome' => 'مرحباً بك', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر'];
+$pageLabels = ['home' => 'الرئيسية', 'favorites' => 'المفضّلة', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر', 'thankyou' => 'شكراً لزيارتك'];
 if ($seoApp) {
     $seoTitle = ($seoApp['seo_title'] ?: $seoApp['name']) . ' — تحميل ' . ($seoApp['kind'] === 'game' ? 'لعبة' : 'تطبيق') . ' مجاناً — ' . e($siteName);
     $seoDesc = $seoApp['seo_description'] ?: ($seoApp['short_description'] ?: mb_substr((string)$seoApp['description'], 0, 155));
@@ -2865,7 +2745,7 @@ function googleTranslateElementInit(){
   <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><?= icon('rocket', 'ic ic-lg') ?><?php endif; ?> <?= e($siteName) ?></a>
   <div class="grow"></div>
   <?php if ($user): ?>
-    <div class="balance-pill-sm"><?= icon('coins', 'ic-sm') ?><?= points_to_usd((int)$user['points']) ?>$</div>
+    <a href="?page=favorites" class="btn btn-ghost btn-icon-only" title="المفضّلة"><?= icon('heart', 'ic ic-sm') ?></a>
     <a href="?page=profile" class="user-chip">
       <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>"><?php else: ?><?= icon('user', 'ic ic-sm') ?><?php endif; ?>
       <span><?= e($user['name']) ?></span>
@@ -2881,15 +2761,12 @@ function googleTranslateElementInit(){
   <div class="sb-head"><strong><?= icon('hat', 'ic-sm') ?> <?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()"><?= icon('close', 'ic') ?></button></div>
   <nav>
     <a href="?"><?= icon('home') ?> الرئيسية</a>
-    <a href="?page=apps"><?= icon('android') ?> تطبيقات وألعاب</a>
+    <a href="?page=apps&kind=app"><?= icon('android') ?> التطبيقات</a>
+    <a href="?page=apps&kind=game"><?= icon('rocket') ?> الألعاب</a>
     <a href="?page=store"><?= icon('cart') ?> المتجر (منتجات للبيع)</a>
     <?php if ($user): ?><a href="?page=profile"><?= icon('user') ?> ملفي الشخصي</a><?php endif; ?>
-    <a href="?page=wallet"><?= icon('wallet') ?> محفظتي</a>
+    <a href="?page=favorites"><?= icon('heart') ?> المفضّلة</a>
     <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
-    <a href="?page=earn"><?= icon('coin') ?> اكسب عملات (كابتشا)</a>
-    <a href="?page=tasks"><?= icon('tasks') ?> المهام اليومية</a>
-    <a href="?page=leaderboard"><?= icon('star') ?> المتصدّرون</a>
-    <a href="?page=spin"><?= icon('gift') ?> عجلة الحظ</a>
     <a href="?page=suggest"><?= icon('megaphone') ?> اقترح منتجاً</a>
     <a href="?page=about"><?= icon('shield') ?> من نحن</a>
     <a href="?page=faq"><?= icon('doc') ?> الأسئلة الشائعة</a>
@@ -2903,7 +2780,7 @@ function googleTranslateElementInit(){
 <div class="modal-bg" id="buyModal" style="display:none">
   <div class="modal buy-modal">
     <h2><?= icon('cart', 'ic') ?>تأكيد طلب الشراء</h2>
-    <div class="balance-pill"><?= icon('coins', 'ic-sm') ?>رصيدك المتاح: <strong id="buyBalance"><?= e($userUsdBalance) ?>$</strong> · السعر: <strong id="buyFinalPrice">0$</strong></div>
+    <div class="balance-pill"><?= icon('cart', 'ic-sm') ?>السعر: <strong id="buyFinalPrice">0$</strong></div>
 
     <label>الآيدي <span style="color:var(--danger)">*</span>
       <input type="text" id="buyAccountId" placeholder="أدخل الآيدي / الحساب الخاص بالطلب" required>
@@ -2941,7 +2818,6 @@ function googleTranslateElementInit(){
             </div>
           </div>
         <?php endforeach; ?>
-        <a href="?page=wallet" class="btn btn-ghost" style="width:100%;margin-top:6px;text-align:center;display:block"><?= icon('send', 'ic-sm') ?>إرسال طلب شحن من صفحة المحفظة</a>
       </div>
     </details>
     <?php endif; ?>
@@ -3141,14 +3017,14 @@ case 'home':
         },
         'live_ticker' => function () {
             if (setting('live_ticker_enabled', '1') !== '1') return;
-            $winners = db()->query("SELECT u.name, u.username, e.amount FROM earn_logs e JOIN users u ON u.id = e.user_id WHERE e.amount > 0 ORDER BY e.id DESC LIMIT 15")->fetchAll();
-            if (!$winners) return; ?>
+            $recent = db()->query("SELECT name, kind FROM apps WHERE status='published' ORDER BY id DESC LIMIT 15")->fetchAll();
+            if (!$recent) return; ?>
             <div class="ticker-bar live-ticker">
-              <span class="ticker-badge"><?= icon('coin', 'ic-sm') ?>مباشر</span>
+              <span class="ticker-badge"><?= icon('rocket', 'ic-sm') ?>مباشر</span>
               <div class="ticker-track">
                 <div class="ticker-track-inner">
-                  <?php foreach (array_merge($winners, $winners) as $w): ?>
-                    <span class="ticker-item"><?= icon('coins', 'ic-sm') ?><?= e($w['name'] ?: $w['username']) ?> ربح <strong>+<?= (int)$w['amount'] ?></strong> عملة</span>
+                  <?php foreach (array_merge($recent, $recent) as $r): ?>
+                    <span class="ticker-item"><?= icon($r['kind'] === 'game' ? 'rocket' : 'android', 'ic-sm') ?><?= e($r['name']) ?> <strong><?= $r['kind'] === 'game' ? 'لعبة جديدة' : 'تطبيق جديد' ?></strong></span>
                   <?php endforeach; ?>
                 </div>
               </div>
@@ -3427,6 +3303,7 @@ case 'app_download':
     }
     $a = $seoApp;
     db()->prepare("UPDATE apps SET downloads = downloads + 1 WHERE id=?")->execute([$a['id']]);
+    if ($user) db()->prepare("INSERT INTO user_downloads (user_id, app_id) VALUES (?,?)")->execute([$user['id'], $a['id']]);
     $waitSeconds = max(0, (int)setting('app_download_wait_seconds', 5));
     $moneytagScript = setting('moneytag_script');
     ?>
@@ -3448,7 +3325,11 @@ case 'app_download':
           <div class="dl-progress"><div class="dl-progress-fill" id="dlProgressFill"></div></div>
           <span id="dlCountdownText"><?= $waitSeconds > 0 ? 'يرجى الانتظار ' . $waitSeconds . ' ثانية...' : '' ?></span>
         </div>
-        <a id="dlRealBtn" class="btn btn-primary app-download-btn" style="display:none" href="<?= e($a['download_url']) ?>" rel="nofollow"><?= icon('download', 'ic-sm') ?>تحميل <?= e($a['name']) ?> الآن</a>
+        <a id="dlRealBtn" class="btn btn-primary app-download-btn" style="display:none" href="<?= e($a['download_url']) ?>" target="_blank" rel="nofollow noopener" data-thanks-url="?page=thankyou&id=<?= (int)$a['id'] ?>"><?= icon('download', 'ic-sm') ?>تحميل <?= e($a['name']) ?> الآن</a>
+
+        <?php if (setting('telegram_channel_url')): ?>
+          <a class="btn app-btn-telegram" href="<?= e(setting('telegram_channel_url')) ?>" target="_blank" rel="nofollow noopener"><?= icon('telegram', 'ic-sm') ?>اشترك في قناة تيليجرام</a>
+        <?php endif; ?>
 
         <div class="download-meta">
           <?php if ($a['size_label']): ?><span><?= icon('check', 'ic-sm') ?><?= e($a['size_label']) ?></span><?php endif; ?>
@@ -3470,7 +3351,13 @@ case 'app_download':
       var total = seconds;
       function reveal() {
         el.style.display = 'none';
-        if (realBtn) realBtn.style.display = 'flex';
+        if (realBtn) {
+          realBtn.style.display = 'flex';
+          realBtn.addEventListener('click', function () {
+            var thanksUrl = realBtn.dataset.thanksUrl;
+            if (thanksUrl) setTimeout(function () { window.location.href = thanksUrl; }, 400);
+          });
+        }
       }
       if (seconds <= 0) { reveal(); return; }
       var tick = function () {
@@ -3486,178 +3373,101 @@ case 'app_download':
     <?php
     break;
 
-case 'earn':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لتبدأ بكسب العملات.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
-    $day = date('Y-m-d');
-    $st = db()->prepare("SELECT count FROM captcha_logs WHERE user_id=? AND day=?");
-    $st->execute([$user['id'], $day]);
-    $done = $st->fetch()['count'] ?? 0;
-    $max = (int)setting('captcha_max_per_day', 40);
+case 'thankyou':
+    $taApp = null;
+    if ((int)($_GET['id'] ?? 0) > 0) {
+        $st = db()->prepare("SELECT * FROM apps WHERE id=? AND status='published'");
+        $st->execute([(int)$_GET['id']]);
+        $taApp = $st->fetch() ?: null;
+    }
+    $thanksAdsHtml = setting('thankyou_ads_html', '');
+    $thanksMoneytag = setting('moneytag_script', '');
     ?>
-    <div class="admin-box" style="margin-top:18px">
-      <h2><?= icon('coin', 'ic') ?>اكسب عملات Yassota</h2>
-      <p style="color:var(--muted);margin:10px 0">أدخل الرقم الظاهر بالأسفل بشكل صحيح لتحصل على <?= e(setting('captcha_reward')) ?> عملة. (<?= $done ?>/<?= $max ?> اليوم)</p>
-      <div id="captchaBox" style="font-size:32px;font-weight:800;letter-spacing:8px;background:#101a2e;border-radius:12px;padding:18px;text-align:center;margin:14px 0">----</div>
-      <input type="text" id="captchaAnswer" placeholder="أدخل الرقم هنا" style="width:100%;padding:12px;border-radius:10px;border:1px solid #2a3350;background:#101a2e;color:#fff;text-align:center;font-size:18px">
-      <button class="btn btn-success" style="width:100%;margin-top:12px" onclick="submitCaptcha()"><?= icon('check', 'ic ic-sm') ?>تحقق واحصل على العملات</button>
-    </div>
-    <?php
-    break;
+    <div class="download-page thankyou-page">
+      <div class="download-card">
+        <div class="icon-wrap" style="margin:0 auto 14px"><?= icon('check', 'ic ic-xl') ?></div>
+        <h1>شكراً لزيارتك<?= $taApp ? ' — ' . e($taApp['name']) : '' ?>!</h1>
+        <p class="download-sub">بدأ تحميل التطبيق الآن. تابعنا للمزيد من التطبيقات والألعاب الحصرية.</p>
 
-case 'tasks':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض المهام.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
-    $tasks = db()->query("SELECT * FROM tasks WHERE active=1")->fetchAll();
-    $day = date('Y-m-d');
-    ?>
-    <div class="section-title"><?= icon('tasks', 'ic') ?>المهام اليومية</div>
-    <div class="admin-box">
-    <?php if (!$tasks): ?>
-      <div class="empty">لا توجد مهام حالياً.</div>
-    <?php endif; ?>
-    <?php foreach ($tasks as $t):
-        $st = db()->prepare("SELECT * FROM task_completions WHERE user_id=? AND task_id=? AND day=?");
-        $st->execute([$user['id'], $t['id'], $day]);
-        $done = (bool)$st->fetch();
-    ?>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #28304a">
-        <div>
-          <strong><?= e($t['title']) ?></strong>
-          <div style="color:var(--muted);font-size:12px;display:flex;align-items:center;gap:4px"><?= icon('clock', 'ic-sm') ?><?= (int)$t['seconds'] ?> ثانية · +<?= (int)$t['reward'] ?> عملة</div>
-        </div>
-        <?php if ($done): ?>
-          <span class="badge approved"><?= icon('check', 'ic-sm') ?>مكتملة</span>
-        <?php else: ?>
-          <button class="btn btn-primary" onclick="startTask(<?= (int)$t['id'] ?>, '<?= e($t['url']) ?>', <?= (int)$t['seconds'] ?>)">ابدأ</button>
+        <?php if ($thanksMoneytag): ?><div class="download-ad-slot"><?= $thanksMoneytag ?></div><?php endif; ?>
+        <?php if ($thanksAdsHtml): ?><div class="download-ad-slot"><?= $thanksAdsHtml ?></div><?php endif; ?>
+
+        <?php if (setting('telegram_channel_url')): ?>
+          <a class="btn app-btn-telegram" href="<?= e(setting('telegram_channel_url')) ?>" target="_blank" rel="nofollow noopener"><?= icon('telegram', 'ic-sm') ?>اشترك في قناة تيليجرام</a>
         <?php endif; ?>
+
+        <?php if ($thanksMoneytag): ?><div class="download-ad-slot"><?= $thanksMoneytag ?></div><?php endif; ?>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:16px">
+          <a href="?page=apps&kind=app" class="btn btn-ghost"><?= icon('android', 'ic-sm') ?>تطبيقات أخرى</a>
+          <a href="?page=apps&kind=game" class="btn btn-ghost"><?= icon('rocket', 'ic-sm') ?>ألعاب أخرى</a>
+          <a href="?" class="btn btn-primary"><?= icon('check', 'ic-sm') ?>الصفحة الرئيسية</a>
+        </div>
+
+        <?php if ($thanksAdsHtml): ?><div class="download-ad-slot"><?= $thanksAdsHtml ?></div><?php endif; ?>
       </div>
-    <?php endforeach; ?>
     </div>
     <?php
     break;
 
-case 'wallet':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض محفظتك.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
-    $wallets = db()->query("SELECT * FROM wallets WHERE active=1")->fetchAll();
-    $usd = points_to_usd($user['points']);
-    $minw = (float)setting('min_withdraw_usd', 25);
-    $progress = $minw > 0 ? min(100, round($usd / $minw * 100)) : 100;
-    $canWithdraw = $usd >= $minw;
-    $log = db()->prepare("SELECT * FROM earn_logs WHERE user_id=? ORDER BY id DESC LIMIT 12");
-    $log->execute([$user['id']]);
-    $logs = $log->fetchAll();
-    $sourceLabel = ['welcome' => 'هدية الترحيب', 'captcha' => 'كابتشا', 'task' => 'مهمة', 'topup' => 'شحن رصيد', 'refund' => 'استرجاع', 'admin' => 'الإدارة', 'withdraw' => 'سحب', 'referral' => 'دعوة صديق', 'daily_bonus' => 'مكافأة يومية', 'bio_bonus' => 'مكافأة النبذة', 'profile_complete_bonus' => 'اكتمال الملف الشخصي', 'spin' => 'عجلة الحظ'];
+case 'favorites':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض مكتبتك.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $favProducts = db()->prepare("SELECT p.* FROM wishlist w JOIN products p ON p.id=w.product_id WHERE w.user_id=? ORDER BY w.id DESC");
+    $favProducts->execute([$user['id']]);
+    $favProducts = $favProducts->fetchAll();
+    $myDownloads = db()->prepare("SELECT a.id, a.name, a.icon, a.kind, a.version, MAX(d.created_at) last_at, COUNT(*) times FROM user_downloads d JOIN apps a ON a.id=d.app_id WHERE d.user_id=? GROUP BY a.id ORDER BY last_at DESC LIMIT 20");
+    $myDownloads->execute([$user['id']]);
+    $myDownloads = $myDownloads->fetchAll();
+    $myOrders = db()->prepare("SELECT o.*, p.name, p.icon FROM orders o JOIN products p ON p.id=o.product_id WHERE o.user_id=? ORDER BY o.id DESC LIMIT 6");
+    $myOrders->execute([$user['id']]);
+    $myOrders = $myOrders->fetchAll();
     ?>
-    <div class="wallet-balance-card">
-      <div class="wbc-top">
-        <span class="wbc-label"><?= icon('wallet', 'ic-sm') ?>محفظتي</span>
-        <span class="wbc-rate">سعر العملة: <?= e(setting('points_rate', 0.001)) ?>$</span>
-      </div>
-      <div class="wbc-amount"><?= icon('coins', 'ic ic-xl') ?><span><?= number_format((int)$user['points']) ?></span><small>عملة</small></div>
-      <div class="wbc-usd">≈ <strong><?= $usd ?>$</strong></div>
-      <div class="wbc-progress">
-        <div class="wbc-progress-bar"><div class="wbc-progress-fill" style="width:<?= $progress ?>%"></div></div>
-        <span class="wbc-progress-txt"><?= $canWithdraw ? icon('check', 'ic-sm') . 'يمكنك السحب الآن' : 'الحد الأدنى للسحب: ' . e($minw) . '$ (' . $progress . '%)' ?></span>
-      </div>
-    </div>
-
-    <?php
-    $todayStr = date('Y-m-d');
-    $gotDailyBonus = $user['last_bonus_date'] === $todayStr;
-    $dailyBonusAmt = (int)setting('daily_bonus_points', 20);
-    $refStCount = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by = ?");
-    $refStCount->execute([$user['id']]);
-    $refCount = (int)$refStCount->fetch()['c'];
-    $refPaidSt = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by = ? AND referral_bonus_given = 1");
-    $refPaidSt->execute([$user['id']]);
-    $refPaidCount = (int)$refPaidSt->fetch()['c'];
-    $refMax = (int)setting('referral_max_count', 5);
-    $refBonusPts = (int)setting('referral_bonus_points', 100);
-    ?>
-    <div class="admin-box" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <div><strong><?= icon('coin', 'ic-sm') ?> المكافأة اليومية</strong><div style="font-size:13px;color:var(--muted);margin-top:4px"><?= $gotDailyBonus ? 'حصلت عليها اليوم، عُد غداً.' : "اضغط للحصول على +{$dailyBonusAmt} عملة." ?></div></div>
-      <button class="btn btn-primary" id="dailyBonusBtn" <?= $gotDailyBonus ? 'disabled style="opacity:.5;cursor:not-allowed"' : 'onclick="claimDailyBonus()"' ?>><?= icon('coins', 'ic-sm') ?><?= $gotDailyBonus ? 'تم الاستلام' : 'استلام' ?></button>
-    </div>
+    <div class="section-title"><?= icon('heart', 'ic') ?>المفضّلة ومكتبتي</div>
 
     <div class="admin-box">
-      <h3><?= icon('send', 'ic') ?>دعوة الأصدقاء</h3>
-      <p style="font-size:13px;color:var(--muted)">شارك رابطك واحصل على <?= $refBonusPts ?> عملة عن كل صديق يسجّل عبره (حتى <?= $refMax ?> أصدقاء كحد أقصى = <?= points_to_usd($refBonusPts * $refMax) ?>$ إجمالاً). إحالات مكتملة ومربحة: <strong><?= $refPaidCount ?>/<?= $refMax ?></strong> — إجمالي من سجّل عبر رابطك: <strong><?= $refCount ?></strong></p>
-      <div class="upload-row">
-        <input type="text" readonly value="<?= e(rtrim(SITE_URL, '/')) ?>/index.php?ref=<?= e($user['referral_code']) ?>" id="refLinkInput" onclick="this.select()">
-        <button class="btn btn-ghost" type="button" onclick="navigator.clipboard.writeText(document.getElementById('refLinkInput').value);this.textContent='تم النسخ!'"><?= icon('check', 'ic-sm') ?>نسخ</button>
-      </div>
-    </div>
-
-    <div class="admin-box withdraw-box">
-      <h3><?= icon('bank', 'ic') ?>تحويل العملات إلى رصيد حقيقي</h3>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:10px">اختر طريقة الاستلام، ثم اطلب السحب. كل طلب يحتاج موافقة الإدارة وستجد حالته في "سجل العمليات" أدناه.</p>
-      <select id="wType">
-        <option value="sham" <?= $user['wallet_type'] === 'sham' ? 'selected' : '' ?>>الشام كاش (افتراضي)</option>
-        <option value="usdt" <?= $user['wallet_type'] === 'usdt' ? 'selected' : '' ?>>USDT (TRC20)</option>
-        <option value="binance" <?= $user['wallet_type'] === 'binance' ? 'selected' : '' ?>>Binance Pay</option>
-        <option value="payeer" <?= $user['wallet_type'] === 'payeer' ? 'selected' : '' ?>>Payeer</option>
-        <option value="syriatel_cash" <?= $user['wallet_type'] === 'syriatel_cash' ? 'selected' : '' ?>>سيرياتيل كاش</option>
-        <option value="mtn_cash" <?= $user['wallet_type'] === 'mtn_cash' ? 'selected' : '' ?>>MTN كاش</option>
-        <option value="bank_transfer" <?= $user['wallet_type'] === 'bank_transfer' ? 'selected' : '' ?>>حوالة بنكية</option>
-        <option value="western_union" <?= $user['wallet_type'] === 'western_union' ? 'selected' : '' ?>>ويسترن يونيون</option>
-        <option value="crypto" <?= $user['wallet_type'] === 'crypto' ? 'selected' : '' ?>>عملة مشفرة أخرى</option>
-      </select>
-      <input id="wAddr" value="<?= e($user['wallet_address']) ?>" placeholder="عنوان المحفظة / رقم الحساب">
-      <button class="btn btn-ghost" style="margin-top:8px;width:100%" onclick="saveWallet()"><?= icon('check', 'ic-sm') ?>حفظ طريقة الاستلام</button>
-      <button class="btn btn-withdraw-cta" onclick="requestWithdraw()" <?= $canWithdraw ? '' : 'disabled' ?>>
-        <?= icon('send', 'ic ic-sm') ?>
-        <span><?= $canWithdraw ? 'سحب الرصيد الآن — ' . $usd . '$' : 'الحد الأدنى للسحب ' . e($minw) . '$' ?></span>
-      </button>
-    </div>
-
-    <div class="admin-box">
-      <h3><?= icon('plus', 'ic') ?>شحن الرصيد</h3>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:10px">حوّل المبلغ إلى إحدى المحافظ التالية ثم أرسل طلب التحقق:</p>
-      <?php foreach ($wallets as $w): ?>
-        <div class="topup-method">
-          <div class="topup-method-head">
-            <?php [$wTypeLbl, $wTypeIcon] = wallet_type_label($w['type']); ?>
-            <strong><?= icon($wTypeIcon, 'ic-sm') ?><?= e($wTypeLbl) ?> — <?= e($w['label']) ?></strong>
-          </div>
-          <div class="topup-method-addr">
-            <code><?= e($w['address']) ?></code>
-            <button type="button" class="btn-copy" onclick="copyAddr(this)" data-addr="<?= e($w['address']) ?>"><?= icon('copy', 'ic-sm') ?></button>
-          </div>
+      <h3><?= icon('heart', 'ic') ?>المفضّلة</h3>
+      <?php if (!$favProducts): ?>
+        <div class="empty" style="padding:20px 0">لم تُضِف منتجات إلى المفضّلة بعد. اضغط <?= icon('heart', 'ic-sm') ?> على أي منتج لإضافته هنا.</div>
+      <?php else: ?>
+        <div class="grid">
+          <?php $wishlistSet = array_fill_keys(array_column($favProducts, 'id'), true); foreach ($favProducts as $p) render_product_card($p); ?>
         </div>
-      <?php endforeach; ?>
-      <select id="topupWallet"><?php foreach ($wallets as $w): ?><option value="<?= (int)$w['id'] ?>"><?= e($w['label']) ?></option><?php endforeach; ?></select>
-      <div class="coin-pkgs">
-        <?php foreach ([5, 10, 25, 50] as $amt): $coinsFor = $amt > 0 ? round($amt / (float)setting('points_rate', 0.001)) : 0; ?>
-          <button type="button" class="coin-pkg" onclick="document.getElementById('topupAmount').value='<?= $amt ?>'"><?= icon('coins', 'ic-sm') ?><strong>$<?= $amt ?></strong><span><?= number_format($coinsFor) ?> عملة</span></button>
-        <?php endforeach; ?>
-      </div>
-      <input id="topupAmount" type="number" placeholder="المبلغ بالدولار">
-      <input id="topupNote" placeholder="ملاحظة / رقم العملية (اختياري)">
-      <button class="btn btn-primary" onclick="requestTopup()"><?= icon('send', 'ic-sm') ?>إرسال طلب الشحن</button>
+      <?php endif; ?>
     </div>
 
     <div class="admin-box">
-      <h3><?= icon('users', 'ic') ?>أعلى المتصدّرين</h3>
-      <a href="?page=leaderboard" class="btn btn-ghost" style="width:100%;justify-content:center"><?= icon('star', 'ic-sm') ?>عرض قائمة المتصدّرين</a>
-    </div>
-
-    <div class="admin-box">
-      <h3><?= icon('history', 'ic') ?>سجل العمليات</h3>
-      <?php if (!$logs): ?>
-        <div class="empty" style="padding:20px 0">لا توجد عمليات بعد.</div>
+      <h3><?= icon('history', 'ic') ?>سجل التحميلات</h3>
+      <?php if (!$myDownloads): ?>
+        <div class="empty" style="padding:20px 0">لا توجد تطبيقات أو ألعاب محمّلة بعد.</div>
       <?php else: ?>
         <div class="tx-list">
-          <?php foreach ($logs as $l): $pos = $l['amount'] >= 0; ?>
-            <div class="tx-row">
-              <div class="tx-icon <?= $pos ? 'pos' : 'neg' ?>"><?= icon($pos ? 'plus' : 'minus', 'ic-sm') ?></div>
+          <?php foreach ($myDownloads as $d): ?>
+            <a class="tx-row" href="?page=app&id=<?= (int)$d['id'] ?>" style="text-decoration:none;color:inherit">
+              <div class="tx-icon pos"><?= icon($d['kind'] === 'game' ? 'rocket' : 'android', 'ic-sm') ?></div>
               <div class="tx-info">
-                <strong><?= e($sourceLabel[$l['source']] ?? $l['source']) ?></strong>
-                <span><?= e($l['description']) ?></span>
+                <strong><?= e($d['name']) ?></strong>
+                <span><?= e($d['version'] ? 'إصدار ' . $d['version'] : '') ?> · آخر تحميل: <?= e(substr($d['last_at'] ?? '', 0, 10)) ?></span>
               </div>
-              <div class="tx-amount <?= $pos ? 'pos' : 'neg' ?>"><?= $pos ? '+' : '' ?><?= (int)$l['amount'] ?></div>
-            </div>
+              <div class="tx-amount pos"><?= (int)$d['times'] ?>×</div>
+            </a>
           <?php endforeach; ?>
         </div>
       <?php endif; ?>
+    </div>
+
+    <div class="admin-box">
+      <h3><?= icon('cart', 'ic') ?>مشترياتي</h3>
+      <?php if (!$myOrders): ?>
+        <div class="empty" style="padding:20px 0">لا توجد مشتريات بعد.</div>
+      <?php else: ?>
+        <?php foreach ($myOrders as $o): ?>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #28304a">
+            <div style="display:flex;align-items:center;gap:8px"><?= icon('cart', 'ic-sm') ?><?= e($o['name']) ?> — <?= e($o['price']) ?>$</div>
+            <span class="badge <?= e($o['status']) ?>"><?= e($o['status']) ?></span>
+          </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+      <a href="?page=orders" class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px"><?= icon('orders', 'ic-sm') ?>عرض كل طلباتي</a>
     </div>
     <?php
     break;
@@ -3681,22 +3491,6 @@ case 'orders':
     <?php
     break;
 
-case 'spin':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لتجربة عجلة الحظ.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
-    $spunToday = $user['last_spin_date'] === date('Y-m-d');
-    ?>
-    <div class="section-title"><?= icon('gift', 'ic') ?>عجلة الحظ</div>
-    <div class="admin-box spin-wheel-wrap">
-      <div style="position:relative">
-        <div class="spin-wheel-pointer"></div>
-        <div class="spin-wheel" id="spinWheelEl"></div>
-      </div>
-      <button class="btn btn-primary" id="spinBtn" style="font-size:16px;padding:14px 30px" onclick="spinWheel()" <?= $spunToday ? 'disabled' : '' ?>><?= icon('coins', 'ic-sm') ?><?= $spunToday ? 'عُد غداً للمحاولة مرة أخرى' : 'أدر العجلة الآن' ?></button>
-      <p style="color:var(--muted);font-size:13px">اربح بين <?= (int)setting('spin_reward_min', 5) ?> و <?= (int)setting('spin_reward_max', 200) ?> عملة، مرة واحدة يومياً.</p>
-    </div>
-    <?php
-    break;
-
 case 'suggest':
     if (!$user) { echo '<div class="empty">سجّل الدخول لإرسال اقتراح منتج.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     ?>
@@ -3710,60 +3504,21 @@ case 'suggest':
     <?php
     break;
 
-case 'leaderboard':
-    $top10 = db()->query("SELECT id, username, name, avatar, points FROM users WHERE is_banned=0 ORDER BY points DESC LIMIT 10")->fetchAll();
-    $myRank = null;
-    if ($user) {
-        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE points > ? AND is_banned=0");
-        $st->execute([(int)$user['points']]);
-        $myRank = (int)$st->fetch()['c'] + 1;
-    }
-    $medals = ['🥇', '🥈', '🥉'];
-    ?>
-    <div class="section-title"><?= icon('star', 'ic') ?>أعلى المتصدّرين</div>
-    <?php if ($user): ?>
-    <div class="admin-box" style="text-align:center;background:linear-gradient(135deg,var(--accent),var(--accent2))">
-      <div style="font-size:13px;opacity:.9">ترتيبك الحالي</div>
-      <div style="font-size:28px;font-weight:800">#<?= $myRank ?></div>
-    </div>
-    <?php endif; ?>
-    <div class="lb-list">
-      <?php foreach ($top10 as $i => $row): $rank = $i + 1; ?>
-        <div class="lb-row lb-rank-<?= $rank ?>" style="animation-delay:<?= $i * 60 ?>ms">
-          <div class="lb-pos"><?= $medals[$i] ?? $rank ?></div>
-          <?php if ($row['avatar']): ?><img class="lb-avatar" src="<?= e($row['avatar']) ?>"><?php else: ?><div class="lb-avatar lb-avatar-ph"><?= icon('user', 'ic-sm') ?></div><?php endif; ?>
-          <div class="lb-name"><?= e($row['name'] ?: $row['username']) ?></div>
-          <div class="lb-points"><?= icon('coins', 'ic-sm') ?><?= number_format((int)$row['points']) ?></div>
-        </div>
-      <?php endforeach; ?>
-      <?php if (!$top10): ?><div class="empty">لا يوجد مستخدمون حتى الآن.</div><?php endif; ?>
-    </div>
-    <?php
-    break;
-
 case 'profile':
     if (!$user) { echo '<div class="empty">سجّل الدخول لعرض ملفك الشخصي.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
-    $pPoints = (int)$user['points'];
-    $pUsd = points_to_usd($pPoints);
     $st = db()->prepare("SELECT COUNT(*) c FROM orders WHERE user_id=? AND status='approved'"); $st->execute([$user['id']]); $pApprovedOrders = (int)$st->fetch()['c'];
-    $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by=?"); $st->execute([$user['id']]); $pReferrals = (int)$st->fetch()['c'];
-    $st = db()->prepare("SELECT COUNT(*) c FROM earn_logs WHERE user_id=? AND source='captcha'"); $st->execute([$user['id']]); $pCaptchaCount = (int)$st->fetch()['c'];
-    $st = db()->prepare("SELECT COUNT(*) c FROM earn_logs WHERE user_id=? AND source='task'"); $st->execute([$user['id']]); $pTaskCount = (int)$st->fetch()['c'];
     $st = db()->prepare("SELECT COUNT(*) c FROM reviews WHERE user_id=?"); $st->execute([$user['id']]); $pReviewCount = (int)$st->fetch()['c'];
-    if ($pPoints >= 5000) { $pRank = 'ماسي'; $pRankIcon = '💎'; }
-    elseif ($pPoints >= 2000) { $pRank = 'ذهبي'; $pRankIcon = '🥇'; }
-    elseif ($pPoints >= 500) { $pRank = 'فضي'; $pRankIcon = '🥈'; }
-    else { $pRank = 'برونزي'; $pRankIcon = '🥉'; }
+    $st = db()->prepare("SELECT COUNT(*) c FROM wishlist WHERE user_id=?"); $st->execute([$user['id']]); $pFavCount = (int)$st->fetch()['c'];
+    $st = db()->prepare("SELECT COUNT(*) c FROM user_downloads WHERE user_id=?"); $st->execute([$user['id']]); $pDownloadCount = (int)$st->fetch()['c'];
     $pAchievements = [];
     $pAchievements[] = ['icon' => 'check', 'label' => 'عضو مسجّل', 'on' => true];
     $pAchievements[] = ['icon' => 'cart', 'label' => 'أول عملية شراء', 'on' => $pApprovedOrders >= 1];
-    $pAchievements[] = ['icon' => 'send', 'label' => 'مُحيل نشط (3+ دعوات)', 'on' => $pReferrals >= 3];
-    $pAchievements[] = ['icon' => 'coin', 'label' => 'محارب الكابتشا (50+)', 'on' => $pCaptchaCount >= 50];
-    $pAchievements[] = ['icon' => 'tasks', 'label' => 'منجز مهام (10+)', 'on' => $pTaskCount >= 10];
+    $pAchievements[] = ['icon' => 'android', 'label' => 'مستكشف نشط (5+ تحميلات)', 'on' => $pDownloadCount >= 5];
+    $pAchievements[] = ['icon' => 'heart', 'label' => 'لديه مفضّلة', 'on' => $pFavCount >= 1];
     $pAchievements[] = ['icon' => 'star', 'label' => 'مُقيّم نشط', 'on' => $pReviewCount >= 1];
     ?>
     <div class="section-title"><?= icon('user', 'ic') ?>ملفي الشخصي</div>
-    <div class="admin-box profile-rank-<?= e(mb_strtolower($pRank === 'ماسي' ? 'diamond' : ($pRank === 'ذهبي' ? 'gold' : ($pRank === 'فضي' ? 'silver' : 'bronze')))) ?>" style="text-align:center;padding:28px 16px">
+    <div class="admin-box" style="text-align:center;padding:28px 16px">
       <div class="profile-frame">
         <?php if ($user['avatar']): ?><img id="avatarPreview" src="<?= e($user['avatar']) ?>"><?php else: ?><div class="ph" id="avatarPreview"><?= icon('user', 'ic-lg') ?></div><?php endif; ?>
         <button type="button" class="avatar-edit-btn" title="تغيير الصورة" onclick="document.getElementById('avatarFileInput').click()"><?= icon('edit', 'ic-sm') ?></button>
@@ -3772,25 +3527,19 @@ case 'profile':
       <h2 style="margin-top:12px"><?= e($user['name'] ?: $user['username']) ?><?php if (is_admin()): ?> <span class="verified-badge" title="حساب موثّق"><?= icon('check', 'ic-sm') ?></span><?php endif; ?></h2>
       <div style="color:var(--muted);font-size:13px">@<?= e($user['username']) ?></div>
       <?php if ($user['bio']): ?><div style="margin-top:8px;font-size:13px;color:var(--muted)"><?= e($user['bio']) ?></div><?php endif; ?>
-      <div style="margin-top:8px;font-size:18px"><?= $pRankIcon ?> رتبة <strong><?= $pRank ?></strong></div>
     </div>
     <div class="admin-box">
       <h3 style="margin-bottom:10px"><?= icon('edit', 'ic-sm') ?>تعديل الملف الشخصي</h3>
       <input id="editName" value="<?= e($user['name']) ?>" placeholder="الاسم الظاهر">
       <input id="editUsername" value="<?= e($user['username']) ?>" placeholder="اسم المستخدم">
-      <input id="editBio" value="<?= e($user['bio']) ?>" placeholder="نبذة عنك (احصل على <?= (int)setting('bio_bonus_points', 100) ?> عملة)">
+      <input id="editBio" value="<?= e($user['bio']) ?>" placeholder="نبذة عنك">
       <button class="btn btn-primary" style="margin-top:8px;width:100%" onclick="saveProfile()"><?= icon('check', 'ic-sm') ?>حفظ التعديلات</button>
-      <?php if (!$user['avatar'] || !$user['bio']): ?><p style="font-size:12px;color:var(--muted);margin-top:6px">أكمل الصورة والنبذة لتحصل على <?= (int)setting('profile_complete_bonus_points', 350) ?> عملة إضافية.</p><?php endif; ?>
-    </div>
-    <div class="admin-box" style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">
-      <div><strong><?= icon('star', 'ic-sm') ?> عجلة الحظ</strong><div style="font-size:13px;color:var(--muted);margin-top:4px">جرّب حظك واربح عملات إضافية يومياً</div></div>
-      <a href="?page=spin" class="btn btn-success"><?= icon('coins', 'ic-sm') ?>أدر العجلة</a>
     </div>
     <div class="admin-box">
       <div class="profile-grid">
-        <div class="profile-stat"><?= icon('coins', 'ic-sm') ?><div><strong><?= $pPoints ?></strong><span>نقطة (<?= $pUsd ?>$)</span></div></div>
         <div class="profile-stat"><?= icon('cart', 'ic-sm') ?><div><strong><?= $pApprovedOrders ?></strong><span>طلب مكتمل</span></div></div>
-        <div class="profile-stat"><?= icon('send', 'ic-sm') ?><div><strong><?= $pReferrals ?></strong><span>إحالة ناجحة</span></div></div>
+        <div class="profile-stat"><?= icon('android', 'ic-sm') ?><div><strong><?= $pDownloadCount ?></strong><span>تحميل</span></div></div>
+        <div class="profile-stat"><?= icon('heart', 'ic-sm') ?><div><strong><?= $pFavCount ?></strong><span>مفضّلة</span></div></div>
         <div class="profile-stat"><?= icon('star', 'ic-sm') ?><div><strong><?= $pReviewCount ?></strong><span>تقييم</span></div></div>
       </div>
     </div>
@@ -3800,7 +3549,6 @@ case 'profile':
       <div class="profile-info-row"><span>آيدي الحساب</span><strong>#<?= (int)$user['id'] ?></strong></div>
       <?php if (!empty($user['telegram_id'])): ?><div class="profile-info-row"><span>آيدي تيليجرام</span><strong><?= e($user['telegram_id']) ?></strong></div><?php endif; ?>
       <div class="profile-info-row"><span>عضو منذ</span><strong><?= e(substr($user['created_at'] ?? '', 0, 10)) ?></strong></div>
-      <div class="profile-info-row"><span>رابط الإحالة</span><strong style="word-break:break-all"><?= e(SITE_URL . '/?ref=' . $user['referral_code']) ?></strong></div>
     </div>
     <div class="admin-box">
       <h3 style="margin-bottom:10px"><?= icon('gift', 'ic-sm') ?>الإنجازات</h3>
@@ -3827,28 +3575,12 @@ case 'faq':
     }
     break;
 
-case 'welcome':
-    if (!$user) { redirect('?'); }
-    $bonus = (int)setting('welcome_bonus_points', 200);
-    $dest = is_admin() ? '?page=admin' : '?';
-    ?>
-    <div class="admin-box" style="margin-top:40px;text-align:center;padding:40px 20px">
-      <div style="margin-bottom:10px;color:var(--accent2)"><?= icon('rocket', 'ic ic-xl') ?></div>
-      <h2>أهلاً بك، <?= e($user['name'] ?: $user['username']) ?>!</h2>
-      <p style="color:var(--muted);margin:14px 0">تم إنشاء حسابك بنجاح، وحصلت على هدية ترحيبية: <strong style="color:var(--accent2)">+<?= $bonus ?> عملة Yassota</strong> <?= icon('gift', 'ic-sm') ?></p>
-      <p style="color:var(--muted);font-size:13px">سيتم تحويلك للصفحة الرئيسية بعد لحظات...</p>
-      <a href="<?= e($dest) ?>" class="btn btn-primary" style="margin-top:16px;display:inline-block">انتقل الآن</a>
-    </div>
-    <script>setTimeout(() => { location.href = '<?= e($dest) ?>'; }, 3000);</script>
-    <?php
-    break;
-
 case 'admin':
     require_admin();
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'topups'=>['coins','طلبات الشحن'],'withdraws'=>['send','طلبات السحب'],'wallets'=>['bank','المحافظ'],'tasks'=>['tasks','المهام'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -3857,21 +3589,16 @@ case 'admin':
         $users_count = db()->query("SELECT COUNT(*) c FROM users")->fetch()['c'];
         $products_count = db()->query("SELECT COUNT(*) c FROM products")->fetch()['c'];
         $pending_orders = db()->query("SELECT COUNT(*) c FROM orders WHERE status='pending'")->fetch()['c'];
-        $pending_topups = db()->query("SELECT COUNT(*) c FROM topup_requests WHERE status='pending'")->fetch()['c'];
-        $pending_withdraws = db()->query("SELECT COUNT(*) c FROM withdraw_requests WHERE status='pending'")->fetch()['c'];
-        $points_total = db()->query("SELECT COALESCE(SUM(points),0) s FROM users")->fetch()['s'];
+        $apps_count = db()->query("SELECT COUNT(*) c FROM apps")->fetch()['c'];
+        $downloads_total = db()->query("SELECT COALESCE(SUM(downloads),0) s FROM apps")->fetch()['s'];
         $recent_activity = db()->query("SELECT * FROM activity_log ORDER BY id DESC LIMIT 15")->fetchAll();
     ?>
       <div class="formrow">
         <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_count ?></div><div class="lbl">المستخدمون</div></div></div>
+        <div class="stat-card"><?= icon('android', 'ic') ?><div><div class="num"><?= $apps_count ?></div><div class="lbl">تطبيقات وألعاب</div></div></div>
         <div class="stat-card"><?= icon('cart', 'ic') ?><div><div class="num"><?= $products_count ?></div><div class="lbl">المنتجات</div></div></div>
         <div class="stat-card"><?= icon('orders', 'ic') ?><div><div class="num"><?= $pending_orders ?></div><div class="lbl">طلبات معلّقة</div></div></div>
-        <div class="stat-card"><?= icon('coins', 'ic') ?><div><div class="num"><?= $pending_topups ?></div><div class="lbl">شحن معلّق</div></div></div>
-        <div class="stat-card"><?= icon('send', 'ic') ?><div><div class="num"><?= $pending_withdraws ?></div><div class="lbl">سحب معلّق</div></div></div>
-        <div class="stat-card"><?= icon('coin', 'ic') ?><div><div class="num"><?= number_format($points_total) ?></div><div class="lbl">عملات بالتداول</div></div></div>
-      </div>
-      <div class="admin-box">
-        <p style="color:var(--muted);font-size:13px">نسبة الربح الحالية: <?= e(setting('profit_split_admin')) ?>% للإدارة / <?= e(setting('profit_split_user')) ?>% للمستخدم — عدّلها من تبويب الإعدادات بحسب عوائد MoneyTag الفعلية.</p>
+        <div class="stat-card"><?= icon('download', 'ic') ?><div><div class="num"><?= number_format($downloads_total) ?></div><div class="lbl">إجمالي التحميلات</div></div></div>
       </div>
       <div class="admin-box">
         <h3><?= icon('terminal', 'ic') ?>سجل النشاط — آخر الملفات المرفوعة</h3>
@@ -4126,57 +3853,6 @@ case 'admin':
         </table>
       </div>
 
-    <?php elseif ($tab === 'topups'):
-        $rows = db()->query("SELECT t.*, u.name uname, w.label wlabel FROM topup_requests t JOIN users u ON u.id=t.user_id LEFT JOIN wallets w ON w.id=t.wallet_id ORDER BY t.id DESC")->fetchAll();
-    ?>
-      <div class="admin-box">
-        <table>
-          <tr><th>المستخدم</th><th>المحفظة</th><th>المبلغ</th><th>ملاحظة</th><th>الحالة</th><th>إجراء</th></tr>
-          <?php foreach ($rows as $r): ?>
-          <tr>
-            <td><?= e($r['uname']) ?></td><td><?= e($r['wlabel']) ?></td><td><?= e($r['amount']) ?>$</td><td><?= e($r['note']) ?></td>
-            <td><span class="badge <?= e($r['status']) ?>"><?= e($r['status']) ?></span></td>
-            <td>
-              <?php if ($r['status'] === 'pending'): ?>
-              <form method="post" action="?action=admin_topup_decision" style="display:flex;gap:4px">
-                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-                <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <button name="decision" value="approve" class="btn btn-success"><?= icon('check', 'ic-sm') ?></button>
-                <button name="decision" value="reject" class="btn btn-danger"><?= icon('x', 'ic-sm') ?></button>
-              </form>
-              <?php endif; ?>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-        </table>
-      </div>
-
-    <?php elseif ($tab === 'withdraws'):
-        $rows = db()->query("SELECT w.*, u.name uname FROM withdraw_requests w JOIN users u ON u.id=w.user_id ORDER BY w.id DESC")->fetchAll();
-    ?>
-      <div class="admin-box">
-        <table>
-          <tr><th>المستخدم</th><th>المبلغ</th><th>الطريقة</th><th>العنوان</th><th>الحالة</th><th>إجراء</th></tr>
-          <?php foreach ($rows as $r): ?>
-          <tr>
-            <td><?= e($r['uname']) ?></td><td><?= e($r['amount_usd']) ?>$</td><td><?= e($r['wallet_type']) ?></td>
-            <td style="font-family:monospace"><?= e($r['wallet_address']) ?></td>
-            <td><span class="badge <?= e($r['status']) ?>"><?= e($r['status']) ?></span></td>
-            <td>
-              <?php if ($r['status'] === 'pending'): ?>
-              <form method="post" action="?action=admin_withdraw_decision" style="display:flex;gap:4px">
-                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-                <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <button name="decision" value="approve" class="btn btn-success"><?= icon('check', 'ic-sm') ?></button>
-                <button name="decision" value="reject" class="btn btn-danger"><?= icon('x', 'ic-sm') ?></button>
-              </form>
-              <?php endif; ?>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-        </table>
-      </div>
-
     <?php elseif ($tab === 'wallets'):
         $wallets = db()->query("SELECT * FROM wallets ORDER BY id DESC")->fetchAll();
     ?>
@@ -4203,33 +3879,6 @@ case 'admin':
               <form method="post" action="?action=admin_toggle_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form>
               <form method="post" action="?action=admin_delete_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
             </td>
-          </tr>
-          <?php endforeach; ?>
-        </table>
-      </div>
-
-    <?php elseif ($tab === 'tasks'):
-        $tasks = db()->query("SELECT * FROM tasks ORDER BY id DESC")->fetchAll();
-    ?>
-      <div class="admin-box">
-        <h3><?= icon('plus', 'ic') ?>إضافة مهمة (مثل: زيارة رابط لمدة معينة)</h3>
-        <form method="post" action="?action=admin_save_task" class="formrow">
-          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input name="title" placeholder="عنوان المهمة" required>
-          <input name="url" placeholder="الرابط" required>
-          <input name="seconds" type="number" value="15" placeholder="مدة الانتظار بالثواني">
-          <input name="reward" type="number" value="50" placeholder="عدد العملات">
-          <button class="btn btn-primary">حفظ</button>
-        </form>
-      </div>
-      <div class="admin-box">
-        <table>
-          <tr><th>العنوان</th><th>المدة</th><th>المكافأة</th><th>الحالة</th><th></th></tr>
-          <?php foreach ($tasks as $t): ?>
-          <tr>
-            <td><?= e($t['title']) ?></td><td><?= (int)$t['seconds'] ?>s</td><td><?= (int)$t['reward'] ?></td>
-            <td><span class="icon-badge <?= $t['active'] ? 'ok' : 'no' ?>"><?= icon($t['active'] ? 'check' : 'x', 'ic-sm') ?></span></td>
-            <td><form method="post" action="?action=admin_toggle_task" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$t['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form></td>
           </tr>
           <?php endforeach; ?>
         </table>
@@ -4315,7 +3964,7 @@ case 'admin':
             'cat_chips' => 'أزرار التصنيفات السريعة',
             'carousel' => 'البنرات الدوارة',
             'ticker' => 'الشريط الإعلاني المتحرك',
-            'live_ticker' => 'شريط أرباح المستخدمين المباشر',
+            'live_ticker' => 'شريط أحدث التطبيقات والألعاب المباشر',
             'products' => 'شبكة المنتجات حسب التصنيف',
             'soon' => 'قسم "قريباً"',
         ];
@@ -4425,14 +4074,13 @@ case 'admin':
     ?>
       <div class="admin-box">
         <table>
-          <tr><th>الاسم</th><th>البريد</th><th>النقاط</th><th>الدور</th><th>الحالة</th><th>إجراء</th></tr>
+          <tr><th>الاسم</th><th>البريد</th><th>الدور</th><th>الحالة</th><th>إجراء</th></tr>
           <?php foreach ($users as $u): ?>
           <tr>
-            <td><?= e($u['name']) ?></td><td><?= e($u['email']) ?></td><td><?= (int)$u['points'] ?></td>
+            <td><?= e($u['name']) ?></td><td><?= e($u['email']) ?></td>
             <td><?= e($u['role']) ?></td><td><?= icon($u['is_banned'] ? 'x' : 'check', 'ic-sm') ?></td>
             <td style="display:flex;gap:4px;flex-wrap:wrap">
               <form method="post" action="?action=admin_user_action"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$u['id'] ?>"><input type="hidden" name="op" value="<?= $u['is_banned'] ? 'unban' : 'ban' ?>"><button class="btn btn-ghost"><?= $u['is_banned'] ? 'رفع حظر' : 'حظر' ?></button></form>
-              <form method="post" action="?action=admin_user_action" style="display:flex;gap:4px"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$u['id'] ?>"><input type="hidden" name="op" value="addpoints"><input type="number" name="points" placeholder="عملات" style="width:80px;padding:4px"><button class="btn btn-primary">إضافة</button></form>
             </td>
           </tr>
           <?php endforeach; ?>
@@ -4477,13 +4125,6 @@ case 'admin':
           </label>
           <label>عنوان البنر<input name="banner_title" value="<?= e(setting('banner_title')) ?>"></label>
           <label>وصف البنر<input name="banner_subtitle" value="<?= e(setting('banner_subtitle')) ?>"></label>
-          <label>سعر النقطة بالدولار<input name="points_rate" value="<?= e(setting('points_rate')) ?>"></label>
-          <label>الحد الأدنى للسحب $<input name="min_withdraw_usd" value="<?= e(setting('min_withdraw_usd')) ?>"></label>
-          <label>مكافأة الكابتشا<input name="captcha_reward" value="<?= e(setting('captcha_reward')) ?>"></label>
-          <label>أقصى كابتشا باليوم<input name="captcha_max_per_day" value="<?= e(setting('captcha_max_per_day')) ?>"></label>
-          <label>أقصى مهام باليوم<input name="task_max_per_day" value="<?= e(setting('task_max_per_day')) ?>"></label>
-          <label>نسبة ربح الإدارة %<input name="profit_split_admin" value="<?= e(setting('profit_split_admin')) ?>"></label>
-          <label>نسبة ربح المستخدم %<input name="profit_split_user" value="<?= e(setting('profit_split_user')) ?>"></label>
           <label>ارتفاع صورة بطاقة المنتج (px)<input type="number" name="product_image_height" value="<?= e(setting('product_image_height')) ?>" min="60" max="400"></label>
           <label>عرض بطاقة القسم (px)<input type="number" name="cat_tile_size" value="<?= e(setting('cat_tile_size')) ?>" min="80" max="320"></label>
           <label>نص زر الشراء<input name="buy_button_text" value="<?= e(setting('buy_button_text')) ?>"></label>
@@ -4504,6 +4145,7 @@ case 'admin':
           <label>اللون الأساسي للموقع<input type="color" id="themeAccentColor" name="theme_accent_color" value="<?= e(setting('theme_accent_color')) ?>"></label>
           <label>لون التمييز الثانوي<input type="color" id="themeAccent2Color" name="theme_accent2_color" value="<?= e(setting('theme_accent2_color')) ?>"></label>
           <label>كود إعلانات MoneyTag (يظهر فقط في صفحة تحميل التطبيقات)<textarea name="moneytag_script" rows="3" placeholder="ألصق كود/سكربت MoneyTag هنا"><?= e(setting('moneytag_script')) ?></textarea></label>
+          <label>كود إعلانات إضافي لصفحة "شكراً لزيارتك" (تظهر بعد بدء التحميل)<textarea name="thankyou_ads_html" rows="3" placeholder="ألصق أكواد الإعلانات هنا"><?= e(setting('thankyou_ads_html')) ?></textarea></label>
           <label>تفعيل Service Worker الخاص بـ MoneyTag (sw.js)
             <select name="moneytag_sw_enabled">
               <option value="1" <?= setting('moneytag_sw_enabled', '0') === '1' ? 'selected' : '' ?>>مفعّل</option>
@@ -4642,10 +4284,10 @@ default:
 
 <div class="bottom-nav">
   <a href="?" class="<?= $page === 'home' ? 'active' : '' ?>"><?= icon('home', 'ic') ?>الرئيسية</a>
-  <a href="?page=apps" class="<?= in_array($page, ['apps', 'app', 'app_download'], true) ? 'active' : '' ?>"><?= icon('android', 'ic') ?>تطبيقات</a>
+  <a href="?page=apps&kind=app" class="<?= $page === 'apps' && $appsKindNav === 'app' ? 'active' : '' ?>"><?= icon('android', 'ic') ?>تطبيقات</a>
+  <a href="?page=apps&kind=game" class="<?= $page === 'apps' && $appsKindNav === 'game' ? 'active' : '' ?>"><?= icon('rocket', 'ic') ?>ألعاب</a>
   <a href="?page=store" class="<?= $page === 'store' ? 'active' : '' ?>"><?= icon('cart', 'ic') ?>المتجر</a>
-  <a href="?page=wallet" class="<?= $page === 'wallet' ? 'active' : '' ?>"><?= icon('wallet', 'ic') ?>محفظتي</a>
-  <a href="?page=orders" class="<?= $page === 'orders' ? 'active' : '' ?>"><?= icon('orders', 'ic') ?>طلباتي</a>
+  <a href="?page=favorites" class="<?= $page === 'favorites' ? 'active' : '' ?>"><?= icon('heart', 'ic') ?>المفضّلة</a>
 </div>
 
 <button id="scrollTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="أعلى الصفحة"><?= icon('chevron-up', 'ic') ?></button>
