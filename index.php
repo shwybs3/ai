@@ -3612,6 +3612,24 @@ case 'admin':
         $pending_orders = db()->query("SELECT COUNT(*) c FROM orders WHERE status='pending'")->fetch()['c'];
         $apps_count = db()->query("SELECT COUNT(*) c FROM apps")->fetch()['c'];
         $downloads_total = db()->query("SELECT COALESCE(SUM(downloads),0) s FROM apps")->fetch()['s'];
+        $views_total = db()->query("SELECT COALESCE(SUM(views),0) s FROM apps")->fetch()['s'];
+        $tg_users_count = (int)db()->query("SELECT COUNT(*) c FROM telegram_users")->fetch()['c'];
+        $revenue_total = (float)db()->query("SELECT COALESCE(SUM(price),0) s FROM orders WHERE status='completed'")->fetch()['s'];
+
+        $today = date('Y-m-d') . ' 00:00:00';
+        $weekAgo = date('Y-m-d', strtotime('-7 days')) . ' 00:00:00';
+        $monthAgo = date('Y-m-d', strtotime('-30 days')) . ' 00:00:00';
+        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE created_at >= ?"); $st->execute([$today]);
+        $users_today = (int)$st->fetch()['c'];
+        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE created_at >= ?"); $st->execute([$weekAgo]);
+        $users_week = (int)$st->fetch()['c'];
+        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE created_at >= ?"); $st->execute([$monthAgo]);
+        $users_month = (int)$st->fetch()['c'];
+
+        $top_apps = db()->query("SELECT id, name, kind, downloads, views, rating_avg FROM apps WHERE status='published' ORDER BY downloads DESC LIMIT 8")->fetchAll();
+        $recent_orders = db()->query("SELECT o.id, o.price, o.status, o.created_at, p.name AS product_name, u.name AS user_name
+            FROM orders o LEFT JOIN products p ON p.id=o.product_id LEFT JOIN users u ON u.id=o.user_id
+            ORDER BY o.id DESC LIMIT 8")->fetchAll();
         $recent_activity = db()->query("SELECT * FROM activity_log ORDER BY id DESC LIMIT 15")->fetchAll();
     ?>
       <div class="formrow">
@@ -3620,7 +3638,56 @@ case 'admin':
         <div class="stat-card"><?= icon('cart', 'ic') ?><div><div class="num"><?= $products_count ?></div><div class="lbl">المنتجات</div></div></div>
         <div class="stat-card"><?= icon('orders', 'ic') ?><div><div class="num"><?= $pending_orders ?></div><div class="lbl">طلبات معلّقة</div></div></div>
         <div class="stat-card"><?= icon('download', 'ic') ?><div><div class="num"><?= number_format($downloads_total) ?></div><div class="lbl">إجمالي التحميلات</div></div></div>
+        <div class="stat-card"><?= icon('eye', 'ic') ?><div><div class="num"><?= number_format($views_total) ?></div><div class="lbl">إجمالي المشاهدات</div></div></div>
+        <div class="stat-card"><?= icon('telegram', 'ic') ?><div><div class="num"><?= number_format($tg_users_count) ?></div><div class="lbl">مستخدمو بوت تيليجرام</div></div></div>
+        <div class="stat-card"><?= icon('cart', 'ic') ?><div><div class="num"><?= number_format($revenue_total, 2) ?>$</div><div class="lbl">إيرادات الطلبات المكتملة</div></div></div>
       </div>
+      <div class="formrow">
+        <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_today ?></div><div class="lbl">مستخدمون جدد اليوم</div></div></div>
+        <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_week ?></div><div class="lbl">مستخدمون جدد آخر 7 أيام</div></div></div>
+        <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_month ?></div><div class="lbl">مستخدمون جدد آخر 30 يوماً</div></div></div>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('rocket', 'ic') ?>الأكثر تحميلاً</h3>
+        <?php if (!$top_apps): ?>
+          <p style="color:var(--muted);font-size:13px">لا توجد تطبيقات منشورة حتى الآن.</p>
+        <?php else: ?>
+        <table>
+          <tr><th>الاسم</th><th>النوع</th><th>التحميلات</th><th>المشاهدات</th><th>التقييم</th></tr>
+          <?php foreach ($top_apps as $a): ?>
+          <tr>
+            <td><a href="?page=app&id=<?= (int)$a['id'] ?>" target="_blank"><?= e($a['name']) ?></a></td>
+            <td><?= $a['kind'] === 'game' ? 'لعبة' : 'تطبيق' ?></td>
+            <td><?= number_format($a['downloads']) ?></td>
+            <td><?= number_format($a['views']) ?></td>
+            <td><?= number_format((float)$a['rating_avg'], 1) ?></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php endif; ?>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('orders', 'ic') ?>آخر الطلبات</h3>
+        <?php if (!$recent_orders): ?>
+          <p style="color:var(--muted);font-size:13px">لا توجد طلبات حتى الآن.</p>
+        <?php else: ?>
+        <table>
+          <tr><th>المستخدم</th><th>المنتج</th><th>السعر</th><th>الحالة</th><th>الوقت</th></tr>
+          <?php foreach ($recent_orders as $o): ?>
+          <tr>
+            <td><?= e($o['user_name'] ?? '—') ?></td>
+            <td><?= e($o['product_name'] ?? '—') ?></td>
+            <td><?= number_format((float)$o['price'], 2) ?>$</td>
+            <td><?= e($o['status']) ?></td>
+            <td><?= e($o['created_at']) ?></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php endif; ?>
+      </div>
+
       <div class="admin-box">
         <h3><?= icon('terminal', 'ic') ?>سجل النشاط — آخر الملفات المرفوعة</h3>
         <?php if (!$recent_activity): ?>
