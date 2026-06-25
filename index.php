@@ -375,6 +375,8 @@ function migrate(): void
         'turnstile_secret_key' => '',
         'app_download_wait_seconds' => '5',
         'thankyou_ads_html' => '',
+        'adsense_client_id' => '',
+        'ads_txt_content' => '',
         'satofill_markup_percent' => '15',
         'satofill_api_base' => 'https://satofill.com/api',
         'referral_bonus_points' => '100',
@@ -1381,6 +1383,12 @@ if ($action === 'robots') {
     exit;
 }
 
+if ($action === 'ads_txt') {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo setting('ads_txt_content', '');
+    exit;
+}
+
 if ($action === 'sitemap') {
     header('Content-Type: application/xml; charset=utf-8');
     $base = rtrim(SITE_URL, '/') . '/index.php';
@@ -2143,6 +2151,7 @@ if ($seoApp) {
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <?php if ($page !== 'admin' && !$user): ?><meta name="robots" content="index, follow"><?php else: ?><meta name="robots" content="noindex, nofollow"><?php endif; ?>
 <?php if (setting('google_site_verification')): ?><meta name="google-site-verification" content="<?= e(setting('google_site_verification')) ?>"><?php endif; ?>
+<?php if (setting('adsense_client_id')): ?><meta name="google-adsense-account" content="<?= e(setting('adsense_client_id')) ?>"><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=<?= e(setting('adsense_client_id')) ?>" crossorigin="anonymous"></script><?php endif; ?>
 <meta property="og:type" content="<?= $seoApp ? 'website' : ($seoProduct ? 'product' : 'website') ?>">
 <meta property="og:title" content="<?= e($seoTitle) ?>">
 <meta property="og:description" content="<?= e($seoDesc) ?>">
@@ -2513,7 +2522,9 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .download-app-icon{width:90px;height:90px;border-radius:22px;object-fit:cover;margin:0 auto 14px}
 .download-card h1{font-size:20px;margin-bottom:6px}
 .download-sub{color:var(--muted);font-size:13px;margin-bottom:18px}
-.download-ad-slot{margin:14px 0;min-height:0;overflow:hidden;border-radius:10px}
+.download-ad-slot{margin:14px auto;min-height:90px;max-width:100%;overflow:hidden;border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.03);contain:layout}
+.download-ad-slot img,.download-ad-slot iframe,.download-ad-slot ins,.download-ad-slot video,.download-ad-slot embed,.download-ad-slot object{max-width:100%!important;height:auto}
+.download-ad-slot iframe{width:100%}
 .download-countdown{margin:18px 0}
 .dl-progress{height:8px;border-radius:8px;background:#18223a;overflow:hidden;margin-bottom:10px}
 .dl-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width 1s linear}
@@ -4210,6 +4221,8 @@ case 'admin':
           <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="" placeholder="<?= setting('bot_token') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'من @BotFather' ?>" autocomplete="off"></label>
           <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
+          <label>معرّف ناشر Google AdSense (ca-pub-xxxxxxxxxxxxxxxx)<input name="adsense_client_id" value="<?= e(setting('adsense_client_id')) ?>" placeholder="ca-pub-xxxxxxxxxxxxxxxx"></label>
+          <label>محتوى ملف ads.txt (يظهر على /index.php?action=ads_txt أو /ads.txt)<textarea name="ads_txt_content" rows="2" placeholder="google.com, pub-xxxxxxxxxxxxxxxx, DIRECT, f08c47fec0942fa0"><?= e(setting('ads_txt_content')) ?></textarea></label>
           <label>موديل OpenRouter (الافتراضي موديل مجاني يعمل مع المفاتيح المجانية. عند فشله يبدّل النظام تلقائياً لموديلات مجانية أخرى)<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
             <datalist id="orModels">
               <option value="openai/gpt-4o">
