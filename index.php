@@ -435,6 +435,7 @@ function migrate(): void
         'turnstile_site_key' => '',
         'turnstile_secret_key' => '',
         'app_download_wait_seconds' => '5',
+        'thankyou_retry_seconds' => '4',
         'thankyou_ads_html' => '',
         'adsense_client_id' => '',
         'ads_txt_content' => '',
@@ -2425,6 +2426,9 @@ if ($seoApp) {
 <?php if ($seoImage): ?><meta property="og:image" content="<?= e($seoImage) ?>"><?php endif; ?>
 <?php if ($logo): ?><link rel="icon" href="<?= e($logo) ?>"><?php endif; ?>
 <link rel="canonical" href="<?= e($seoCanonical) ?>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap">
 <?php if ($seoApp): ?>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"<?= e($seoApp['name']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>","applicationCategory":"<?= $seoApp['kind'] === 'game' ? 'GameApplication' : 'MobileApplication' ?>","operatingSystem":"ANDROID"<?= $seoApp['version'] ? ',"softwareVersion":"' . e($seoApp['version']) . '"' : '' ?><?= $seoApp['rating_avg'] ? ',"aggregateRating":{"@type":"AggregateRating","ratingValue":"' . e($seoApp['rating_avg']) . '","ratingCount":"' . max(1, (int)$seoApp['downloads']) . '"}' : '' ?>,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
@@ -2446,7 +2450,10 @@ if ($seoApp) {
 *{box-sizing:border-box;margin:0;padding:0}
 *::selection{background:var(--accent);color:#fff}
 html{scroll-behavior:smooth}
-body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;color:var(--text);min-height:100vh;background:var(--bg);background-image:radial-gradient(1200px 600px at 100% -10%,rgba(230,41,75,.10),transparent 60%),radial-gradient(1000px 600px at -10% 10%,rgba(255,77,77,.08),transparent 55%);background-attachment:fixed}
+body{font-family:'Cairo','Segoe UI',Tahoma,Arial,sans-serif;color:var(--text);min-height:100vh;background:var(--bg);background-image:radial-gradient(1200px 600px at 100% -10%,rgba(230,41,75,.10),transparent 60%),radial-gradient(1000px 600px at -10% 10%,rgba(255,77,77,.08),transparent 55%);background-attachment:fixed;animation:bodyFadeIn .5s var(--ease) both}
+@keyframes bodyFadeIn{from{opacity:0}to{opacity:1}}
+.ic{transition:transform .25s var(--ease)}
+a:hover>.ic,button:hover>.ic,.btn:hover .ic{transform:scale(1.12)}
 a{color:inherit;text-decoration:none}
 ::-webkit-scrollbar{width:10px;height:10px}
 ::-webkit-scrollbar-track{background:var(--bg)}
@@ -2785,7 +2792,9 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .app-btn-telegram{background:#2563eb;color:#fff}
 .app-btn-notify{background:#16a34a;color:#fff}
 .download-page{display:flex;justify-content:center;padding:30px 18px 50px}
-.download-card{width:100%;max-width:440px;background:var(--card);border-radius:var(--radius);padding:30px 24px;text-align:center;box-shadow:var(--shadow)}
+.download-card{width:100%;max-width:440px;background:var(--card);border-radius:var(--radius);padding:30px 24px;text-align:center;box-shadow:var(--shadow);animation:fadeUp .55s var(--ease) both}
+.download-app-icon{transition:transform .3s var(--ease)}
+.download-card:hover .download-app-icon{transform:scale(1.05) rotate(-2deg)}
 .download-app-icon{width:90px;height:90px;border-radius:22px;object-fit:cover;margin:0 auto 14px}
 .download-card h1{font-size:20px;margin-bottom:6px}
 .download-sub{color:var(--muted);font-size:13px;margin-bottom:18px}
@@ -2798,6 +2807,9 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .download-meta{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:16px 0}
 .download-meta span{display:flex;align-items:center;gap:4px}
 .back-link{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;margin-top:10px}
+.dl-fallback{margin-top:18px;padding:14px;border-radius:14px;background:rgba(255,194,51,.08);border:1px solid rgba(255,194,51,.35);animation:fadeUp .5s var(--ease) both,pulseBorder 2.4s ease-in-out infinite}
+.dl-fallback p{font-size:13px;color:var(--text);margin-bottom:10px}
+@keyframes pulseBorder{0%,100%{border-color:rgba(255,194,51,.35)}50%{border-color:rgba(255,194,51,.8)}}
 
 /* ===== Global polish, animations & micro-interactions ===== */
 @keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
@@ -3730,13 +3742,24 @@ case 'app_download':
       var txt = document.getElementById('dlCountdownText');
       var realBtn = document.getElementById('dlRealBtn');
       var total = seconds;
+      function triggerRealDownload(dlUrl) {
+        try {
+          var ifr = document.createElement('iframe');
+          ifr.style.display = 'none';
+          ifr.src = dlUrl;
+          document.body.appendChild(ifr);
+        } catch (e) {}
+        try { window.open(dlUrl, '_blank'); } catch (e) {}
+      }
       function reveal() {
         el.style.display = 'none';
         if (realBtn) {
           realBtn.style.display = 'flex';
-          realBtn.addEventListener('click', function () {
+          realBtn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            triggerRealDownload(url);
             var thanksUrl = realBtn.dataset.thanksUrl;
-            if (thanksUrl) setTimeout(function () { window.location.href = thanksUrl; }, 400);
+            if (thanksUrl) setTimeout(function () { window.location.href = thanksUrl; }, 700);
           });
         }
       }
@@ -3769,6 +3792,14 @@ case 'thankyou':
         <div class="icon-wrap" style="margin:0 auto 14px"><?= icon('check', 'ic ic-xl') ?></div>
         <h1>شكراً لزيارتك<?= $taApp ? ' — ' . e($taApp['name']) : '' ?>!</h1>
         <p class="download-sub">بدأ تحميل التطبيق الآن. تابعنا للمزيد من التطبيقات والألعاب الحصرية.</p>
+
+        <?php if ($taApp && $taApp['download_url']): ?>
+        <div class="dl-fallback" id="dlFallback" style="display:none">
+          <p><?= icon('megaphone', 'ic-sm') ?> هل لا يزال الملف لا يحمّل؟</p>
+          <a class="btn btn-success" style="width:100%;justify-content:center" href="<?= e($taApp['download_url']) ?>" target="_blank" rel="nofollow noopener"><?= icon('download', 'ic-sm') ?>اضغط هنا للتنزيل</a>
+        </div>
+        <script>setTimeout(function(){ var f=document.getElementById('dlFallback'); if (f) f.style.display='block'; }, <?= (int)setting('thankyou_retry_seconds', 4) * 1000 ?>);</script>
+        <?php endif; ?>
 
         <?php if ($thanksMoneytag): ?><div class="download-ad-slot"><?= $thanksMoneytag ?></div><?php endif; ?>
         <?php if ($thanksAdsHtml): ?><div class="download-ad-slot"><?= $thanksAdsHtml ?></div><?php endif; ?>
@@ -4768,6 +4799,7 @@ case 'admin':
           </label>
           <label>محتوى ملف sw.js (الصق الكود الذي يطلبه MoneyTag حرفياً، يُكتب تلقائياً في جذر الموقع عند الحفظ)<textarea name="moneytag_sw_content" rows="4" placeholder="self.addEventListener(...)"><?= e(setting('moneytag_sw_content')) ?></textarea></label>
           <label>ثواني الانتظار بصفحة التحميل قبل ظهور رابط التحميل<input type="number" name="app_download_wait_seconds" value="<?= e(setting('app_download_wait_seconds')) ?>" min="0" max="30"></label>
+          <label>ثواني الانتظار بصفحة الشكر قبل ظهور زر "هل لا يزال الملف لا يحمّل؟" تلقائياً<input type="number" name="thankyou_retry_seconds" value="<?= e(setting('thankyou_retry_seconds', 4)) ?>" min="2" max="30"></label>
           <label>مفتاح Cloudflare Turnstile العلني (Site Key) — كابتشا عالمية حقيقية<input name="turnstile_site_key" value="<?= e(setting('turnstile_site_key')) ?>" placeholder="0x4AAAAAAA..."></label>
           <label>مفتاح Cloudflare Turnstile السري (Secret Key)<input type="password" name="turnstile_secret_key" value="<?= e(setting('turnstile_secret_key')) ?>" autocomplete="off"></label>
           <label>نسبة هامش ربح Satofill %<input type="number" step="0.1" name="satofill_markup_percent" value="<?= e(setting('satofill_markup_percent', 15)) ?>"></label>
