@@ -518,6 +518,8 @@ function migrate(): void
         'about' => "{$siteNameForSeed} هو متجر عربي شامل لتطبيقات وألعاب أندرويد، يقدّم نسخاً أصلية ومعدّلة (مهكّرة) لأشهر التطبيقات والألعاب مع شرح مفصّل لكل تطبيق: المميزات، الصلاحيات المطلوبة، لقطات الشاشة، وروابط تحميل مباشرة وسريعة دون تعقيد.\n\nماذا نقدّم؟\n• تحميل تطبيقات وألعاب أندرويد محدّثة باستمرار.\n• وصف تفصيلي ومولّد بالذكاء الاصطناعي لكل تطبيق لمساعدتك على فهم مميزاته بسرعة.\n• متجر منتجات رقمية مستقل (بطاقات شحن، خدمات رقمية).\n• نظام تقييم شفاف (إعجاب/عدم إعجاب) لكل تطبيق يعكس رأي المستخدمين الحقيقيين.\n• دعم فني سريع عبر تيليجرام.\n\nنحرص في {$siteNameForSeed} على تحديث المحتوى باستمرار وتقديم تجربة استخدام سريعة وسلسة بدون تعقيدات.",
         'contact' => 'لأي استفسار أو دعم فني يمكنك التواصل معنا عبر تيليجرام: ' . ($defaults['support_telegram'] ?? '@layos_he') . ' وسيتم الرد عليك في أقرب وقت ممكن. فريق الدعم متاح للإجابة عن استفساراتك المتعلقة بالتحميلات، الحسابات، أو المنتجات الرقمية على مدار الأسبوع.',
         'faq' => "س: كيف أحمّل تطبيقاً أو لعبة؟\nج: افتح صفحة التطبيق، اضغط «تحميل الآن»، انتظر العد التنازلي القصير ثم اضغط رابط التحميل المباشر.\n\nس: هل التطبيقات المعدّلة (المهكّرة) آمنة؟\nج: نحرص على فحص الروابط المعروضة، لكننا ننصح دوماً بفحص أي ملف بعد التحميل قبل تثبيته كإجراء احتياطي.\n\nس: التطبيق لا يعمل بعد التثبيت، ما الحل؟\nج: تأكد من توافق إصدار أندرويد لديك مع المتطلبات المذكورة بصفحة التطبيق، وتأكد من تفعيل «تثبيت من مصادر غير معروفة».\n\nس: كيف أشتري منتجاً من المتجر؟\nج: اختر المنتج واضغط طلب شراء، ثم أكمل عملية الدفع عبر أحد طرق الدفع المتاحة وأرفق إيصال التحويل، وسيقوم فريقنا بمراجعة الطلب وتفعيله.\n\nس: كم تستغرق معالجة الطلب؟\nج: عادة بين دقائق وحتى 24 ساعة بحسب نوع المنتج.\n\nس: هل يلزم تسجيل الدخول للتحميل؟\nج: لا، يمكنك تحميل أي تطبيق أو لعبة مباشرة بدون تسجيل دخول. التسجيل مطلوب فقط للشراء أو حفظ المفضّلة.\n\nس: نسيت كلمة المرور، ماذا أفعل؟\nج: استخدم رابط استعادة كلمة المرور من صفحة تسجيل الدخول.",
+        'guide' => "تحميل تطبيقات وألعاب أندرويد بأمان أصبح أسهل عبر {$siteNameForSeed}. في هذا الدليل نشرح خطوة بخطوة كيفية تحميل وتثبيت أي تطبيق أو لعبة من الموقع دون أي تعقيد، بدون الحاجة لتسجيل الدخول.\n\n1) ابحث عن التطبيق أو اللعبة عبر شريط البحث أو من خلال تصنيفات التطبيقات والألعاب في الصفحة الرئيسية.\n2) افتح صفحة التطبيق لقراءة الوصف، الصلاحيات المطلوبة، حجم الملف، والإصدار المتوافق.\n3) اضغط زر «تحميل الآن» وانتظر ثواني قليلة حتى يظهر رابط التحميل المباشر.\n4) بعد انتهاء التحميل، فعّل خيار «تثبيت من مصادر غير معروفة» من إعدادات هاتفك إذا طُلب منك ذلك، ثم افتح الملف لتثبيته.\n5) ننصح دوماً بفحص أي ملف APK باستخدام برنامج حماية قبل التثبيت، خصوصاً النسخ المعدّلة (المهكّرة).\n\nلماذا {$siteNameForSeed}؟ لأننا نوفّر تحميلاً مباشراً وسريعاً بدون روابط مختصرة مزيفة، مع تحديث مستمر لقاعدة التطبيقات والألعاب وتفاصيل دقيقة لكل إصدار.",
+        'top' => "إليك قائمة محدّثة بأفضل تطبيقات وألعاب أندرويد المتوفرة حالياً على {$siteNameForSeed}، شاملة النسخ الأصلية والمعدّلة (مود) الأكثر طلباً من زوار الموقع.\n\nأفضل فئات التطبيقات: تطبيقات التواصل الاجتماعي، تطبيقات تحرير الصور والفيديو، تطبيقات الإنتاجية والأدوات، وتطبيقات البث والمشاهدة.\n\nأفضل فئات الألعاب: ألعاب الأكشن والمغامرات، ألعاب الإستراتيجية، ألعاب الرياضة، وألعاب الذكاء والتسلية الخفيفة. كثير من هذه الألعاب متوفرة بنسخ معدّلة تتضمن مزايا إضافية مثل الأموال غير المحدودة أو فتح كل المراحل.\n\nيتم تحديث هذه القائمة باستمرار بناءً على أحدث الإضافات وأكثر التطبيقات تحميلاً، تابع صفحة التطبيقات والألعاب للحصول على كل الإضافات الجديدة فور نشرها.",
     ];
     foreach ($pagesSeed as $slug => $content) {
         $st = $pdo->prepare("INSERT INTO pages (slug, content) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = ?)");
@@ -1388,6 +1390,10 @@ if ($action === 'sitemap') {
         ['loc' => $base . '?page=store', 'priority' => '0.7'],
         ['loc' => $base . '?page=privacy', 'priority' => '0.3'],
         ['loc' => $base . '?page=terms', 'priority' => '0.3'],
+        ['loc' => $base . '?page=about', 'priority' => '0.5'],
+        ['loc' => $base . '?page=faq', 'priority' => '0.5'],
+        ['loc' => $base . '?page=guide', 'priority' => '0.8'],
+        ['loc' => $base . '?page=top', 'priority' => '0.8'],
     ];
     $apps = db()->query("SELECT id, created_at FROM apps WHERE status='published'")->fetchAll();
     foreach ($apps as $a) {
@@ -2098,7 +2104,7 @@ if (in_array($page, ['app', 'app_download'], true)) {
     $seoApp = $st->fetch();
     if (!$seoApp) { http_response_code(404); }
 }
-$pageLabels = ['home' => 'الرئيسية', 'favorites' => 'المفضّلة', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر', 'thankyou' => 'شكراً لزيارتك'];
+$pageLabels = ['home' => 'الرئيسية', 'favorites' => 'المفضّلة', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر', 'thankyou' => 'شكراً لزيارتك', 'about' => 'من نحن', 'faq' => 'الأسئلة الشائعة', 'contact' => 'تواصل معنا', 'guide' => 'دليل تحميل التطبيقات والألعاب أندرويد بأمان', 'top' => 'أفضل تطبيقات وألعاب أندرويد مهكرة ومجانية'];
 if ($seoApp) {
     $seoTitle = ($seoApp['seo_title'] ?: $seoApp['name']) . ' — تحميل ' . ($seoApp['kind'] === 'game' ? 'لعبة' : 'تطبيق') . ' مجاناً — ' . e($siteName);
     $seoDesc = $seoApp['seo_description'] ?: ($seoApp['short_description'] ?: mb_substr((string)$seoApp['description'], 0, 155));
@@ -2109,10 +2115,10 @@ if ($seoApp) {
     $seoDesc = $seoProduct['meta_description'] ?: mb_substr((string)$seoProduct['description'], 0, 155);
     $seoImage = $seoProduct['image'] ?: $logo;
     $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=product&id=' . (int)$seoProduct['id'];
-} elseif (in_array($page, ['privacy', 'terms'], true)) {
+} elseif (in_array($page, ['privacy', 'terms', 'about', 'faq', 'contact', 'guide', 'top'], true)) {
     $pg = db()->prepare("SELECT * FROM pages WHERE slug=?"); $pg->execute([$page]); $pgRow = $pg->fetch();
     $seoTitle = ($pgRow['meta_title'] ?? '') ?: ($pageLabels[$page] . ' — ' . $siteName);
-    $seoDesc = ($pgRow['meta_description'] ?? '') ?: setting('site_description');
+    $seoDesc = ($pgRow['meta_description'] ?? '') ?: mb_substr((string)($pgRow['content'] ?? ''), 0, 160) ?: setting('site_description');
     $seoImage = $logo;
     $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=' . $page;
 } elseif ($page === 'home') {
@@ -2769,6 +2775,8 @@ function googleTranslateElementInit(){
     <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
     <a href="?page=suggest"><?= icon('megaphone') ?> اقترح منتجاً</a>
     <a href="?page=about"><?= icon('shield') ?> من نحن</a>
+    <a href="?page=guide"><?= icon('doc') ?> دليل التحميل</a>
+    <a href="?page=top"><?= icon('star') ?> أفضل التطبيقات</a>
     <a href="?page=faq"><?= icon('doc') ?> الأسئلة الشائعة</a>
     <a href="?page=contact"><?= icon('send') ?> تواصل معنا</a>
     <a href="?page=privacy"><?= icon('lock') ?> سياسة الخصوصية</a>
@@ -3566,8 +3574,10 @@ case 'terms':
 case 'about':
 case 'contact':
 case 'faq':
+case 'guide':
+case 'top':
     $st = db()->prepare("SELECT content FROM pages WHERE slug=?"); $st->execute([$page]); $c = $st->fetch();
-    $pageTitles = ['privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'about' => 'من نحن', 'contact' => 'تواصل معنا', 'faq' => 'الأسئلة الشائعة'];
+    $pageTitles = ['privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'about' => 'من نحن', 'contact' => 'تواصل معنا', 'faq' => 'الأسئلة الشائعة', 'guide' => 'دليل تحميل التطبيقات والألعاب', 'top' => 'أفضل تطبيقات وألعاب أندرويد'];
     echo '<div class="section-title">' . icon('doc', 'ic') . e($pageTitles[$page]) . '</div>';
     echo '<div class="admin-box" style="margin-top:18px;line-height:1.8">' . nl2br(e($c['content'] ?? '')) . '</div>';
     if ($page === 'contact' && setting('support_telegram')) {
