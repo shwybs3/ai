@@ -303,6 +303,19 @@ function migrate(): void
         reason VARCHAR(255) NULL,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS bot_scripts (
+        id $id,
+        name VARCHAR(190) NOT NULL,
+        description TEXT NULL,
+        category VARCHAR(40) NOT NULL DEFAULT 'bot',
+        icon VARCHAR(20) NULL,
+        file_path VARCHAR(500) NULL,
+        version VARCHAR(40) NULL,
+        is_template TINYINT NOT NULL DEFAULT 0,
+        downloads INT NOT NULL DEFAULT 0,
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -368,6 +381,7 @@ function migrate(): void
         'idx_login_attempts_identity' => ['login_attempts', 'identity'],
         'idx_login_attempts_ip' => ['login_attempts', 'ip'],
         'idx_login_attempts_created' => ['login_attempts', 'created_at'],
+        'idx_bot_scripts_status' => ['bot_scripts', 'status'],
     ];
     foreach ($indexes as $name => [$table, $cols]) {
         try {
@@ -757,6 +771,20 @@ function migrate(): void
         $pdo->prepare(DB_DRIVER === 'sqlite'
             ? "INSERT INTO settings (k, v) VALUES ('fake_products_removed_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
             : "INSERT INTO settings (k, v) VALUES ('fake_products_removed_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: تزويد قسم "بوتات وسكربتات" بقوالب جاهزة افتراضية (ملفاتها داخل مجلد bot_templates/)
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='bot_templates_seeded'")->fetchColumn() === '') {
+        $templates = [
+            ['بوت تيليجرام لتحميل الفيديوهات', 'قالب بوت تيليجرام جاهز يستقبل رابط فيديو (يوتيوب/تيك توك/فيسبوك...) من المستخدم ويستخدم yt-dlp لجلب رابط تحميل مباشر وإرساله، قابل للتعديل والتركيب على أي سيرفر يدعم PHP وتنفيذ أوامر النظام.', 'telegram_bot', 'send', 'bot_templates/video_downloader_bot.php', '1.0'],
+            ['بوت تيليجرام للرد التلقائي والقوائم', 'قالب بوت تيليجرام بسيط بقوائم أزرار وردود تلقائية جاهز كنقطة بداية لبناء أي بوت خدمة عملاء أو دعم.', 'telegram_bot', 'terminal', 'bot_templates/auto_reply_bot.php', '1.0'],
+        ];
+        $insTpl = $pdo->prepare("INSERT INTO bot_scripts (name, description, category, icon, file_path, version, is_template, status) VALUES (?,?,?,?,?,?,1,'active')");
+        foreach ($templates as $t) $insTpl->execute($t);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('bot_templates_seeded', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('bot_templates_seeded', '1') ON DUPLICATE KEY UPDATE v='1'")
             ->execute();
     }
 }
@@ -2168,6 +2196,72 @@ if ($action && str_starts_with($action, 'admin_')) {
             db()->prepare("DELETE FROM blocked_ips WHERE id=?")->execute([(int)$_POST['id']]);
             flash('تم إلغاء الحظر.');
             redirect('?page=admin&tab=security');
+
+        case 'admin_bot_save':
+            $botId = (int)($_POST['id'] ?? 0);
+            $botName = trim($_POST['name'] ?? '');
+            $botDesc = trim($_POST['description'] ?? '');
+            $botCategory = in_array($_POST['category'] ?? '', ['telegram_bot', 'script', 'tool'], true) ? $_POST['category'] : 'script';
+            $botVersion = trim($_POST['version'] ?? '1.0');
+            if ($botName === '') { flash('الاسم مطلوب.', 'error'); redirect('?page=admin&tab=bots'); }
+
+            $filePath = null;
+            if (!empty($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
+                $f = $_FILES['file'];
+                $allowedExt = ['zip', 'php', 'py', 'js', 'txt', 'sh'];
+                $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
+                if (!in_array($ext, $allowedExt, true) || $f['size'] > 20 * 1024 * 1024) {
+                    flash('الملف يجب أن يكون من نوع (zip/php/py/js/txt/sh) وأصغر من 20MB.', 'error');
+                    redirect('?page=admin&tab=bots');
+                }
+                $destDir = __DIR__ . '/uploads/bots';
+                if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+                $filename = bin2hex(random_bytes(8)) . '.' . $ext;
+                move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
+                $filePath = 'uploads/bots/' . $filename;
+            }
+
+            if ($botId > 0) {
+                $st = db()->prepare("SELECT * FROM bot_scripts WHERE id=?"); $st->execute([$botId]); $existing = $st->fetch();
+                if (!$existing) { flash('العنصر غير موجود.', 'error'); redirect('?page=admin&tab=bots'); }
+                if ($filePath === null) $filePath = $existing['file_path'];
+                db()->prepare("UPDATE bot_scripts SET name=?, description=?, category=?, version=?, file_path=? WHERE id=?")
+                    ->execute([$botName, $botDesc, $botCategory, $botVersion, $filePath, $botId]);
+            } else {
+                db()->prepare("INSERT INTO bot_scripts (name, description, category, icon, file_path, version, is_template, status) VALUES (?,?,?,?,?,?,0,'active')")
+                    ->execute([$botName, $botDesc, $botCategory, 'terminal', $filePath, $botVersion]);
+            }
+            flash('تم الحفظ.');
+            redirect('?page=admin&tab=bots');
+
+        case 'admin_bot_toggle':
+            $st = db()->prepare("SELECT status FROM bot_scripts WHERE id=?"); $st->execute([(int)$_POST['id']]); $row = $st->fetch();
+            if ($row) {
+                $newStatus = $row['status'] === 'active' ? 'inactive' : 'active';
+                db()->prepare("UPDATE bot_scripts SET status=? WHERE id=?")->execute([$newStatus, (int)$_POST['id']]);
+            }
+            redirect('?page=admin&tab=bots');
+
+        case 'admin_bot_delete':
+            $st = db()->prepare("SELECT * FROM bot_scripts WHERE id=?"); $st->execute([(int)$_POST['id']]); $row = $st->fetch();
+            if ($row && !$row['is_template'] && $row['file_path'] && is_file(__DIR__ . '/' . $row['file_path'])) {
+                @unlink(__DIR__ . '/' . $row['file_path']);
+            }
+            if ($row && !$row['is_template']) {
+                db()->prepare("DELETE FROM bot_scripts WHERE id=?")->execute([(int)$_POST['id']]);
+                flash('تم الحذف.');
+            }
+            redirect('?page=admin&tab=bots');
+
+        case 'admin_bot_download':
+            $st = db()->prepare("SELECT * FROM bot_scripts WHERE id=?"); $st->execute([(int)($_GET['id'] ?? 0)]); $row = $st->fetch();
+            if (!$row || !$row['file_path'] || !is_file(__DIR__ . '/' . $row['file_path'])) { die('الملف غير متوفر.'); }
+            db()->prepare("UPDATE bot_scripts SET downloads = downloads + 1 WHERE id=?")->execute([$row['id']]);
+            header('Content-Type: application/octet-stream');
+            header('Content-Disposition: attachment; filename="' . basename($row['file_path']) . '"');
+            header('Content-Length: ' . filesize(__DIR__ . '/' . $row['file_path']));
+            readfile(__DIR__ . '/' . $row['file_path']);
+            exit;
 
         case 'admin_save_settings':
             $redirectTab = preg_replace('/[^a-z_]/', '', $_POST['redirect_tab'] ?? 'settings') ?: 'settings';
@@ -3791,7 +3885,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -4474,6 +4568,79 @@ case 'admin':
           <tr><th>الهوية</th><th>IP</th><th>الوقت</th></tr>
           <?php foreach ($recentFails as $f): ?>
           <tr><td><?= e($f['identity']) ?></td><td><?= e($f['ip']) ?></td><td><?= e($f['created_at']) ?></td></tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'bots'):
+        $editBotId = (int)($_GET['edit'] ?? 0);
+        $editBot = $editBotId ? (function () use ($editBotId) {
+            $st = db()->prepare("SELECT * FROM bot_scripts WHERE id=?"); $st->execute([$editBotId]); return $st->fetch() ?: null;
+        })() : null;
+        $templates = db()->query("SELECT * FROM bot_scripts WHERE is_template=1 ORDER BY id ASC")->fetchAll();
+        $customBots = db()->query("SELECT * FROM bot_scripts WHERE is_template=0 ORDER BY id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3><?= icon($editBot ? 'edit' : 'plus', 'ic') ?><?= $editBot ? 'تعديل ملف/بوت' : 'إضافة بوت أو سكربت جديد' ?></h3>
+        <form method="post" action="?action=admin_bot_save" enctype="multipart/form-data" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <?php if ($editBot): ?><input type="hidden" name="id" value="<?= (int)$editBot['id'] ?>"><?php endif; ?>
+          <label>الاسم <input type="text" name="name" required value="<?= e($editBot['name'] ?? '') ?>"></label>
+          <label>الوصف <textarea name="description" rows="3"><?= e($editBot['description'] ?? '') ?></textarea></label>
+          <label>التصنيف
+            <select name="category">
+              <?php foreach (['telegram_bot' => 'بوت تيليجرام', 'script' => 'سكربت', 'tool' => 'أداة'] as $ck => $cl): ?>
+              <option value="<?= $ck ?>" <?= ($editBot['category'] ?? '') === $ck ? 'selected' : '' ?>><?= $cl ?></option>
+              <?php endforeach; ?>
+            </select>
+          </label>
+          <label>الإصدار <input type="text" name="version" value="<?= e($editBot['version'] ?? '1.0') ?>"></label>
+          <label>الملف (zip / php / py / js / txt) <?= $editBot ? '— اتركه فارغاً للاحتفاظ بالملف الحالي' : '' ?> <input type="file" name="file"></label>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
+          <?php if ($editBot): ?><a href="?page=admin&tab=bots" class="btn btn-ghost">إلغاء</a><?php endif; ?>
+        </form>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('terminal', 'ic') ?>قوالب جاهزة</h3>
+        <table>
+          <tr><th>الاسم</th><th>التصنيف</th><th>الإصدار</th><th>التحميلات</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($templates as $b): ?>
+          <tr>
+            <td><b><?= e($b['name']) ?></b><div class="muted" style="font-size:13px"><?= e($b['description']) ?></div></td>
+            <td><?= e($b['category']) ?></td>
+            <td><?= e($b['version']) ?></td>
+            <td><?= (int)$b['downloads'] ?></td>
+            <td><?= $b['status'] === 'active' ? '✅ مفعّل' : '⛔ معطّل' ?></td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap">
+              <a class="btn btn-ghost" href="?action=admin_bot_download&id=<?= (int)$b['id'] ?>&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تحميل</a>
+              <a class="btn btn-ghost" href="?page=admin&tab=bots&edit=<?= (int)$b['id'] ?>"><?= icon('edit', 'ic-sm') ?>تعديل</a>
+              <form method="post" action="?action=admin_bot_toggle" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?><?= $b['status'] === 'active' ? 'تعطيل' : 'تفعيل' ?></button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('upload', 'ic') ?>ملفاتك المرفوعة</h3>
+        <?php if (!$customBots): ?><div class="empty">لم يتم رفع أي بوت/سكربت بعد.</div><?php endif; ?>
+        <table>
+          <tr><th>الاسم</th><th>التصنيف</th><th>الإصدار</th><th>التحميلات</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($customBots as $b): ?>
+          <tr>
+            <td><b><?= e($b['name']) ?></b><div class="muted" style="font-size:13px"><?= e($b['description']) ?></div></td>
+            <td><?= e($b['category']) ?></td>
+            <td><?= e($b['version']) ?></td>
+            <td><?= (int)$b['downloads'] ?></td>
+            <td><?= $b['status'] === 'active' ? '✅ مفعّل' : '⛔ معطّل' ?></td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap">
+              <?php if ($b['file_path']): ?><a class="btn btn-ghost" href="?action=admin_bot_download&id=<?= (int)$b['id'] ?>&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تحميل</a><?php endif; ?>
+              <a class="btn btn-ghost" href="?page=admin&tab=bots&edit=<?= (int)$b['id'] ?>"><?= icon('edit', 'ic-sm') ?>تعديل</a>
+              <form method="post" action="?action=admin_bot_toggle" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?><?= $b['status'] === 'active' ? 'تعطيل' : 'تفعيل' ?></button></form>
+              <form method="post" action="?action=admin_bot_delete" style="display:inline" onsubmit="return confirm('تأكيد الحذف؟')"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-ghost"><?= icon('trash', 'ic-sm') ?>حذف</button></form>
+            </td>
+          </tr>
           <?php endforeach; ?>
         </table>
       </div>
