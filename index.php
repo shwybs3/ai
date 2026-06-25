@@ -255,6 +255,14 @@ function migrate(): void
         expires_at VARCHAR(20) NULL,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS app_reports (
+        id $id,
+        app_id INT NOT NULL,
+        user_id INT NULL,
+        message VARCHAR(500) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'open',
+        created_at $ts
+    )$engine",
     "CREATE TABLE IF NOT EXISTS reviews (
         id $id,
         product_id INT NOT NULL,
@@ -333,6 +341,7 @@ function migrate(): void
         'idx_reviews_product' => ['reviews', 'product_id'],
         'idx_userdownloads_user' => ['user_downloads', 'user_id'],
         'idx_userdownloads_app' => ['user_downloads', 'app_id'],
+        'idx_app_reports_app' => ['app_reports', 'app_id'],
     ];
     foreach ($indexes as $name => [$table, $cols]) {
         try {
@@ -732,6 +741,8 @@ if (setting('moneytag_sw_enabled', '0') === '1' && !is_file(__DIR__ . '/sw.js'))
    2) HELPERS
    ====================================================================== */
 function e($s): string { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
+
+function app_canonical_url(array $a): string { return rtrim(SITE_URL, '/') . '/index.php?page=app&id=' . (int)$a['id']; }
 
 /* ---- Professional inline SVG icon set (no emojis) ---- */
 function wallet_type_label(string $type): array
@@ -1446,11 +1457,20 @@ if ($action && str_starts_with($action, 'api_')) {
     header('Content-Type: application/json; charset=utf-8');
     $u = current_user();
 
-    if (!$u && !in_array($action, ['api_ping'])) {
+    if (!$u && !in_array($action, ['api_ping', 'api_report_app'])) {
         echo json_encode(['ok' => false, 'msg' => 'يجب تسجيل الدخول أولاً.']); exit;
     }
 
     switch ($action) {
+        case 'api_report_app':
+            $appId = (int)($_POST['app_id'] ?? 0);
+            if ($appId <= 0) { echo json_encode(['ok' => false]); exit; }
+            $st = db()->prepare("SELECT id FROM apps WHERE id=?"); $st->execute([$appId]);
+            if (!$st->fetch()) { echo json_encode(['ok' => false]); exit; }
+            db()->prepare("INSERT INTO app_reports (app_id, user_id, message) VALUES (?,?,?)")
+                ->execute([$appId, $u ? $u['id'] : null, 'رابط التحميل لا يعمل']);
+            echo json_encode(['ok' => true]); exit;
+
         case 'api_update_profile':
             csrf_check();
             $newName = trim($_POST['name'] ?? '');
@@ -2054,6 +2074,10 @@ if ($action && str_starts_with($action, 'admin_')) {
             db()->prepare("UPDATE product_suggestions SET status=? WHERE id=?")->execute([$_POST['status'] === 'dismissed' ? 'dismissed' : 'reviewed', (int)$_POST['id']]);
             redirect('?page=admin&tab=suggestions');
 
+        case 'admin_report_decision':
+            db()->prepare("UPDATE app_reports SET status='resolved' WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=reports');
+
         case 'admin_save_settings':
             $redirectTab = preg_replace('/[^a-z_]/', '', $_POST['redirect_tab'] ?? 'settings') ?: 'settings';
             foreach ($_POST as $k => $v) {
@@ -2082,6 +2106,26 @@ if ($action && str_starts_with($action, 'admin_')) {
             if ($_POST['op'] === 'ban') db()->prepare("UPDATE users SET is_banned=1 WHERE id=?")->execute([$uid]);
             if ($_POST['op'] === 'unban') db()->prepare("UPDATE users SET is_banned=0 WHERE id=?")->execute([$uid]);
             redirect('?page=admin&tab=users');
+
+        case 'admin_export_csv':
+            $exportSpecs = [
+                'apps' => ['apps', ['id', 'name', 'kind', 'version', 'category', 'downloads', 'views', 'rating_avg', 'status', 'created_at']],
+                'products' => ['products', ['id', 'name', 'price', 'old_price', 'status', 'created_at']],
+                'orders' => ['orders', ['id', 'user_id', 'product_id', 'price', 'status', 'created_at']],
+                'users' => ['users', ['id', 'name', 'username', 'email', 'role', 'is_banned', 'created_at']],
+            ];
+            $exportType = $_GET['type'] ?? '';
+            if (!isset($exportSpecs[$exportType])) { die('نوع تصدير غير معروف.'); }
+            [$exportTable, $exportCols] = $exportSpecs[$exportType];
+            $rows = db()->query("SELECT " . implode(',', $exportCols) . " FROM $exportTable ORDER BY id DESC")->fetchAll();
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="' . $exportType . '_' . date('Y-m-d') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputs($out, "\xEF\xBB\xBF");
+            fputcsv($out, $exportCols);
+            foreach ($rows as $row) fputcsv($out, $row);
+            fclose($out);
+            exit;
 
         default:
             die('إجراء غير معروف.');
@@ -2117,7 +2161,7 @@ if ($seoApp) {
     $seoTitle = ($seoApp['seo_title'] ?: $seoApp['name']) . ' — تحميل ' . ($seoApp['kind'] === 'game' ? 'لعبة' : 'تطبيق') . ' مجاناً — ' . e($siteName);
     $seoDesc = $seoApp['seo_description'] ?: ($seoApp['short_description'] ?: mb_substr((string)$seoApp['description'], 0, 155));
     $seoImage = $seoApp['icon'] ?: $logo;
-    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=app&id=' . (int)$seoApp['id'];
+    $seoCanonical = app_canonical_url($seoApp);
 } elseif ($seoProduct) {
     $seoTitle = $seoProduct['name'] . ' — ' . e($siteName);
     $seoDesc = $seoProduct['meta_description'] ?: mb_substr((string)$seoProduct['description'], 0, 155);
@@ -3084,6 +3128,16 @@ case 'home':
             </div>
             <?php
         },
+        'trending_apps' => function () {
+            if (setting('trending_apps_enabled', '1') !== '1') return;
+            $apps = db()->query("SELECT * FROM apps WHERE status='published' ORDER BY downloads DESC, views DESC LIMIT 7")->fetchAll();
+            if (!$apps) return; ?>
+            <div class="section-title"><?= icon('rocket', 'ic') ?>الأكثر تحميلاً</div>
+            <div class="grid apps-grid">
+              <?php foreach ($apps as $a): render_app_card($a); endforeach; ?>
+            </div>
+            <?php
+        },
         'soon' => function () { ?>
             <div class="section-title"><?= icon('rocket', 'ic') ?>تطبيقات وألعاب — قريباً</div>
             <div class="grid">
@@ -3189,11 +3243,17 @@ case 'store':
 case 'apps':
     $appsQ = trim($_GET['q'] ?? '');
     $appsKind = $_GET['kind'] ?? '';
+    $appsSort = $_GET['sort'] ?? 'newest';
     $sqlApps = "SELECT * FROM apps WHERE status='published'";
     $argsApps = [];
     if ($appsQ !== '') { $sqlApps .= " AND name LIKE ?"; $argsApps[] = '%' . $appsQ . '%'; }
     if (in_array($appsKind, ['app', 'game'], true)) { $sqlApps .= " AND kind=?"; $argsApps[] = $appsKind; }
-    $sqlApps .= " ORDER BY id DESC";
+    $sqlApps .= match ($appsSort) {
+        'downloads' => " ORDER BY downloads DESC",
+        'rating' => " ORDER BY rating_avg DESC",
+        'name' => " ORDER BY name ASC",
+        default => " ORDER BY id DESC",
+    };
     $st = db()->prepare($sqlApps);
     $st->execute($argsApps);
     $appsList = $st->fetchAll();
@@ -3201,13 +3261,20 @@ case 'apps':
     <div class="section-title"><?= icon('android', 'ic') ?>تطبيقات وألعاب</div>
     <form method="get" action="?" class="search-bar">
       <input type="hidden" name="page" value="apps">
+      <?php if ($appsKind !== ''): ?><input type="hidden" name="kind" value="<?= e($appsKind) ?>"><?php endif; ?>
+      <?php if ($appsSort !== 'newest'): ?><input type="hidden" name="sort" value="<?= e($appsSort) ?>"><?php endif; ?>
       <input type="text" name="q" value="<?= e($appsQ) ?>" placeholder="ابحث عن تطبيق أو لعبة...">
       <button type="submit"><?= icon('search', 'ic-sm') ?></button>
     </form>
     <div class="cat-chips">
-      <a href="?page=apps" class="cat-chip<?= $appsKind === '' ? ' active' : '' ?>"><?= icon('android', 'ic-sm') ?>الكل</a>
-      <a href="?page=apps&kind=app" class="cat-chip<?= $appsKind === 'app' ? ' active' : '' ?>"><?= icon('android', 'ic-sm') ?>تطبيقات</a>
-      <a href="?page=apps&kind=game" class="cat-chip<?= $appsKind === 'game' ? ' active' : '' ?>"><?= icon('rocket', 'ic-sm') ?>ألعاب</a>
+      <a href="?page=apps&sort=<?= e($appsSort) ?><?= $appsQ !== '' ? '&q=' . urlencode($appsQ) : '' ?>" class="cat-chip<?= $appsKind === '' ? ' active' : '' ?>"><?= icon('android', 'ic-sm') ?>الكل</a>
+      <a href="?page=apps&kind=app&sort=<?= e($appsSort) ?><?= $appsQ !== '' ? '&q=' . urlencode($appsQ) : '' ?>" class="cat-chip<?= $appsKind === 'app' ? ' active' : '' ?>"><?= icon('android', 'ic-sm') ?>تطبيقات</a>
+      <a href="?page=apps&kind=game&sort=<?= e($appsSort) ?><?= $appsQ !== '' ? '&q=' . urlencode($appsQ) : '' ?>" class="cat-chip<?= $appsKind === 'game' ? ' active' : '' ?>"><?= icon('rocket', 'ic-sm') ?>ألعاب</a>
+    </div>
+    <div class="cat-chips" style="margin-top:6px">
+      <?php foreach (['newest' => 'الأحدث', 'downloads' => 'الأكثر تحميلاً', 'rating' => 'الأعلى تقييماً', 'name' => 'الاسم (أ-ي)'] as $sk => $sl): ?>
+        <a href="?page=apps&sort=<?= $sk ?><?= $appsKind !== '' ? '&kind=' . e($appsKind) : '' ?><?= $appsQ !== '' ? '&q=' . urlencode($appsQ) : '' ?>" class="cat-chip<?= $appsSort === $sk ? ' active' : '' ?>"><?= icon('chart', 'ic-sm') ?><?= $sl ?></a>
+      <?php endforeach; ?>
     </div>
     <?php if (!$appsList): ?>
       <div class="empty"><?= icon('android', 'ic ic-lg') ?><br>لا توجد نتائج.</div>
@@ -3311,7 +3378,30 @@ case 'app':
         <?php if ($a['developer_website']): ?><div><span>موقع المطوّر</span><strong><a href="<?= e($a['developer_website']) ?>" target="_blank" rel="nofollow noopener"><?= e($a['developer_website']) ?></a></strong></div><?php endif; ?>
         <?php if ($a['privacy_policy_url']): ?><div><span>سياسة الخصوصية</span><strong><a href="<?= e($a['privacy_policy_url']) ?>" target="_blank" rel="nofollow noopener">عرض</a></strong></div><?php endif; ?>
       </div>
+
+      <div class="app-share-row" style="display:flex;gap:10px;margin:16px 0">
+        <button type="button" class="btn btn-ghost" onclick="shareAppLink(this)" data-url="<?= e(app_canonical_url($a)) ?>"><?= icon('send', 'ic-sm') ?>مشاركة</button>
+      </div>
+
+      <?php
+      $relatedSt = db()->prepare("SELECT * FROM apps WHERE status='published' AND id<>? AND (category=? OR kind=?) ORDER BY downloads DESC LIMIT 6");
+      $relatedSt->execute([$a['id'], $a['category'] ?: '__none__', $a['kind']]);
+      $relatedApps = $relatedSt->fetchAll();
+      if ($relatedApps):
+      ?>
+      <div class="section-title"><?= icon('rocket', 'ic') ?>تطبيقات مشابهة</div>
+      <div class="grid apps-grid">
+        <?php foreach ($relatedApps as $ra) render_app_card($ra); ?>
+      </div>
+      <?php endif; ?>
     </div>
+    <script>
+    function shareAppLink(btn) {
+      var url = btn.getAttribute('data-url');
+      if (navigator.share) { navigator.share({ url: url }).catch(function(){}); return; }
+      if (navigator.clipboard) { navigator.clipboard.writeText(url).then(function(){ btn.textContent = 'تم نسخ الرابط'; }); }
+    }
+    </script>
     <?php
     break;
 
@@ -3356,9 +3446,18 @@ case 'app_download':
           <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads'] + 1) ?> تحميل</span>
         </div>
         <a href="?page=app&id=<?= (int)$a['id'] ?>" class="back-link"><?= icon('check', 'ic-sm') ?>عودة لصفحة التطبيق</a>
+        <button type="button" class="back-link" style="border:0;background:none;cursor:pointer" onclick="reportBrokenLink(<?= (int)$a['id'] ?>,this)"><?= icon('megaphone', 'ic-sm') ?>الرابط لا يعمل؟ إبلاغ</button>
       </div>
     </div>
     <script>
+    function reportBrokenLink(appId, btn) {
+      btn.disabled = true;
+      var fd = new FormData(); fd.append('app_id', appId);
+      fetch('?action=api_report_app', { method: 'POST', body: fd })
+        .then(function(r){ return r.json(); })
+        .then(function(d){ btn.textContent = d.ok ? 'تم إرسال البلاغ، شكراً لك' : 'حدث خطأ، حاول لاحقاً'; })
+        .catch(function(){ btn.textContent = 'حدث خطأ، حاول لاحقاً'; });
+    }
     (function(){
       var el = document.getElementById('dlCountdown');
       if (!el) return;
@@ -3601,7 +3700,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -3756,6 +3855,7 @@ case 'admin':
         </form>
       </div>
       <div class="admin-box">
+        <div style="text-align:left;margin-bottom:10px"><a class="btn btn-ghost" href="?action=admin_export_csv&type=apps&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تصدير CSV</a></div>
         <table>
           <tr><th>الأيقونة</th><th>الاسم</th><th>النوع</th><th>الحالة</th><th>المشاهدات</th><th>التحميلات</th><th></th></tr>
           <?php foreach ($apps as $a): ?>
@@ -3877,6 +3977,7 @@ case 'admin':
         </form>
       </div>
       <div class="admin-box">
+        <div style="text-align:left;margin-bottom:10px"><a class="btn btn-ghost" href="?action=admin_export_csv&type=products&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تصدير CSV</a></div>
         <table>
           <tr><th>الأيقونة</th><th>المنتج</th><th>السعر</th><th>الوسم</th><th></th></tr>
           <?php foreach ($products as $p): ?>
@@ -3917,6 +4018,7 @@ case 'admin':
         $orders = db()->query("SELECT o.*, u.name uname, p.name pname FROM orders o JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id ORDER BY o.id DESC")->fetchAll();
     ?>
       <div class="admin-box">
+        <div style="text-align:left;margin-bottom:10px"><a class="btn btn-ghost" href="?action=admin_export_csv&type=orders&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تصدير CSV</a></div>
         <table>
           <tr><th>المستخدم</th><th>المنتج</th><th>السعر</th><th>الآيدي</th><th>الإيصال</th><th>رقم العملية</th><th>الحالة</th><th>إجراء</th></tr>
           <?php foreach ($orders as $o): ?>
@@ -4053,6 +4155,8 @@ case 'admin':
             'carousel' => 'البنرات الدوارة',
             'ticker' => 'الشريط الإعلاني المتحرك',
             'live_ticker' => 'شريط أحدث التطبيقات والألعاب المباشر',
+            'latest_apps' => 'أحدث التطبيقات والألعاب',
+            'trending_apps' => 'الأكثر تحميلاً',
             'products' => 'شبكة المنتجات حسب التصنيف',
             'soon' => 'قسم "قريباً"',
         ];
@@ -4161,6 +4265,7 @@ case 'admin':
         $users = db()->query("SELECT * FROM users ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
+        <div style="text-align:left;margin-bottom:10px"><a class="btn btn-ghost" href="?action=admin_export_csv&type=users&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تصدير CSV</a></div>
         <table>
           <tr><th>الاسم</th><th>البريد</th><th>الدور</th><th>الحالة</th><th>إجراء</th></tr>
           <?php foreach ($users as $u): ?>
@@ -4192,6 +4297,25 @@ case 'admin':
               <form method="post" action="?action=admin_suggestion_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$s['id'] ?>"><input type="hidden" name="status" value="reviewed"><button class="btn btn-ghost">تمت المراجعة</button></form>
               <form method="post" action="?action=admin_suggestion_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$s['id'] ?>"><input type="hidden" name="status" value="dismissed"><button class="btn btn-ghost">رفض</button></form>
             </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'reports'):
+        $appReports = db()->query("SELECT r.*, a.name AS app_name FROM app_reports r LEFT JOIN apps a ON a.id=r.app_id WHERE r.status='open' ORDER BY r.id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('megaphone', 'ic') ?>بلاغات روابط تحميل لا تعمل</h3>
+        <?php if (!$appReports): ?><div class="empty">لا توجد بلاغات مفتوحة حالياً.</div><?php endif; ?>
+        <table>
+          <tr><th>التطبيق</th><th>الرسالة</th><th>الوقت</th><th>إجراء</th></tr>
+          <?php foreach ($appReports as $r): ?>
+          <tr>
+            <td><?= $r['app_name'] ? '<a href="?page=admin&tab=apps">' . e($r['app_name']) . '</a>' : 'تطبيق محذوف' ?></td>
+            <td><?= e($r['message']) ?></td>
+            <td><?= e($r['created_at']) ?></td>
+            <td><form method="post" action="?action=admin_report_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>"><button class="btn btn-ghost">تم الحل</button></form></td>
           </tr>
           <?php endforeach; ?>
         </table>
