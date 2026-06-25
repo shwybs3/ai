@@ -923,6 +923,19 @@ function set_setting(string $k, $v): void
 function bot_token(): string { return setting('bot_token') ?: (defined('BOT_TOKEN') ? BOT_TOKEN : ''); }
 function owner_id(): string { return setting('owner_id') ?: (defined('OWNER_ID') ? (string)OWNER_ID : ''); }
 
+/** يرسل إشعار تيليجرام مباشر لمستخدم مرتبط بحسابه عبر تيليجرام (مثل تحديث حالة طلب). */
+function tg_notify_user(string $chatId, string $text): void
+{
+    if (!$chatId) return;
+    $token = bot_token();
+    if (!$token) return;
+    http_post_json("https://api.telegram.org/bot$token/sendMessage", [
+        'chat_id' => $chatId,
+        'text' => $text,
+        'parse_mode' => 'HTML',
+    ]);
+}
+
 function log_activity(int $adminId, string $adminName, string $field, string $filename, string $url): void
 {
     db()->prepare("INSERT INTO activity_log (admin_id, admin_name, field, filename, url) VALUES (?,?,?,?,?)")
@@ -2119,6 +2132,16 @@ if ($action && str_starts_with($action, 'admin_')) {
         case 'admin_order_decision':
             $oid = (int)$_POST['id']; $dec = $_POST['decision'] === 'approve' ? 'approved' : 'rejected';
             db()->prepare("UPDATE orders SET status=?, admin_note=? WHERE id=?")->execute([$dec, $_POST['note'] ?? '', $oid]);
+            $orderInfo = db()->prepare("SELECT u.telegram_id, p.name pname FROM orders o JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id WHERE o.id=?");
+            $orderInfo->execute([$oid]);
+            if ($oi = $orderInfo->fetch()) {
+                if (!empty($oi['telegram_id'])) {
+                    $msg = $dec === 'approved'
+                        ? "✅ تم قبول طلبك على منتج «" . e($oi['pname']) . "» بنجاح."
+                        : "❌ تم رفض طلبك على منتج «" . e($oi['pname']) . "»" . (!empty($_POST['note']) ? ("\nسبب: " . e($_POST['note'])) : '') . ".";
+                    tg_notify_user($oi['telegram_id'], $msg);
+                }
+            }
             flash('تم تحديث حالة الطلب.');
             redirect('?page=admin&tab=orders');
 
@@ -3390,6 +3413,46 @@ case 'product':
         <button class="btn btn-primary buy" style="width:100%" onclick="buyProduct(<?= (int)$p['id'] ?>)"><?= icon('cart', 'ic-sm') ?>طلب شراء</button>
       </div>
     </div>
+    <?php
+    $pReviews = db()->prepare("SELECT r.*, u.name uname FROM reviews r JOIN users u ON u.id=r.user_id WHERE r.product_id=? ORDER BY r.id DESC");
+    $pReviews->execute([(int)$p['id']]);
+    $pReviews = $pReviews->fetchAll();
+    $pAvgRating = $pReviews ? round(array_sum(array_column($pReviews, 'rating')) / count($pReviews), 1) : 0;
+    ?>
+    <div class="section-title"><?= icon('star', 'ic') ?>تقييمات المنتج<?php if ($pReviews): ?> (<?= $pAvgRating ?>/5 — <?= count($pReviews) ?> تقييم)<?php endif; ?></div>
+    <?php if ($user): ?>
+    <div class="admin-box" style="margin-bottom:14px">
+      <form id="reviewForm" class="formrow" onsubmit="return submitReview(event, <?= (int)$p['id'] ?>)">
+        <select name="rating" required>
+          <option value="">التقييم</option>
+          <?php for ($i = 5; $i >= 1; $i--): ?><option value="<?= $i ?>"><?= $i ?> ⭐</option><?php endfor; ?>
+        </select>
+        <input name="comment" placeholder="رأيك بالمنتج (اختياري)" maxlength="500">
+        <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>إرسال التقييم</button>
+      </form>
+      <div id="reviewMsg" style="font-size:13px;margin-top:6px"></div>
+    </div>
+    <?php endif; ?>
+    <?php if (!$pReviews): ?>
+      <div class="empty"><?= icon('star', 'ic ic-lg') ?><br>لا توجد تقييمات بعد.</div>
+    <?php else: foreach ($pReviews as $rv): ?>
+      <div class="admin-box" style="margin-bottom:8px;padding:12px 14px">
+        <div style="display:flex;justify-content:space-between;font-size:13px"><strong><?= e($rv['uname']) ?></strong><span><?= str_repeat('⭐', (int)$rv['rating']) ?></span></div>
+        <?php if ($rv['comment']): ?><p style="margin:6px 0 0;font-size:13px;color:var(--muted)"><?= nl2br(e($rv['comment'])) ?></p><?php endif; ?>
+      </div>
+    <?php endforeach; endif; ?>
+    <script>
+    function submitReview(ev, productId) {
+      ev.preventDefault();
+      const d = new FormData(ev.target);
+      d.append('product_id', productId);
+      post('api_submit_review', d).then(res => {
+        document.getElementById('reviewMsg').textContent = res.msg || '';
+        if (res.ok) setTimeout(() => location.reload(), 900);
+      });
+      return false;
+    }
+    </script>
     <?php
     break;
 
