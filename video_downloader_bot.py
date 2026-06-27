@@ -9,7 +9,7 @@ import sys, io
 sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding='utf-8', errors='replace')
 sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding='utf-8', errors='replace')
 
-import os, subprocess, json, sqlite3, asyncio, re
+import os, subprocess, json, sqlite3, asyncio, re, shutil, uuid
 from datetime import datetime, date
 from pathlib import Path
 from urllib.parse import urlparse
@@ -198,7 +198,8 @@ class BroadcastAds(StatesGroup):
     message = State()
 
 class Settings(StatesGroup):
-    channel = State()
+    channel    = State()
+    custom_btn = State()
 
 # ═══════════════════════════════════════════════════════════
 #  أزرار لوحة الإدارة
@@ -227,6 +228,7 @@ def back_kb():
 def settings_kb():
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text="✏️ تغيير قناة الاشتراك", callback_data="change_channel")],
+        [InlineKeyboardButton(text="🔗 تغيير زر القناة/الرابط", callback_data="change_custom_btn")],
         [InlineKeyboardButton(text="↩️ رجوع للوحة", callback_data="back_panel")]
     ])
 
@@ -320,6 +322,70 @@ async def download_video(url: str, output_path: str = "downloads"):
             "success": False,
             "error": str(e)
         }
+
+FFMPEG_AVAILABLE = shutil.which("ffmpeg") is not None
+
+async def download_audio(url: str, output_path: str = "downloads"):
+    """استخراج الصوت كـ MP3 من رابط الفيديو"""
+    try:
+        os.makedirs(output_path, exist_ok=True)
+
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'outtmpl': os.path.join(output_path, '%(id)s.%(ext)s'),
+            'noplaylist': True,
+            'quiet': True,
+            'no_warnings': True,
+            'socket_timeout': 30,
+            'postprocessors': [{
+                'key': 'FFmpegExtractAudio',
+                'preferredcodec': 'mp3',
+                'preferredquality': '192',
+            }],
+        }
+
+        loop = asyncio.get_event_loop()
+
+        def run():
+            with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+                info = ydl.extract_info(url, download=True)
+                filename = ydl.prepare_filename(info)
+                mp3_path = os.path.splitext(filename)[0] + ".mp3"
+                return info, mp3_path
+
+        info, mp3_path = await loop.run_in_executor(None, run)
+
+        return {
+            "success": True,
+            "filename": mp3_path,
+            "title": info.get("title", "Audio")
+        }
+    except Exception as e:
+        return {
+            "success": False,
+            "error": str(e)
+        }
+
+# تخزين مؤقت لربط رابط الفيديو بزر "تحميل MP3" بعد كل تحميل ناجح
+pending_downloads: dict[str, str] = {}
+
+def store_pending_url(url: str) -> str:
+    if len(pending_downloads) > 1000:
+        for old_key in list(pending_downloads.keys())[:200]:
+            pending_downloads.pop(old_key, None)
+    req_id = uuid.uuid4().hex[:12]
+    pending_downloads[req_id] = url
+    return req_id
+
+def result_kb(req_id: str, cfg: dict) -> InlineKeyboardMarkup:
+    rows = []
+    if FFMPEG_AVAILABLE:
+        rows.append([InlineKeyboardButton(text="🎵 تحميل MP3", callback_data=f"mp3:{req_id}")])
+    btn_text = cfg.get("custom_btn_text")
+    btn_url = cfg.get("custom_btn_url")
+    if btn_text and btn_url:
+        rows.append([InlineKeyboardButton(text=btn_text, url=btn_url)])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 # ═══════════════════════════════════════════════════════════
 #  وظائف الإدارة
@@ -467,13 +533,16 @@ async def process_download(bot: Bot, chat_id: int, user_id: int, url: str):
             f"📄 {title[:50]}\n"
             f"📦 {filesize}"
         )
+        cfg = load_config()
+        req_id = store_pending_url(url)
+        kb = result_kb(req_id, cfg)
         try:
             file = FSInputFile(filename)
             ext = os.path.splitext(filename)[1].lower()
             if ext in {".mp4", ".mkv", ".webm", ".mov"}:
-                await bot.send_video(chat_id, file, caption=caption, parse_mode="HTML")
+                await bot.send_video(chat_id, file, caption=caption, parse_mode="HTML", reply_markup=kb)
             else:
-                await bot.send_document(chat_id, file, caption=caption, parse_mode="HTML")
+                await bot.send_document(chat_id, file, caption=caption, parse_mode="HTML", reply_markup=kb)
 
             record_download(user_id, platform, url, title, filesize, status="success")
             await wait_msg.delete()
@@ -496,12 +565,9 @@ async def process_download(bot: Bot, chat_id: int, user_id: int, url: str):
         )
 
 # ─── التعامل مع الروابط ─────────────────────────────────────
-@router.message(StateFilter(None), F.text)
+@router.message(StateFilter(None), F.text, ~F.text.startswith("/"))
 async def handle_url(message: Message, state: FSMContext, bot: Bot):
     cfg = load_config()
-
-    if is_admin(message.from_user.id, cfg):
-        return  # سيعالجه أمر /admin
 
     match = re.search(r"https?://\S+", message.text.strip())
     if not match:
@@ -518,7 +584,7 @@ async def handle_url(message: Message, state: FSMContext, bot: Bot):
     downloads_count = user_row[5] if user_row else 0
     channel = cfg.get("channel")
 
-    if downloads_count >= 1 and channel:
+    if not is_admin(user_id, cfg) and downloads_count >= 1 and channel:
         subscribed = await check_subscription(bot, user_id, channel)
         if not subscribed:
             await state.update_data(pending_url=url)
@@ -529,6 +595,40 @@ async def handle_url(message: Message, state: FSMContext, bot: Bot):
             )
 
     await process_download(bot, message.chat.id, user_id, url)
+
+@router.callback_query(F.data.startswith("mp3:"))
+async def send_mp3(call: CallbackQuery, bot: Bot):
+    req_id = call.data.split(":", 1)[1]
+    url = pending_downloads.get(req_id)
+
+    if not url:
+        return await call.answer("⚠️ انتهت صلاحية الطلب، أعد إرسال رابط الفيديو من جديد.", show_alert=True)
+    if not FFMPEG_AVAILABLE:
+        return await call.answer("⚠️ خاصية MP3 غير مفعّلة على السيرفر (ffmpeg غير مثبت).", show_alert=True)
+
+    await call.answer("⏳ جاري تحويل الصوت...")
+    wait_msg = await call.message.answer("🎵 <b>جاري استخراج الصوت...</b>", parse_mode="HTML")
+
+    result = await download_audio(url)
+    if result["success"]:
+        filename = result["filename"]
+        try:
+            file = FSInputFile(filename)
+            await call.message.answer_audio(
+                file,
+                caption=f"🎵 {result['title'][:50]}",
+                parse_mode="HTML"
+            )
+            await wait_msg.delete()
+        except Exception as e:
+            await wait_msg.edit_text(f"❌ <b>خطأ في الإرسال!</b>\n\n<i>{str(e)[:100]}</i>", parse_mode="HTML")
+        finally:
+            try:
+                os.remove(filename)
+            except Exception:
+                pass
+    else:
+        await wait_msg.edit_text(f"❌ <b>فشل استخراج الصوت!</b>\n\n<i>{result['error'][:100]}</i>", parse_mode="HTML")
 
 @router.callback_query(F.data == "check_sub")
 async def check_sub_cb(call: CallbackQuery, state: FSMContext, bot: Bot):
@@ -694,10 +794,14 @@ async def show_settings(call: CallbackQuery):
         return await call.answer("⛔ غير مصرح", show_alert=True)
 
     channel = cfg.get("channel") or "غير محددة (الاشتراك الإجباري معطل)"
+    btn_text = cfg.get("custom_btn_text")
+    btn_url = cfg.get("custom_btn_url")
+    custom_btn = f"{btn_text} → {btn_url}" if btn_text and btn_url else "غير مفعّل"
     text = (
         f"⚙️ <b>الإعدادات</b>\n"
         f"━━━━━━━━━━━━━━━━━━━━━\n"
         f"📢 <b>قناة الاشتراك الإجباري:</b> {channel}\n"
+        f"🔗 <b>زر القناة/الرابط أسفل كل فيديو:</b> {custom_btn}\n"
         f"👑 <b>الأدمن:</b> <code>{cfg.get('admin_id')}</code>\n"
     )
     await call.message.edit_text(text, parse_mode="HTML", reply_markup=settings_kb())
@@ -734,6 +838,48 @@ async def change_channel_set(message: Message, state: FSMContext):
     save_config(cfg)
     await state.clear()
     await message.answer(f"✅ تم تحديث قناة الاشتراك إلى {text}", parse_mode="HTML", reply_markup=back_kb())
+
+@router.callback_query(F.data == "change_custom_btn")
+async def change_custom_btn_start(call: CallbackQuery, state: FSMContext):
+    cfg = load_config()
+    if not is_admin(call.from_user.id, cfg):
+        return await call.answer("⛔ غير مصرح", show_alert=True)
+
+    await state.set_state(Settings.custom_btn)
+    await call.message.edit_text(
+        "🔗 أرسل النص والرابط بالشكل التالي (مفصولين بـ |):\n\n"
+        "<code>📢 قناتنا|https://t.me/YourChannel</code>\n\n"
+        "هذا الزر سيظهر أسفل كل فيديو يحمّله المستخدمون.\n"
+        "أو أرسل <b>تعطيل</b> لإخفاء الزر.",
+        parse_mode="HTML"
+    )
+    await call.answer()
+
+@router.message(Settings.custom_btn)
+async def change_custom_btn_set(message: Message, state: FSMContext):
+    text = message.text.strip()
+    cfg = load_config()
+
+    if text in ("تعطيل", "disable"):
+        cfg["custom_btn_text"] = None
+        cfg["custom_btn_url"] = None
+        save_config(cfg)
+        await state.clear()
+        return await message.answer("✅ تم إخفاء الزر.", parse_mode="HTML", reply_markup=back_kb())
+
+    if "|" not in text:
+        return await message.answer("❌ الصيغة غير صحيحة، استخدم: النص|الرابط (مثال: 📢 قناتنا|https://t.me/Channel)")
+
+    btn_text, btn_url = text.split("|", 1)
+    btn_text, btn_url = btn_text.strip(), btn_url.strip()
+    if not btn_url.startswith("http"):
+        return await message.answer("❌ الرابط يجب أن يبدأ بـ http:// أو https://")
+
+    cfg["custom_btn_text"] = btn_text
+    cfg["custom_btn_url"] = btn_url
+    save_config(cfg)
+    await state.clear()
+    await message.answer(f"✅ تم تحديث الزر: {btn_text} → {btn_url}", parse_mode="HTML", reply_markup=back_kb())
 
 # ─── نشر الإعلانات ─────────────────────────────────────────
 @router.callback_query(F.data == "broadcast_ads")
@@ -894,6 +1040,10 @@ async def main():
     print(f"👑 الأدمن: {admin_id}")
     print(f"📢 قناة الاشتراك: {cfg.get('channel') or 'غير محددة'}")
     print(f"🗄 قاعدة البيانات: {DB_FILE}")
+    if FFMPEG_AVAILABLE:
+        print("🎵 ffmpeg متوفر: زر تحميل MP3 مفعّل")
+    else:
+        print("⚠️ ffmpeg غير مثبت: زر تحميل MP3 سيكون مخفياً (ثبّته عبر: apt install ffmpeg)")
 
     bot = Bot(token=token)
     dp = Dispatcher(storage=MemoryStorage())
