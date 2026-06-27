@@ -388,7 +388,7 @@ async def download_audio(url: str, output_path: str = "downloads"):
         }
 
 # تخزين مؤقت لربط رابط الفيديو بزر "تحميل MP3" بعد كل تحميل ناجح
-pending_downloads: dict[str, str] = {}
+pending_downloads = {}
 
 def store_pending_url(url: str) -> str:
     if len(pending_downloads) > 1000:
