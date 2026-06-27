@@ -366,6 +366,8 @@ function migrate(): void
     add_column_if_missing($pdo, 'users', 'last_spin_date', 'VARCHAR(10) NULL');
     add_column_if_missing($pdo, 'users', 'signup_fingerprint', 'VARCHAR(64) NULL');
     add_column_if_missing($pdo, 'users', 'referral_bonus_given', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'email_verified', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'email_verify_token', 'VARCHAR(64) NULL');
     add_column_if_missing($pdo, 'apps', 'likes_count', 'INT NOT NULL DEFAULT 0');
     add_column_if_missing($pdo, 'apps', 'dislikes_count', 'INT NOT NULL DEFAULT 0');
     add_column_if_missing($pdo, 'apps', 'source', "VARCHAR(20) NULL");
@@ -475,13 +477,30 @@ function migrate(): void
         'telegram_bot_username' => '',
         'banner_interval' => '4000',
         'banner_height' => '160',
-        'home_sections_order' => 'search,carousel,ticker,live_ticker,latest_apps,cat_chips',
+        'home_sections_order' => 'search,apk_promo,carousel,ticker,live_ticker,latest_apps,cat_chips',
         'home_sections_hidden' => 'hero',
         'banner_carousel_enabled' => '1',
         'news_ticker_enabled' => '1',
         'telegram_import_enabled' => '0',
         'telegram_import_channel_id' => '',
         'telegram_import_auto_publish' => '0',
+        'apk_download_url' => '',
+        'apk_banner_image' => '',
+        'apk_logo_image' => '',
+        'apk_promo_title' => 'حمّل تطبيقنا الآن',
+        'apk_promo_subtitle' => 'تجربة أسرع وأسهل، تحميل مباشر بدون متصفح',
+        'ad_header_code' => '',
+        'ad_footer_code' => '',
+        'mail_enabled' => '0',
+        'smtp_host' => '',
+        'smtp_port' => '587',
+        'smtp_user' => '',
+        'smtp_pass' => '',
+        'smtp_secure' => 'tls',
+        'mail_from_email' => '',
+        'mail_from_name' => '',
+        'email_verify_required' => '0',
+        'google_review_url' => '',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -524,6 +543,26 @@ function migrate(): void
         $pdo->prepare(DB_DRIVER === 'sqlite'
             ? "INSERT INTO settings (k, v) VALUES ('home_apps_first_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
             : "INSERT INTO settings (k, v) VALUES ('home_apps_first_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: إضافة قسم بنر تحميل التطبيق (apk_promo) للرئيسية على المواقع التي تعمل مسبقاً.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='apk_promo_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_filter(array_map('trim', explode(',', $order)));
+        if (!in_array('apk_promo', $orderParts, true)) {
+            $pos = array_search('search', $orderParts, true);
+            if ($pos !== false) array_splice($orderParts, $pos + 1, 0, ['apk_promo']);
+            else array_unshift($orderParts, 'apk_promo');
+        }
+        $newOrder = implode(',', $orderParts);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v = ?"
+            : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v = ?")
+            ->execute([$newOrder, $newOrder]);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('apk_promo_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('apk_promo_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
             ->execute();
     }
 
@@ -1266,6 +1305,58 @@ function http_get(string $url): array
     return ['body' => $body, 'error' => $err, 'code' => $code];
 }
 
+function smtp_send_mail(string $to, string $subject, string $bodyHtml): array
+{
+    if (setting('mail_enabled') !== '1') return ['ok' => false, 'msg' => 'إرسال البريد غير مفعّل من الإعدادات.'];
+    $host = setting('smtp_host');
+    $port = (int)setting('smtp_port', '587');
+    $user = setting('smtp_user');
+    $pass = setting('smtp_pass');
+    $secure = setting('smtp_secure', 'tls');
+    $fromEmail = setting('mail_from_email') ?: $user;
+    $fromName = setting('mail_from_name') ?: setting('site_name', 'الموقع');
+    if (!$host || !$user || !$pass || !$fromEmail) return ['ok' => false, 'msg' => 'إعدادات SMTP غير مكتملة من لوحة الإدارة.'];
+
+    $errno = 0; $errstr = '';
+    $transport = $secure === 'ssl' ? 'ssl://' : '';
+    $fp = @fsockopen($transport . $host, $port, $errno, $errstr, 15);
+    if (!$fp) return ['ok' => false, 'msg' => "فشل الاتصال بخادم SMTP: $errstr"];
+    stream_set_timeout($fp, 15);
+    $readLine = function () use ($fp) {
+        $data = '';
+        while (($str = fgets($fp, 515)) !== false) { $data .= $str; if (isset($str[3]) && $str[3] === ' ') break; }
+        return $data;
+    };
+    $write = function (string $cmd) use ($fp) { fwrite($fp, $cmd . "\r\n"); };
+    $codeOf = function (string $resp): int { return (int)substr($resp, 0, 3); };
+    $heloHost = defined('SITE_URL') ? (parse_url(SITE_URL, PHP_URL_HOST) ?: 'localhost') : 'localhost';
+
+    $readLine();
+    $write('EHLO ' . $heloHost); $resp = $readLine();
+    if ($secure === 'tls') {
+        $write('STARTTLS'); $resp = $readLine();
+        if ($codeOf($resp) !== 220) { fclose($fp); return ['ok' => false, 'msg' => 'فشل STARTTLS: ' . trim($resp)]; }
+        if (!stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) { fclose($fp); return ['ok' => false, 'msg' => 'فشل تفعيل التشفير TLS.']; }
+        $write('EHLO ' . $heloHost); $resp = $readLine();
+    }
+    $write('AUTH LOGIN'); $readLine();
+    $write(base64_encode($user)); $readLine();
+    $write(base64_encode($pass)); $resp = $readLine();
+    if ($codeOf($resp) !== 235) { fclose($fp); return ['ok' => false, 'msg' => 'فشل تسجيل الدخول SMTP (تحقق من بيانات الاعتماد): ' . trim($resp)]; }
+    $write('MAIL FROM:<' . $fromEmail . '>'); $readLine();
+    $write('RCPT TO:<' . $to . '>'); $resp = $readLine();
+    if ($codeOf($resp) !== 250 && $codeOf($resp) !== 251) { fclose($fp); return ['ok' => false, 'msg' => 'البريد المستلم مرفوض: ' . trim($resp)]; }
+    $write('DATA'); $readLine();
+    $headers = "From: " . mb_encode_mimeheader($fromName, 'UTF-8') . " <$fromEmail>\r\n"
+        . "To: <$to>\r\nSubject: " . mb_encode_mimeheader($subject, 'UTF-8') . "\r\n"
+        . "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n";
+    $write($headers . "\r\n" . str_replace("\r\n.", "\r\n..", $bodyHtml) . "\r\n.");
+    $resp = $readLine();
+    $write('QUIT'); fclose($fp);
+    if ($codeOf($resp) !== 250) return ['ok' => false, 'msg' => 'فشل إرسال الرسالة: ' . trim($resp)];
+    return ['ok' => true, 'msg' => 'تم الإرسال بنجاح'];
+}
+
 function http_post_json(string $url, array $payload, array $headers = [], int $timeout = 30): array
 {
     $ch = curl_init($url);
@@ -1445,11 +1536,22 @@ function handle_register(): void
         $ref = $st->fetch();
         if ($ref) $referredBy = (int)$ref['id'];
     }
-    db()->prepare("INSERT INTO users (username, email, password_hash, name, role, referral_code, referred_by, signup_fingerprint) VALUES (?,?,?,?,?,?,?,?)")
-        ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role, $refCode, $referredBy, $fingerprint]);
+    $verifyToken = bin2hex(random_bytes(32));
+    db()->prepare("INSERT INTO users (username, email, password_hash, name, role, referral_code, referred_by, signup_fingerprint, email_verify_token) VALUES (?,?,?,?,?,?,?,?,?)")
+        ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role, $refCode, $referredBy, $fingerprint, $verifyToken]);
     $uid = db()->lastInsertId();
     unset($_SESSION['ref_code']);
     $_SESSION['uid'] = $uid;
+    try {
+        if (setting('mail_enabled') === '1') {
+            $verifyLink = (defined('SITE_URL') ? SITE_URL : '') . '?action=verify_email&token=' . $verifyToken;
+            $siteName = setting('site_name', 'الموقع');
+            $body = '<div dir="rtl" style="font-family:Tahoma,Arial,sans-serif"><h2>مرحباً ' . e($username) . '</h2>'
+                . '<p>شكراً لتسجيلك في ' . e($siteName) . '. يرجى تأكيد بريدك الإلكتروني بالضغط على الرابط التالي:</p>'
+                . '<p><a href="' . e($verifyLink) . '">تأكيد البريد الإلكتروني</a></p></div>';
+            smtp_send_mail($email, 'تأكيد بريدك الإلكتروني - ' . $siteName, $body);
+        }
+    } catch (Throwable $e) {}
     redirect('?');
 }
 
@@ -1476,6 +1578,9 @@ function handle_login(): void
         flash('بيانات الدخول غير صحيحة.', 'error'); redirect('?');
     }
     if ($u['is_banned']) { flash('هذا الحساب محظور.', 'error'); redirect('?'); }
+    if (setting('email_verify_required') === '1' && (int)($u['email_verified'] ?? 0) !== 1) {
+        flash('يرجى تأكيد بريدك الإلكتروني أولاً، تحقق من بريدك الوارد.', 'error'); redirect('?');
+    }
 
     record_login_attempt($identity, $ip, true);
     $role = ($u['email'] === ADMIN_EMAIL) ? 'admin' : $u['role'];
@@ -1509,6 +1614,22 @@ if ($action === 'google_callback') {
 if ($action === 'telegram_login') { telegram_handle_login(); exit; }
 
 if ($action === 'register') { handle_register(); exit; }
+
+if ($action === 'verify_email') {
+    $token = $_GET['token'] ?? '';
+    if ($token) {
+        $st = db()->prepare("SELECT id FROM users WHERE email_verify_token = ?");
+        $st->execute([$token]);
+        $vu = $st->fetch();
+        if ($vu) {
+            db()->prepare("UPDATE users SET email_verified=1, email_verify_token=NULL WHERE id=?")->execute([$vu['id']]);
+            flash('تم تأكيد بريدك الإلكتروني بنجاح.', 'success');
+        } else {
+            flash('رابط التأكيد غير صالح أو تم استخدامه مسبقاً.', 'error');
+        }
+    }
+    redirect('?');
+}
 if ($action === 'login') { handle_login(); exit; }
 
 if ($action === 'logout') { logout(); redirect('?'); }
@@ -1529,6 +1650,21 @@ if ($action === 'robots') {
 if ($action === 'ads_txt') {
     header('Content-Type: text/plain; charset=utf-8');
     echo setting('ads_txt_content', '');
+    exit;
+}
+
+if ($action === 'webmanifest') {
+    header('Content-Type: application/manifest+json; charset=utf-8');
+    $logoUrl = setting('logo_url') ?: setting('apk_logo_image');
+    echo json_encode([
+        'name' => setting('site_name', 'الموقع'),
+        'short_name' => setting('site_name', 'الموقع'),
+        'start_url' => '/',
+        'display' => 'standalone',
+        'background_color' => '#0d1117',
+        'theme_color' => setting('theme_accent_color', '#2563eb'),
+        'icons' => $logoUrl ? [['src' => $logoUrl, 'sizes' => '512x512', 'type' => 'image/png']] : [],
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     exit;
 }
 
@@ -1930,6 +2066,41 @@ if ($action === 'admin_test_openrouter') {
     $r = openrouter_chat('قل "تم الاتصال بنجاح" فقط بدون أي إضافات.');
     if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
     echo json_encode(['ok' => true, 'msg' => 'الاتصال يعمل بنجاح: ' . trim($r['text'])]);
+    exit;
+}
+
+if ($action === 'admin_test_smtp') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $to = trim($_POST['to'] ?? ADMIN_EMAIL);
+    $r = smtp_send_mail($to, 'رسالة اختبار - ' . setting('site_name', 'الموقع'), '<p dir="rtl" style="font-family:Tahoma">تم الاتصال بخادم SMTP بنجاح. هذه رسالة اختبار.</p>');
+    echo json_encode($r['ok'] ? ['ok' => true, 'msg' => 'تم إرسال رسالة اختبار بنجاح إلى ' . $to] : ['ok' => false, 'msg' => $r['msg']]);
+    exit;
+}
+
+if ($action === 'admin_send_campaign') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    set_time_limit(280);
+    $type = $_POST['type'] ?? 'promo';
+    $subject = trim($_POST['subject'] ?? '');
+    $bodyHtml = trim($_POST['body'] ?? '');
+    if ($type === 'review') {
+        $reviewUrl = setting('google_review_url');
+        if (!$reviewUrl) { echo json_encode(['ok' => false, 'msg' => 'يرجى ضبط رابط تقييم Google من الإعدادات أولاً.']); exit; }
+        $subject = $subject ?: 'رأيك يهمنا - شاركنا تقييمك';
+        $bodyHtml = $bodyHtml ?: ('<p dir="rtl" style="font-family:Tahoma">شكراً لاستخدامك ' . e(setting('site_name', 'الموقع')) . '! نسعد كثيراً لو شاركت تجربتك الحقيقية معنا بتقييم على جوجل:</p><p><a href="' . e($reviewUrl) . '">اضغط هنا لإضافة تقييمك</a></p>');
+    }
+    if (!$subject || !$bodyHtml) { echo json_encode(['ok' => false, 'msg' => 'يرجى تعبئة عنوان ومحتوى الرسالة.']); exit; }
+    $rows = db()->query("SELECT email FROM users WHERE email IS NOT NULL AND email <> '' AND is_banned = 0")->fetchAll();
+    $sent = 0; $failed = 0; $lastErr = '';
+    foreach ($rows as $row) {
+        $r = smtp_send_mail($row['email'], $subject, $bodyHtml);
+        if ($r['ok']) $sent++; else { $failed++; $lastErr = $r['msg']; }
+    }
+    echo json_encode(['ok' => true, 'msg' => "تم الإرسال إلى $sent مستخدم" . ($failed ? "، وفشل الإرسال إلى $failed (آخر خطأ: $lastErr)" : '.')]);
     exit;
 }
 
@@ -2350,6 +2521,7 @@ if ($action && str_starts_with($action, 'admin_')) {
             foreach ($_POST as $k => $v) {
                 if ($k === 'action' || $k === 'csrf' || $k === 'redirect_tab') continue;
                 if ($k === 'bot_token' && $v === '') continue; // حقل التوكن لا يُفرَّغ إذا تُرك خالياً
+                if ($k === 'smtp_pass' && $v === '') continue; // كلمة مرور SMTP لا تُفرَّغ إذا تُركت خالية
                 set_setting($k, $v);
             }
             if (array_key_exists('moneytag_sw_enabled', $_POST) || array_key_exists('moneytag_sw_content', $_POST)) {
@@ -2467,11 +2639,17 @@ if ($seoApp) {
 <meta property="og:title" content="<?= e($seoTitle) ?>">
 <meta property="og:description" content="<?= e($seoDesc) ?>">
 <?php if ($seoImage): ?><meta property="og:image" content="<?= e($seoImage) ?>"><?php endif; ?>
-<?php if ($logo): ?><link rel="icon" href="<?= e($logo) ?>"><?php endif; ?>
+<?php if ($logo): ?><link rel="icon" href="<?= e($logo) ?>"><link rel="apple-touch-icon" href="<?= e($logo) ?>"><?php endif; ?>
 <link rel="canonical" href="<?= e($seoCanonical) ?>">
+<link rel="manifest" href="?action=webmanifest">
+<meta name="theme-color" content="<?= e(setting('theme_accent_color', '#2563eb')) ?>">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="<?= e(setting('site_name', 'الموقع')) ?>">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap">
+<?php if (setting('ad_enabled') === '1' && setting('ad_header_code')) echo setting('ad_header_code'); ?>
 <?php if ($seoApp): ?>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"<?= e($seoApp['name']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>","applicationCategory":"<?= $seoApp['kind'] === 'game' ? 'GameApplication' : 'MobileApplication' ?>","operatingSystem":"ANDROID"<?= $seoApp['version'] ? ',"softwareVersion":"' . e($seoApp['version']) . '"' : '' ?><?= $seoApp['rating_avg'] ? ',"aggregateRating":{"@type":"AggregateRating","ratingValue":"' . e($seoApp['rating_avg']) . '","ratingCount":"' . max(1, (int)$seoApp['downloads']) . '"}' : '' ?>,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
@@ -2514,7 +2692,7 @@ a{color:inherit;text-decoration:none}
 #preloader img{width:64px;height:64px;border-radius:50%}
 .spinner{width:46px;height:46px;border:4px solid #2a3350;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;padding:12px 18px;background:rgba(13,17,30,.72);backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);border-bottom:1px solid rgba(230,41,75,.15);box-shadow:0 4px 24px rgba(0,0,0,.25)}
+.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;padding:12px 18px;background:rgba(13,17,30,.88);backdrop-filter:blur(8px) saturate(130%);-webkit-backdrop-filter:blur(8px) saturate(130%);border-bottom:1px solid rgba(230,41,75,.15);box-shadow:0 4px 24px rgba(0,0,0,.25);will-change:transform}
 .burger{cursor:pointer;font-size:22px;background:#18223a;border:1px solid #2a3350;border-radius:12px;color:var(--text);width:42px;height:42px;display:flex;align-items:center;justify-content:center;transition:.2s var(--ease)}
 .burger:hover{background:var(--accent);transform:translateY(-1px);border-color:var(--accent)}
 .brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:.3px}
@@ -2558,6 +2736,15 @@ a{color:inherit;text-decoration:none}
 .banner p{color:#f0f0ff;opacity:.95;position:relative;z-index:1;font-size:15px}
 @keyframes float{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-14px,16px) scale(1.08)}}
 
+.apk-promo-banner{display:block;margin:14px 18px 0;border-radius:18px;background:linear-gradient(135deg,#7c3aed,#2563eb 60%,#06b6d4);padding:16px 18px;position:relative;overflow:hidden;text-decoration:none;color:#fff;box-shadow:0 10px 28px rgba(37,99,235,.3);background-size:cover;background-position:center;transition:transform .25s var(--ease)}
+.apk-promo-banner:hover{transform:translateY(-2px)}
+.apk-promo-overlay{position:absolute;inset:0;background:linear-gradient(135deg,rgba(20,20,40,.65),rgba(20,20,40,.45))}
+.apk-promo-content{position:relative;z-index:1;display:flex;align-items:center;gap:14px}
+.apk-promo-logo{width:52px;height:52px;border-radius:14px;object-fit:cover;flex-shrink:0;background:#fff}
+.apk-promo-title{font-weight:700;font-size:16px}
+.apk-promo-sub{font-size:13px;opacity:.9;margin-top:2px}
+.apk-promo-btn{margin-right:auto;flex-shrink:0;white-space:nowrap}
+
 .ticker-bar{margin:0 18px 18px;background:#1d0d12;border:1px solid rgba(255,255,255,.12);border-radius:0 0 24px 24px;border-top:none;display:flex;align-items:center;gap:10px;padding:10px 16px;overflow:hidden;position:relative}
 .ticker-bar .ticker-badge{flex-shrink:0;display:flex;align-items:center;gap:6px;background:var(--accent2);color:#06251c;font-weight:700;font-size:12px;border-radius:20px;padding:5px 12px;z-index:2}
 .ticker-track{flex:1;overflow:hidden;position:relative;mask-image:linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent)}
@@ -2587,7 +2774,7 @@ a{color:inherit;text-decoration:none}
 .card .buy{width:100%;margin-top:10px}
 .empty{padding:60px 20px;text-align:center;color:var(--muted);font-size:15px}
 .empty .ic{color:var(--accent);opacity:.7;margin-bottom:6px}
-.bottom-nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:rgba(13,17,30,.82);backdrop-filter:blur(16px) saturate(150%);-webkit-backdrop-filter:blur(16px) saturate(150%);border-top:1px solid rgba(230,41,75,.15);z-index:40;box-shadow:0 -4px 24px rgba(0,0,0,.3)}
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:rgba(13,17,30,.92);backdrop-filter:blur(8px) saturate(130%);-webkit-backdrop-filter:blur(8px) saturate(130%);border-top:1px solid rgba(230,41,75,.15);z-index:40;box-shadow:0 -4px 24px rgba(0,0,0,.3)}
 .bottom-nav a{position:relative;flex:1;text-align:center;padding:11px 4px 9px;font-size:11px;font-weight:600;color:var(--muted);transition:color .25s var(--ease)}
 .bottom-nav a .ic{transition:transform .25s var(--ease)}
 .bottom-nav a:active .ic{transform:scale(.85)}
@@ -2613,6 +2800,8 @@ a{color:inherit;text-decoration:none}
 .flash.error{background:#243152;border-color:var(--danger)}
 table{width:100%;border-collapse:collapse;font-size:13px}
 table th,table td{padding:8px;border-bottom:1px solid #28304a;text-align:right}
+table tbody tr{transition:background .15s var(--ease)}
+table tbody tr:hover{background:rgba(37,99,235,.08)}
 .admin-tabs{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px}
 .admin-tabs a{padding:8px 14px;border-radius:10px;background:#28304a;font-size:13px}
 .admin-tabs a.active{background:var(--accent)}
@@ -2878,6 +3067,8 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .admin-tabs a{transition:transform .18s var(--ease),background .2s,box-shadow .2s}
 .admin-tabs a:hover{transform:translateY(-2px);background:#28324e}
 .admin-tabs a.active{background:linear-gradient(135deg,var(--accent),#38bdf8);box-shadow:0 6px 16px rgba(230,41,75,.4);color:#fff}
+.admin-box{transition:box-shadow .25s var(--ease)}
+.admin-box:hover{box-shadow:0 14px 36px rgba(0,0,0,.5)}
 
 .stat-card{transition:transform .22s var(--ease),box-shadow .22s;border:1px solid #28304a}
 .stat-card:hover{transform:translateY(-4px);box-shadow:0 12px 28px rgba(0,0,0,.4);border-color:var(--accent)}
@@ -3211,7 +3402,7 @@ function render_product_card(array $p): void
       <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" onclick="toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
       <a href="?page=product&id=<?= (int)$p['id'] ?>">
         <?php if ($p['image']): ?>
-          <img class="pimg" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+          <img class="pimg" loading="lazy" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
         <?php elseif (!empty($p['icon'])): ?>
           <div class="icon-wrap emoji-icon"><?= e($p['icon']) ?></div>
         <?php else: ?>
@@ -3236,7 +3427,7 @@ function render_app_card(array $a): void
       <span class="tag app-kind-tag"><?= e($kindLabel) ?></span>
       <a href="?page=app&id=<?= (int)$a['id'] ?>">
         <?php if ($a['icon']): ?>
-          <img class="pimg app-icon-img" decoding="async" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
+          <img class="pimg app-icon-img" loading="lazy" decoding="async" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
         <?php else: ?>
           <div class="icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
         <?php endif; ?>
@@ -3300,6 +3491,25 @@ case 'home':
               <input type="text" name="q" value="<?= e($searchQ) ?>" placeholder="ابحث عن منتج...">
               <button type="submit"><?= icon('search', 'ic-sm') ?></button>
             </form>
+            <?php
+        },
+        'apk_promo' => function () {
+            $apkUrl = setting('apk_download_url');
+            if (!$apkUrl) return;
+            $banner = setting('apk_banner_image');
+            $logo = setting('apk_logo_image');
+            ?>
+            <a href="<?= e($apkUrl) ?>" class="apk-promo-banner"<?= $banner ? ' style="background-image:url(\'' . e($banner) . '\')"' : '' ?> target="_blank" rel="noopener">
+              <?php if ($banner): ?><div class="apk-promo-overlay"></div><?php endif; ?>
+              <div class="apk-promo-content">
+                <?php if ($logo): ?><img src="<?= e($logo) ?>" alt="" class="apk-promo-logo" loading="lazy"><?php endif; ?>
+                <div>
+                  <div class="apk-promo-title"><?= e(setting('apk_promo_title')) ?></div>
+                  <div class="apk-promo-sub"><?= e(setting('apk_promo_subtitle')) ?></div>
+                </div>
+                <span class="btn btn-primary apk-promo-btn"><?= icon('download', 'ic-sm') ?>تحميل</span>
+              </div>
+            </a>
             <?php
         },
         'cat_tiles' => function () use ($tileCats) {
@@ -3669,7 +3879,7 @@ case 'app':
 
       <?php if ($screenshots): ?>
       <div class="app-screens">
-        <?php foreach ($screenshots as $s): ?><img src="<?= e($s) ?>" decoding="async" alt="لقطة شاشة"><?php endforeach; ?>
+        <?php foreach ($screenshots as $s): ?><img src="<?= e($s) ?>" loading="lazy" decoding="async" alt="لقطة شاشة"><?php endforeach; ?>
       </div>
       <?php endif; ?>
 
@@ -4488,6 +4698,7 @@ case 'admin':
         $homeSectionLabels = [
             'hero' => 'البنر الرئيسي + العنوان',
             'search' => 'شريط البحث',
+            'apk_promo' => 'بنر تحميل التطبيق/المتجر',
             'cat_tiles' => 'بلاطات التصنيفات (بالصور)',
             'cat_chips' => 'أزرار التصنيفات السريعة',
             'carousel' => 'البنرات الدوارة',
@@ -4892,6 +5103,41 @@ case 'admin':
           <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
           <label>معرّف ناشر Google AdSense (ca-pub-xxxxxxxxxxxxxxxx)<input name="adsense_client_id" value="<?= e(setting('adsense_client_id')) ?>" placeholder="ca-pub-xxxxxxxxxxxxxxxx"></label>
           <label>محتوى ملف ads.txt (يظهر على /index.php?action=ads_txt أو /ads.txt)<textarea name="ads_txt_content" rows="2" placeholder="google.com, pub-xxxxxxxxxxxxxxxx, DIRECT, f08c47fec0942fa0"><?= e(setting('ads_txt_content')) ?></textarea></label>
+          <label>كود إعلانات إضافي يظهر أعلى كل صفحة (أي شبكة إعلانات: Monetag, PropellerAds...الخ)، يعمل فقط عند تفعيل "تفعيل الإعلانات" أعلاه<textarea name="ad_header_code" rows="2" placeholder="<script>...</script>"><?= e(setting('ad_header_code')) ?></textarea></label>
+          <label>كود إعلانات إضافي يظهر أسفل كل صفحة<textarea name="ad_footer_code" rows="2" placeholder="<script>...</script>"><?= e(setting('ad_footer_code')) ?></textarea></label>
+          <h4 style="margin:18px 0 6px">بنر تحميل التطبيق (الصفحة الرئيسية)</h4>
+          <label>رابط تحميل ملف APK / المتجر<input name="apk_download_url" value="<?= e(setting('apk_download_url')) ?>" placeholder="رابط ملف APK أو رابط المتجر"></label>
+          <div class="upload-row"><input type="text" name="apk_banner_image" id="apkBannerImg" value="<?= e(setting('apk_banner_image')) ?>" placeholder="رابط صورة بنر التطبيق"><label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apkBannerImg')"></label></div>
+          <div class="upload-row"><input type="text" name="apk_logo_image" id="apkLogoImg" value="<?= e(setting('apk_logo_image')) ?>" placeholder="رابط شعار التطبيق"><label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apkLogoImg')"></label></div>
+          <label>عنوان بنر التحميل<input name="apk_promo_title" value="<?= e(setting('apk_promo_title')) ?>"></label>
+          <label>وصف بنر التحميل<input name="apk_promo_subtitle" value="<?= e(setting('apk_promo_subtitle')) ?>"></label>
+          <h4 style="margin:18px 0 6px">البريد الإلكتروني (SMTP)</h4>
+          <label>تفعيل إرسال البريد
+            <select name="mail_enabled">
+              <option value="1" <?= setting('mail_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('mail_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <label>اشتراط تأكيد البريد قبل تسجيل الدخول
+            <select name="email_verify_required">
+              <option value="1" <?= setting('email_verify_required') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('email_verify_required') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <div class="formrow">
+            <input name="smtp_host" value="<?= e(setting('smtp_host')) ?>" placeholder="SMTP Host مثل smtp.gmail.com">
+            <input name="smtp_port" value="<?= e(setting('smtp_port')) ?>" placeholder="Port مثل 587">
+            <select name="smtp_secure">
+              <option value="tls" <?= setting('smtp_secure') === 'tls' ? 'selected' : '' ?>>TLS</option>
+              <option value="ssl" <?= setting('smtp_secure') === 'ssl' ? 'selected' : '' ?>>SSL</option>
+            </select>
+            <input name="smtp_user" value="<?= e(setting('smtp_user')) ?>" placeholder="SMTP Username (البريد غالباً)" autocomplete="off">
+            <input type="password" name="smtp_pass" value="" placeholder="<?= setting('smtp_pass') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'SMTP Password' ?>" autocomplete="off">
+            <input name="mail_from_email" value="<?= e(setting('mail_from_email')) ?>" placeholder="بريد المُرسل الظاهر">
+            <input name="mail_from_name" value="<?= e(setting('mail_from_name')) ?>" placeholder="اسم المُرسل الظاهر">
+          </div>
+          <label>رابط تقييم Google لموقعك/عملك (لاستخدامه بحملة طلب التقييم)<input name="google_review_url" value="<?= e(setting('google_review_url')) ?>" placeholder="https://g.page/r/..."></label>
+          <button type="button" class="btn btn-ghost" onclick="testSmtp()"><?= icon('rocket', 'ic-sm') ?>إرسال رسالة اختبار SMTP لبريد الأدمن</button>
           <label>موديل OpenRouter (الافتراضي موديل مجاني يعمل مع المفاتيح المجانية. عند فشله يبدّل النظام تلقائياً لموديلات مجانية أخرى)<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
             <datalist id="orModels">
               <option value="openai/gpt-4o">
@@ -4967,6 +5213,20 @@ case 'admin':
           <button type="button" class="btn btn-ghost" onclick="testOpenRouter()"><?= icon('rocket', 'ic-sm') ?>اختبار الاتصال بـ OpenRouter</button>
           <button type="button" class="btn btn-ghost" onclick="clearCache()"><?= icon('refresh', 'ic-sm') ?>تفريغ الكاش (لإظهار آخر التعديلات فوراً)</button>
         </div>
+        <hr style="border-color:#28304a;margin:18px 0">
+        <h4 style="margin:0 0 8px">الحملات التسويقية (بريد جماعي للمستخدمين المسجّلين)</h4>
+        <p style="color:#9aa3b8;font-size:13px;margin:0 0 10px">
+          يرسل بريداً لكل المستخدمين المسجّلين غير المحظورين عبر إعدادات SMTP أعلاه. لطلب التقييمات نرسل رابط تقييم Google الحقيقي لتشجيع المستخدمين الحقيقيين على ترك تقييم بأنفسهم — لا يقوم النظام بإنشاء تقييمات مزيفة، فهذا مخالف لسياسات جوجل وقد يعرّض حسابك للحظر.
+        </p>
+        <div class="formrow">
+          <select id="campaignType" onchange="document.getElementById('campaignSubject').value=''; document.getElementById('campaignBody').value='';">
+            <option value="promo">حملة ترويجية مخصّصة</option>
+            <option value="review">طلب تقييم Google حقيقي (يحتاج ضبط رابط التقييم أعلاه)</option>
+          </select>
+          <input id="campaignSubject" placeholder="عنوان الرسالة (اختياري لحملة التقييم)">
+        </div>
+        <textarea id="campaignBody" rows="3" placeholder="محتوى الرسالة (HTML مسموح، اختياري لحملة التقييم)"></textarea>
+        <button type="button" class="btn btn-primary" onclick="sendCampaign()"><?= icon('rocket', 'ic-sm') ?>إرسال الحملة الآن لكل المستخدمين</button>
         <hr style="border-color:#28304a;margin:18px 0">
         <h4 style="margin:0 0 8px">مفاتيح OpenRouter API (عدد غير محدود)</h4>
         <p style="color:var(--muted);font-size:13px;margin-top:0">يمكنك إضافة أكثر من مفتاح. عند استهلاك حد مفتاح أو تعطّله يجرّب النظام المفتاح التالي تلقائياً.</p>
@@ -5399,6 +5659,21 @@ function testOpenRouter(){
   const d = new FormData(); d.append('csrf', CSRF);
   fetch('?action=admin_test_openrouter', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
 }
+function testSmtp(){
+  toast('جاري إرسال رسالة الاختبار...');
+  const d = new FormData(); d.append('csrf', CSRF);
+  fetch('?action=admin_test_smtp', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
+}
+function sendCampaign(){
+  const type = document.getElementById('campaignType').value;
+  const subject = document.getElementById('campaignSubject').value.trim();
+  const body = document.getElementById('campaignBody').value.trim();
+  if (type === 'promo' && (!subject || !body)) return toast('أدخل عنوان ومحتوى الحملة الترويجية.');
+  if (!confirm('سيتم إرسال هذه الرسالة لكل المستخدمين المسجّلين الآن، متأكد؟')) return;
+  toast('جاري إرسال الحملة، قد يستغرق دقيقة حسب عدد المستخدمين...');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('type', type); d.append('subject', subject); d.append('body', body);
+  fetch('?action=admin_send_campaign', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
+}
 function aiGenerateProduct(){
   const name = document.getElementById('pname').value.trim();
   const price = document.getElementById('pprice').value.trim();
@@ -5487,5 +5762,6 @@ function copyAddr(btn){
   });
 }
 </script>
+<?php if (setting('ad_enabled') === '1' && setting('ad_footer_code')) echo setting('ad_footer_code'); ?>
 </body>
 </html>
