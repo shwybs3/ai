@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Crocodile Tap</title>
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+<div id="app">
+
+  <header class="topbar">
+    <div class="level-badge" id="levelBadge">🥚 مبتدئ</div>
+    <div class="coins-display">🪙 <span id="coinsValue">0</span></div>
+  </header>
+
+  <main id="screens">
+
+    <section id="screen-home" class="screen active">
+      <div class="croc-stage" id="tapZone">
+        <div class="croc" id="croc">🐊</div>
+      </div>
+      <div class="energy-bar-wrap">
+        <div class="energy-icon">⚡</div>
+        <div class="energy-bar"><div id="energyFill" class="energy-fill"></div></div>
+        <div class="energy-text"><span id="energyValue">1000</span>/1000</div>
+      </div>
+      <button id="dailyBtn" class="daily-btn">🎁 المكافأة اليومية</button>
+    </section>
+
+    <section id="screen-tasks" class="screen">
+      <h2>🎯 المهام والتحديات</h2>
+      <div id="tasksList" class="list"></div>
+    </section>
+
+    <section id="screen-friends" class="screen">
+      <h2>👥 ادعُ أصدقاءك</h2>
+      <p class="hint">احصل على <b id="refBonus">2500</b> 🪙 عن كل صديق ينضم برابطك!</p>
+      <div class="referral-box">
+        <input id="refLinkInput" readonly>
+        <button id="copyRefBtn">نسخ</button>
+      </div>
+      <button id="shareRefBtn" class="share-btn">📤 مشاركة الرابط</button>
+      <div class="stat-line">عدد المدعوين: <b id="refCount">0</b></div>
+      <div id="friendsList" class="list"></div>
+    </section>
+
+    <section id="screen-leaderboard" class="screen">
+      <h2>🏆 المتصدرون</h2>
+      <div id="leaderboardList" class="list"></div>
+    </section>
+
+    <section id="screen-wallet" class="screen">
+      <h2>💼 المحفظة</h2>
+      <div class="wallet-balance">🪙 <span id="walletCoins">0</span></div>
+      <div class="wallet-level">المستوى: <span id="walletLevel">🥚 مبتدئ</span></div>
+      <input id="withdrawAmount" type="number" placeholder="المبلغ المطلوب سحبه" min="1">
+      <button id="withdrawBtn" class="withdraw-btn">💸 طلب سحب</button>
+      <p class="hint small">يتم مراجعة طلبات السحب من قبل الإدارة يدوياً.</p>
+    </section>
+
+  </main>
+
+  <nav class="bottom-nav">
+    <button class="nav-btn active" data-screen="home"><span class="nav-icon">🐊</span><span>الرئيسية</span></button>
+    <button class="nav-btn" data-screen="tasks"><span class="nav-icon">🎯</span><span>المهام</span></button>
+    <button class="nav-btn" data-screen="friends"><span class="nav-icon">👥</span><span>الدعوة</span></button>
+    <button class="nav-btn" data-screen="leaderboard"><span class="nav-icon">🏆</span><span>المتصدرون</span></button>
+    <button class="nav-btn" data-screen="wallet"><span class="nav-icon">💼</span><span>المحفظة</span></button>
+  </nav>
+
+</div>
+
+<script src="app.js"></script>
+</body>
+</html>
