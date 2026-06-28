@@ -182,6 +182,45 @@ function migrate(): void
         sort_order INT NOT NULL DEFAULT 0,
         created_at $ts
     )$engine",
+    "CREATE TABLE IF NOT EXISTS listing_categories (
+        id $id,
+        name VARCHAR(100) NOT NULL,
+        icon VARCHAR(10) NULL,
+        active TINYINT NOT NULL DEFAULT 1,
+        sort_order INT NOT NULL DEFAULT 0
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS listings (
+        id $id,
+        user_id INT NOT NULL,
+        category_id INT NULL,
+        title VARCHAR(190) NOT NULL,
+        slug VARCHAR(220) NOT NULL,
+        description TEXT NULL,
+        price DECIMAL(12,2) NULL,
+        phone VARCHAR(60) NULL,
+        images TEXT NULL,
+        video_url VARCHAR(500) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        admin_note VARCHAR(255) NULL,
+        html_path VARCHAR(255) NULL,
+        views INT NOT NULL DEFAULT 0,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS listing_conversations (
+        id $id,
+        listing_id INT NOT NULL,
+        buyer_id INT NOT NULL,
+        seller_id INT NOT NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS listing_messages (
+        id $id,
+        conversation_id INT NOT NULL,
+        sender_id INT NOT NULL,
+        body VARCHAR(1000) NOT NULL,
+        created_at $ts,
+        read_at " . (DB_DRIVER === 'sqlite' ? 'TEXT' : 'DATETIME') . " NULL
+    )$engine",
     "CREATE TABLE IF NOT EXISTS landing_posts (
         id $id,
         slug VARCHAR(190) NOT NULL UNIQUE,
@@ -409,6 +448,13 @@ function migrate(): void
         'idx_login_attempts_ip' => ['login_attempts', 'ip'],
         'idx_login_attempts_created' => ['login_attempts', 'created_at'],
         'idx_bot_scripts_status' => ['bot_scripts', 'status'],
+        'idx_listings_user' => ['listings', 'user_id'],
+        'idx_listings_category' => ['listings', 'category_id'],
+        'idx_listings_status' => ['listings', 'status'],
+        'idx_listing_conv_listing' => ['listing_conversations', 'listing_id'],
+        'idx_listing_conv_buyer' => ['listing_conversations', 'buyer_id'],
+        'idx_listing_conv_seller' => ['listing_conversations', 'seller_id'],
+        'idx_listing_msg_conv' => ['listing_messages', 'conversation_id'],
     ];
     foreach ($indexes as $name => [$table, $cols]) {
         try {
@@ -419,6 +465,26 @@ function migrate(): void
                 if (!$exists) $pdo->exec("CREATE INDEX $name ON $table ($cols)");
             }
         } catch (Throwable $e) {}
+    }
+
+    // تهيئة أقسام لوحة الإعلانات المبوّبة الافتراضية مرة واحدة فقط (قابلة للتعديل/الإضافة لاحقاً من لوحة الإدارة)
+    $listingCatCount = (int)$pdo->query("SELECT COUNT(*) c FROM listing_categories")->fetch()['c'];
+    if ($listingCatCount === 0) {
+        $listingCatSeeds = [
+            ['تطبيقات وألعاب', '🎮'],
+            ['سيارات ومركبات', '🚗'],
+            ['عقارات', '🏠'],
+            ['هواتف وإلكترونيات', '📱'],
+            ['مفروشات منزلية', '🛋️'],
+            ['دراجات وسكوتر', '🛵'],
+            ['أجهزة كهربائية', '🔌'],
+            ['ملابس وإكسسوارات', '👕'],
+            ['كتب ومجلات', '📚'],
+            ['ألعاب وهوايات', '🎲'],
+            ['حيوانات وملحقاتها', '🐾'],
+        ];
+        $stL = $pdo->prepare("INSERT INTO listing_categories (name, icon, sort_order) VALUES (?,?,?)");
+        foreach ($listingCatSeeds as $i => [$lname, $licon]) $stL->execute([$lname, $licon, $i]);
     }
 
     $pdo->exec("CREATE TABLE IF NOT EXISTS product_suggestions (
@@ -502,7 +568,7 @@ function migrate(): void
         'telegram_bot_username' => '',
         'banner_interval' => '4000',
         'banner_height' => '160',
-        'home_sections_order' => 'search,apk_promo,carousel,ticker,live_ticker,latest_apps,cat_chips',
+        'home_sections_order' => 'search,apk_promo,carousel,ticker,live_ticker,latest_apps,latest_listings,cat_chips',
         'home_sections_hidden' => 'hero',
         'banner_carousel_enabled' => '1',
         'news_ticker_enabled' => '1',
@@ -526,6 +592,7 @@ function migrate(): void
         'mail_from_name' => '',
         'email_verify_required' => '0',
         'google_review_url' => '',
+        'listing_max_pending_per_user' => '3',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -639,6 +706,26 @@ function migrate(): void
         $pdo->prepare(DB_DRIVER === 'sqlite'
             ? "INSERT INTO settings (k, v) VALUES ('banner_top_fix_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
             : "INSERT INTO settings (k, v) VALUES ('banner_top_fix_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: إضافة قسم "أحدث الإعلانات" (الإعلانات المبوّبة) للرئيسية على المواقع التي تعمل مسبقاً.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='listings_home_section_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_values(array_filter(array_map('trim', explode(',', $order))));
+        if (!in_array('latest_listings', $orderParts, true)) {
+            $pos = array_search('latest_apps', $orderParts, true);
+            if ($pos !== false) array_splice($orderParts, $pos + 1, 0, ['latest_listings']);
+            else $orderParts[] = 'latest_listings';
+        }
+        $newOrder = implode(',', $orderParts);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+            : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v=?")
+            ->execute([$newOrder, $newOrder]);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('listings_home_section_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('listings_home_section_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
             ->execute();
     }
 
@@ -1221,6 +1308,41 @@ function compress_image_file(string $path, int $maxDim = 1280, int $quality = 75
     imagedestroy($src);
 }
 
+// عند موافقة الأدمن على إعلان، نولّد له صفحة HTML ثابتة حقيقية على القرص داخل مجلد pages/
+// عبر طلب ذاتي (self-curl) لرابط الإعلان الديناميكي نفسه (?page=listing&id=X)، فتكون النتيجة طبق الأصل
+// لثيم وستايل الموقع تماماً (لأنها فعلياً نفس مخرجات الموقع، فقط محفوظة كملف)، وتفيد فهرسة جوجل لها كصفحة مستقلة.
+// عند فشل الطلب الذاتي (بعض الاستضافات تمنع طلب السيرفر لنفسه) تبقى صفحة الإعلان الديناميكية تعمل بدون انقطاع،
+// ويمكن للأدمن إعادة المحاولة لاحقاً من لوحة الإدارة.
+function generate_listing_static_html(int $listingId): bool
+{
+    if (!defined('SITE_URL') || !SITE_URL) return false;
+    $st = db()->prepare("SELECT * FROM listings WHERE id=?");
+    $st->execute([$listingId]);
+    $listing = $st->fetch();
+    $st->closeCursor();
+    $st = null;
+    if (!$listing) return false;
+
+    // يجب إغلاق الجلسة قبل الطلب الذاتي، لأن session_start() في بداية الملف
+    // يقفل ملف الجلسة طوال الطلب الحالي، فيتجمد الطلب الذاتي بانتظار نفس القفل.
+    if (session_status() === PHP_SESSION_ACTIVE) session_write_close();
+    $dynamicUrl = rtrim(SITE_URL, '/') . '/index.php?page=listing&id=' . $listingId . '&no_snapshot=1';
+    $ctx = stream_context_create(['http' => ['timeout' => 15, 'ignore_errors' => true]]);
+    $html = @file_get_contents($dynamicUrl, false, $ctx);
+    $statusLine = $http_response_header[0] ?? '';
+    $httpCode = (int)(preg_match('/\s(\d{3})\s/', $statusLine, $m) ? $m[1] : 0);
+    if ($html === false || $httpCode !== 200 || trim((string)$html) === '') return false;
+
+    $dir = __DIR__ . '/pages';
+    if (!is_dir($dir)) mkdir($dir, 0755, true);
+    $slugBase = trim(preg_replace('/[^a-z0-9-]+/', '-', strtolower($listing['slug'] ?: 'listing')), '-') ?: 'listing';
+    $filename = $slugBase . '-' . $listingId . '.html';
+    if (file_put_contents($dir . '/' . $filename, $html) === false) return false;
+
+    db()->prepare("UPDATE listings SET html_path=? WHERE id=?")->execute(['pages/' . $filename, $listingId]);
+    return true;
+}
+
 // تنزيل صورة المنتج من سيرفر المزوّد محلياً مرة واحدة عند المزامنة، حتى لا يضطر متصفح المستخدم
 // لتحميلها من سيرفر بطيء/بعيد كل مرة (هذا هو السبب الرئيسي لبطء ظهور صور المنتجات).
 function cache_remote_image(string $url): string
@@ -1744,6 +1866,14 @@ if ($action === 'sitemap') {
     foreach ($products as $p) {
         $urls[] = ['loc' => $base . '?page=product&id=' . (int)$p['id'], 'priority' => '0.7', 'lastmod' => substr((string)$p['created_at'], 0, 10)];
     }
+    $listingsSm = db()->query("SELECT id, created_at FROM listings WHERE status='approved'")->fetchAll();
+    foreach ($listingsSm as $l) {
+        $urls[] = ['loc' => $base . '?page=listing&id=' . (int)$l['id'], 'priority' => '0.7', 'lastmod' => substr((string)$l['created_at'], 0, 10)];
+    }
+    $landingPostsSm = db()->query("SELECT slug, created_at FROM landing_posts WHERE published=1")->fetchAll();
+    foreach ($landingPostsSm as $lp) {
+        $urls[] = ['loc' => $base . '?page=post&slug=' . rawurlencode($lp['slug']), 'priority' => '0.8', 'lastmod' => substr((string)$lp['created_at'], 0, 10)];
+    }
     echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
     echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
     foreach ($urls as $u) {
@@ -1940,6 +2070,103 @@ if ($action && str_starts_with($action, 'api_')) {
             $url = 'uploads/avatars/' . $filename;
             db()->prepare("UPDATE users SET avatar=? WHERE id=?")->execute([$url, $u['id']]);
             echo json_encode(['ok' => true, 'url' => $url, 'msg' => 'تم تحديث صورة الملف الشخصي.']);
+            exit;
+
+        case 'api_upload_listing_image':
+            csrf_check();
+            if (empty($_FILES['file']) || $_FILES['file']['error'] !== UPLOAD_ERR_OK) {
+                echo json_encode(['ok' => false, 'msg' => 'فشل رفع الصورة.']); exit;
+            }
+            $f = $_FILES['file'];
+            $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+            $mime = mime_content_type($f['tmp_name']);
+            if (!isset($allowed[$mime]) || $f['size'] > 5 * 1024 * 1024) {
+                echo json_encode(['ok' => false, 'msg' => 'الملف يجب أن يكون صورة (jpg/png/webp/gif) أصغر من 5MB.']); exit;
+            }
+            $destDir = __DIR__ . '/uploads/listings';
+            if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+            $filename = bin2hex(random_bytes(8)) . '.' . $allowed[$mime];
+            move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
+            compress_image_file($destDir . '/' . $filename);
+            echo json_encode(['ok' => true, 'url' => 'uploads/listings/' . $filename]);
+            exit;
+
+        case 'api_submit_listing':
+            csrf_check();
+            $lTitle = mb_substr(trim($_POST['title'] ?? ''), 0, 190);
+            $lDesc = mb_substr(trim($_POST['description'] ?? ''), 0, 4000);
+            $lCategoryId = (int)($_POST['category_id'] ?? 0);
+            $lPrice = trim($_POST['price'] ?? '');
+            $lPhone = preg_replace('/[^0-9+]/', '', trim($_POST['phone'] ?? ''));
+            $lVideo = trim($_POST['video_url'] ?? '');
+            $lImages = array_filter(array_map('trim', (array)($_POST['images'] ?? [])));
+            $lImages = array_slice(array_values($lImages), 0, 10);
+
+            if ($lTitle === '' || $lDesc === '') { echo json_encode(['ok' => false, 'msg' => 'العنوان والوصف مطلوبان.']); exit; }
+            if ($lPhone === '') { echo json_encode(['ok' => false, 'msg' => 'رقم الهاتف مطلوب للتواصل مع المشترين.']); exit; }
+            if (!$lImages) { echo json_encode(['ok' => false, 'msg' => 'أضف صورة واحدة على الأقل.']); exit; }
+            $catSt = db()->prepare("SELECT id FROM listing_categories WHERE id=? AND active=1");
+            $catSt->execute([$lCategoryId]);
+            if (!$catSt->fetch()) { echo json_encode(['ok' => false, 'msg' => 'اختر قسماً صالحاً.']); exit; }
+
+            $maxPending = (int)setting('listing_max_pending_per_user', '3');
+            $pendingSt = db()->prepare("SELECT COUNT(*) c FROM listings WHERE user_id=? AND status='pending'");
+            $pendingSt->execute([$u['id']]);
+            if ((int)$pendingSt->fetch()['c'] >= $maxPending) {
+                echo json_encode(['ok' => false, 'msg' => 'لديك إعلانات قيد المراجعة بالحد الأقصى المسموح. انتظر مراجعتها قبل إضافة إعلان جديد.']); exit;
+            }
+
+            $slugBase = trim(preg_replace('/[^a-z0-9-]+/', '-', strtolower($lTitle)), '-') ?: 'listing';
+            db()->prepare("INSERT INTO listings (user_id, category_id, title, slug, description, price, phone, images, video_url, status) VALUES (?,?,?,?,?,?,?,?,?, 'pending')")
+                ->execute([$u['id'], $lCategoryId, $lTitle, $slugBase, $lDesc, $lPrice !== '' ? $lPrice : null, $lPhone, json_encode($lImages, JSON_UNESCAPED_UNICODE), $lVideo ?: null]);
+            $newListingId = (int)db()->lastInsertId();
+            db()->prepare("UPDATE listings SET slug=? WHERE id=?")->execute([$slugBase . '-' . $newListingId, $newListingId]);
+            echo json_encode(['ok' => true, 'msg' => 'تم إرسال إعلانك، بانتظار مراجعة الإدارة قبل النشر.']);
+            exit;
+
+        case 'api_listing_start_chat':
+            csrf_check();
+            $clListingId = (int)($_POST['listing_id'] ?? 0);
+            $lst = db()->prepare("SELECT * FROM listings WHERE id=? AND status='approved'");
+            $lst->execute([$clListingId]);
+            $clListing = $lst->fetch();
+            if (!$clListing) { echo json_encode(['ok' => false, 'msg' => 'الإعلان غير موجود.']); exit; }
+            if ((int)$clListing['user_id'] === (int)$u['id']) { echo json_encode(['ok' => false, 'msg' => 'لا يمكنك بدء محادثة مع نفسك.']); exit; }
+            $cst = db()->prepare("SELECT id FROM listing_conversations WHERE listing_id=? AND buyer_id=?");
+            $cst->execute([$clListingId, $u['id']]);
+            $crow = $cst->fetch();
+            if ($crow) { echo json_encode(['ok' => true, 'conversation_id' => (int)$crow['id']]); exit; }
+            db()->prepare("INSERT INTO listing_conversations (listing_id, buyer_id, seller_id) VALUES (?,?,?)")
+                ->execute([$clListingId, $u['id'], $clListing['user_id']]);
+            echo json_encode(['ok' => true, 'conversation_id' => (int)db()->lastInsertId()]);
+            exit;
+
+        case 'api_listing_send_message':
+            csrf_check();
+            $convId = (int)($_POST['conversation_id'] ?? 0);
+            $msgBody = mb_substr(trim($_POST['body'] ?? ''), 0, 1000);
+            if ($msgBody === '') { echo json_encode(['ok' => false, 'msg' => 'الرسالة فارغة.']); exit; }
+            $cst = db()->prepare("SELECT * FROM listing_conversations WHERE id=?");
+            $cst->execute([$convId]);
+            $conv = $cst->fetch();
+            if (!$conv || ((int)$conv['buyer_id'] !== (int)$u['id'] && (int)$conv['seller_id'] !== (int)$u['id'])) {
+                echo json_encode(['ok' => false, 'msg' => 'لا تملك صلاحية الوصول لهذه المحادثة.']); exit;
+            }
+            db()->prepare("INSERT INTO listing_messages (conversation_id, sender_id, body) VALUES (?,?,?)")->execute([$convId, $u['id'], $msgBody]);
+            echo json_encode(['ok' => true]);
+            exit;
+
+        case 'api_listing_fetch_messages':
+            $convId = (int)($_POST['conversation_id'] ?? 0);
+            $cst = db()->prepare("SELECT * FROM listing_conversations WHERE id=?");
+            $cst->execute([$convId]);
+            $conv = $cst->fetch();
+            if (!$conv || ((int)$conv['buyer_id'] !== (int)$u['id'] && (int)$conv['seller_id'] !== (int)$u['id'])) {
+                echo json_encode(['ok' => false, 'msg' => 'لا تملك صلاحية الوصول لهذه المحادثة.']); exit;
+            }
+            $mst = db()->prepare("SELECT id, sender_id, body, created_at FROM listing_messages WHERE conversation_id=? ORDER BY id ASC");
+            $mst->execute([$convId]);
+            echo json_encode(['ok' => true, 'messages' => $mst->fetchAll()]);
             exit;
 
         default:
@@ -2502,6 +2729,52 @@ if ($action && str_starts_with($action, 'admin_')) {
                 ->execute([$agStatus, trim($_POST['admin_note'] ?? '') ?: null, (int)$_POST['id']]);
             redirect('?page=admin&tab=agents');
 
+        case 'admin_save_listing_category':
+            $lcName = trim($_POST['name'] ?? '');
+            $lcId = (int)($_POST['id'] ?? 0);
+            $lcIcon = mb_substr(trim($_POST['icon'] ?? ''), 0, 10);
+            if (!$lcName) { flash('اسم القسم مطلوب.', 'error'); redirect('?page=admin&tab=classifieds'); }
+            if ($lcId) {
+                db()->prepare("UPDATE listing_categories SET name=?, icon=? WHERE id=?")->execute([$lcName, $lcIcon ?: null, $lcId]);
+            } else {
+                $maxSort = (int)db()->query("SELECT COALESCE(MAX(sort_order),0) m FROM listing_categories")->fetch()['m'];
+                db()->prepare("INSERT INTO listing_categories (name, icon, sort_order) VALUES (?,?,?)")->execute([$lcName, $lcIcon ?: null, $maxSort + 1]);
+            }
+            flash('تم حفظ القسم.');
+            redirect('?page=admin&tab=classifieds');
+
+        case 'admin_toggle_listing_category':
+            db()->prepare("UPDATE listing_categories SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=classifieds');
+
+        case 'admin_delete_listing_category':
+            db()->prepare("DELETE FROM listing_categories WHERE id=?")->execute([(int)$_POST['id']]);
+            flash('تم حذف القسم.');
+            redirect('?page=admin&tab=classifieds');
+
+        case 'admin_listing_decision':
+            $lid = (int)$_POST['id'];
+            $ldec = $_POST['decision'] === 'approve' ? 'approved' : 'rejected';
+            db()->prepare("UPDATE listings SET status=?, admin_note=? WHERE id=?")
+                ->execute([$ldec, trim($_POST['note'] ?? '') ?: null, $lid]);
+            if ($ldec === 'approved') {
+                try { generate_listing_static_html($lid); } catch (Throwable $e) {}
+            }
+            flash($ldec === 'approved' ? 'تم نشر الإعلان.' : 'تم رفض الإعلان.');
+            redirect('?page=admin&tab=classifieds');
+
+        case 'admin_listing_regenerate_html':
+            $lid = (int)$_POST['id'];
+            $ok = false;
+            try { $ok = generate_listing_static_html($lid); } catch (Throwable $e) {}
+            flash($ok ? 'تمت إعادة توليد صفحة HTML للإعلان.' : 'فشلت إعادة التوليد، حاول مرة أخرى.', $ok ? 'success' : 'error');
+            redirect('?page=admin&tab=classifieds');
+
+        case 'admin_delete_listing':
+            db()->prepare("DELETE FROM listings WHERE id=?")->execute([(int)$_POST['id']]);
+            flash('تم حذف الإعلان.');
+            redirect('?page=admin&tab=classifieds');
+
         case 'admin_save_post':
             $postId = (int)($_POST['id'] ?? 0);
             $postTitle = trim($_POST['title'] ?? '');
@@ -2705,7 +2978,14 @@ if (in_array($page, ['app', 'app_download'], true)) {
     $seoApp = $st->fetch();
     if (!$seoApp) { http_response_code(404); }
 }
-$pageLabels = ['home' => 'الرئيسية', 'favorites' => 'المفضّلة', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر', 'thankyou' => 'شكراً لزيارتك', 'about' => 'من نحن', 'faq' => 'الأسئلة الشائعة', 'contact' => 'تواصل معنا', 'guide' => 'دليل تحميل التطبيقات والألعاب أندرويد بأمان', 'top' => 'أفضل تطبيقات وألعاب أندرويد مهكرة ومجانية', 'checkout' => 'إتمام الشراء', 'become_agent' => 'كن وكيلاً وحقق أرباحاً', 'posts' => 'مقالات ومنشورات'];
+$seoListing = null;
+if ($page === 'listing') {
+    $st = db()->prepare("SELECT * FROM listings WHERE id=? AND status='approved'");
+    $st->execute([(int)($_GET['id'] ?? 0)]);
+    $seoListing = $st->fetch();
+    if (!$seoListing) { http_response_code(404); }
+}
+$pageLabels = ['home' => 'الرئيسية', 'favorites' => 'المفضّلة', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر', 'thankyou' => 'شكراً لزيارتك', 'about' => 'من نحن', 'faq' => 'الأسئلة الشائعة', 'contact' => 'تواصل معنا', 'guide' => 'دليل تحميل التطبيقات والألعاب أندرويد بأمان', 'top' => 'أفضل تطبيقات وألعاب أندرويد مهكرة ومجانية', 'checkout' => 'إتمام الشراء', 'become_agent' => 'كن وكيلاً وحقق أرباحاً', 'posts' => 'مقالات ومنشورات', 'classifieds' => 'الإعلانات المبوّبة', 'post_ad' => 'نشر إعلان جديد'];
 if ($seoApp) {
     $seoTitle = ($seoApp['seo_title'] ?: $seoApp['name']) . ' — تحميل ' . ($seoApp['kind'] === 'game' ? 'لعبة' : 'تطبيق') . ' مجاناً — ' . e($siteName);
     $seoDesc = $seoApp['seo_description'] ?: ($seoApp['short_description'] ?: mb_substr((string)$seoApp['description'], 0, 155));
@@ -2716,6 +2996,12 @@ if ($seoApp) {
     $seoDesc = $seoPost['meta_description'] ?: ($seoPost['excerpt'] ?: mb_substr((string)strip_tags($seoPost['content']), 0, 155));
     $seoImage = $seoPost['cover_image'] ?: $logo;
     $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=post&slug=' . rawurlencode($seoPost['slug']);
+} elseif ($seoListing) {
+    $seoTitle = $seoListing['title'] . ' — ' . e($siteName);
+    $seoDesc = mb_substr((string)$seoListing['description'], 0, 155);
+    $lsImgsForSeo = json_decode($seoListing['images'] ?? '[]', true) ?: [];
+    $seoImage = $lsImgsForSeo[0] ?? $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=listing&id=' . (int)$seoListing['id'];
 } elseif ($seoProduct) {
     $seoTitle = $seoProduct['name'] . ' — ' . e($siteName);
     $seoDesc = $seoProduct['meta_description'] ?: mb_substr((string)$seoProduct['description'], 0, 155);
@@ -2768,6 +3054,10 @@ if ($seoApp) {
 <?php if ($seoApp): ?>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"SoftwareApplication","name":"<?= e($seoApp['name']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>","applicationCategory":"<?= $seoApp['kind'] === 'game' ? 'GameApplication' : 'MobileApplication' ?>","operatingSystem":"ANDROID"<?= $seoApp['version'] ? ',"softwareVersion":"' . e($seoApp['version']) . '"' : '' ?><?= $seoApp['rating_avg'] ? ',"aggregateRating":{"@type":"AggregateRating","ratingValue":"' . e($seoApp['rating_avg']) . '","ratingCount":"' . max(1, (int)$seoApp['downloads']) . '"}' : '' ?>,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+</script>
+<?php elseif ($seoListing): ?>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Product","name":"<?= e($seoListing['title']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>"<?= $seoListing['price'] ? ',"offers":{"@type":"Offer","price":"' . e($seoListing['price']) . '","priceCurrency":"USD","availability":"https://schema.org/InStock"}' : '' ?>}
 </script>
 <?php elseif ($seoProduct): ?>
 <script type="application/ld+json">
@@ -3409,6 +3699,8 @@ function googleTranslateElementInit(){
     <a href="?page=apps&kind=app"><?= icon('android') ?> التطبيقات</a>
     <a href="?page=apps&kind=game"><?= icon('rocket') ?> الألعاب</a>
     <a href="?page=store"><?= icon('cart') ?> المتجر (منتجات للبيع)</a>
+    <a href="?page=classifieds"><?= icon('megaphone') ?> الإعلانات المبوّبة</a>
+    <a href="?page=post_ad"><?= icon('plus') ?> نشر إعلان</a>
     <?php if ($user): ?><a href="?page=profile"><?= icon('user') ?> ملفي الشخصي</a><?php endif; ?>
     <a href="?page=favorites"><?= icon('heart') ?> المفضّلة</a>
     <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
@@ -3730,6 +4022,31 @@ case 'home':
             </div>
             <div style="text-align:center;margin:18px 0">
               <a href="?page=apps" class="btn btn-ghost"><?= icon('android', 'ic-sm') ?>عرض كل التطبيقات والألعاب</a>
+            </div>
+            <?php
+        },
+        'latest_listings' => function () {
+            $listingsHome = db()->query("SELECT * FROM listings WHERE status='approved' ORDER BY id DESC LIMIT 7")->fetchAll();
+            if (!$listingsHome) return; ?>
+            <div class="section-title"><?= icon('megaphone', 'ic') ?>أحدث الإعلانات</div>
+            <div class="grid apps-grid">
+              <?php foreach ($listingsHome as $lh): ?>
+                <a class="app-card" href="?page=listing&id=<?= (int)$lh['id'] ?>">
+                  <?php
+                  $lhImages = json_decode((string)$lh['images'], true) ?: [];
+                  $lhImg = $lhImages[0] ?? null;
+                  ?>
+                  <?php if ($lhImg): ?><img class="pimg" loading="lazy" decoding="async" src="<?= e($lhImg) ?>" alt="<?= e($lh['title']) ?>">
+                  <?php else: ?><div class="pimg icon-wrap" style="display:flex;align-items:center;justify-content:center;font-size:40px"><?= icon('megaphone', 'ic ic-lg') ?></div><?php endif; ?>
+                  <div class="app-card-body">
+                    <div class="app-card-name"><?= e($lh['title']) ?></div>
+                    <?php if ($lh['price']): ?><div style="color:var(--accent);font-weight:700;margin-top:4px"><?= number_format((float)$lh['price']) ?> $</div><?php endif; ?>
+                  </div>
+                </a>
+              <?php endforeach; ?>
+            </div>
+            <div style="text-align:center;margin:18px 0">
+              <a href="?page=classifieds" class="btn btn-ghost"><?= icon('megaphone', 'ic-sm') ?>عرض كل الإعلانات</a>
             </div>
             <?php
         },
@@ -4542,6 +4859,24 @@ case 'profile':
       </div>
     </div>
     <?php
+    $myListingStatusLabels = ['pending' => 'قيد المراجعة', 'approved' => 'منشور', 'rejected' => 'مرفوض'];
+    $st = db()->prepare("SELECT * FROM listings WHERE user_id=? ORDER BY id DESC"); $st->execute([$user['id']]);
+    $myListings = $st->fetchAll();
+    ?>
+    <div class="admin-box">
+      <h3 style="margin-bottom:10px"><?= icon('megaphone', 'ic-sm') ?>إعلاناتي (<?= count($myListings) ?>)</h3>
+      <?php if (!$myListings): ?>
+        <p style="color:var(--muted);font-size:13px">لم تنشر أي إعلان بعد. <a href="?page=post_ad">انشر إعلانك الأول</a></p>
+      <?php else: ?>
+        <?php foreach ($myListings as $ml): ?>
+          <div class="profile-info-row">
+            <span><a href="<?= $ml['status'] === 'approved' ? '?page=listing&id=' . (int)$ml['id'] : '#' ?>"><?= e($ml['title']) ?></a></span>
+            <strong class="tag" style="background:<?= $ml['status'] === 'approved' ? '#1f9d55' : ($ml['status'] === 'rejected' ? '#c0392b' : '#555') ?>"><?= e($myListingStatusLabels[$ml['status']] ?? $ml['status']) ?></strong>
+          </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+    </div>
+    <?php
     break;
 
 case 'privacy':
@@ -4602,12 +4937,254 @@ case 'post':
     <?php
     break;
 
+case 'post_ad':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لنشر إعلان.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $paCats = db()->query("SELECT * FROM listing_categories WHERE active=1 ORDER BY sort_order ASC, id ASC")->fetchAll();
+    ?>
+    <div class="section-title"><?= icon('megaphone', 'ic') ?>نشر إعلان جديد</div>
+    <div class="admin-box" style="margin-bottom:14px">
+      <p style="color:var(--muted);font-size:13px">يتم نشر إعلانك بعد موافقة الإدارة عليه، وسيظهر برابط مستقل قابل للظهور في نتائج بحث جوجل.</p>
+    </div>
+    <div class="admin-box">
+      <label>القسم <span style="color:var(--danger)">*</span>
+        <select id="paCategory" style="width:100%;margin-top:6px;background:#101a2e;border:1px solid #28304a;border-radius:10px;padding:10px;color:var(--text)">
+          <option value="">اختر القسم</option>
+          <?php foreach ($paCats as $pc): ?>
+            <option value="<?= (int)$pc['id'] ?>"><?= e($pc['icon'] ? $pc['icon'] . ' ' : '') . e($pc['name']) ?></option>
+          <?php endforeach; ?>
+        </select>
+      </label>
+      <label style="margin-top:10px;display:block">عنوان الإعلان <span style="color:var(--danger)">*</span>
+        <input type="text" id="paTitle" placeholder="مثال: تويوتا كامري 2020 بحالة ممتازة" maxlength="190">
+      </label>
+      <label style="margin-top:10px;display:block">السعر (اختياري، بالدولار)
+        <input type="number" id="paPrice" placeholder="السعر">
+      </label>
+      <label style="margin-top:10px;display:block">رقم الهاتف للتواصل <span style="color:var(--danger)">*</span>
+        <input type="text" id="paPhone" placeholder="رقم هاتفك (سيظهر للمشترين)">
+      </label>
+      <label style="margin-top:10px;display:block">الوصف <span style="color:var(--danger)">*</span>
+        <textarea id="paDesc" rows="5" maxlength="4000" placeholder="اكتب وصفاً تفصيلياً للمنتج/الخدمة" style="width:100%;margin-top:6px;background:#101a2e;border:1px solid #28304a;border-radius:10px;padding:10px;color:var(--text);font-family:inherit"></textarea>
+      </label>
+      <label style="margin-top:10px;display:block">رابط فيديو (اختياري)
+        <input type="text" id="paVideo" placeholder="رابط يوتيوب أو فيديو مباشر">
+      </label>
+      <div style="margin-top:10px">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>إضافة صورة<input type="file" accept="image/*" style="display:none" onchange="uploadListingImage(this)"></label>
+          <span style="color:var(--muted);font-size:12px">صورة واحدة على الأقل، حتى 10 صور</span>
+        </div>
+        <div id="paImagesPreview" style="display:flex;gap:8px;flex-wrap:wrap;margin-top:10px"></div>
+      </div>
+      <div id="paMsg" style="font-size:13px;margin-top:10px"></div>
+      <button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="submitListingAd()"><?= icon('send', 'ic-sm') ?>إرسال الإعلان للمراجعة</button>
+    </div>
+    <script>
+    let paImages = [];
+    async function uploadListingImage(input){
+      if (!input.files || !input.files[0]) return;
+      const d = new FormData();
+      d.append('file', input.files[0]);
+      toast('جاري رفع الصورة...');
+      const r = await fetch('?action=api_upload_listing_image', { method: 'POST', body: (() => { d.append('csrf', CSRF); return d; })() });
+      const res = await r.json();
+      if (res.ok) {
+        paImages.push(res.url);
+        const wrap = document.getElementById('paImagesPreview');
+        const img = document.createElement('img');
+        img.src = res.url; img.style.width = '70px'; img.style.height = '70px'; img.style.objectFit = 'cover'; img.style.borderRadius = '8px';
+        wrap.appendChild(img);
+        toast('تمت إضافة الصورة');
+      } else toast(res.msg || 'فشل رفع الصورة.');
+      input.value = '';
+    }
+    function submitListingAd(){
+      const msgEl = document.getElementById('paMsg');
+      const categoryId = document.getElementById('paCategory').value;
+      const title = document.getElementById('paTitle').value.trim();
+      const phone = document.getElementById('paPhone').value.trim();
+      const desc = document.getElementById('paDesc').value.trim();
+      if (!categoryId) { msgEl.style.color = '#e74c3c'; msgEl.textContent = 'يرجى اختيار القسم.'; return; }
+      if (!title || !desc) { msgEl.style.color = '#e74c3c'; msgEl.textContent = 'العنوان والوصف مطلوبان.'; return; }
+      if (!phone) { msgEl.style.color = '#e74c3c'; msgEl.textContent = 'رقم الهاتف مطلوب.'; return; }
+      if (!paImages.length) { msgEl.style.color = '#e74c3c'; msgEl.textContent = 'أضف صورة واحدة على الأقل.'; return; }
+      const d = new FormData();
+      d.append('category_id', categoryId);
+      d.append('title', title);
+      d.append('description', desc);
+      d.append('price', document.getElementById('paPrice').value.trim());
+      d.append('phone', phone);
+      d.append('video_url', document.getElementById('paVideo').value.trim());
+      paImages.forEach(u => d.append('images[]', u));
+      post('api_submit_listing', d).then(res => {
+        msgEl.style.color = res.ok ? '#2ecc71' : '#e74c3c';
+        msgEl.textContent = res.msg || '';
+        if (res.ok) setTimeout(() => location.href = '?page=classifieds', 1200);
+      });
+    }
+    </script>
+    <?php
+    break;
+
+case 'classifieds':
+    $clCats = db()->query("SELECT * FROM listing_categories WHERE active=1 ORDER BY sort_order ASC, id ASC")->fetchAll();
+    $clCatId = (int)($_GET['cat'] ?? 0);
+    if ($clCatId) {
+        $st = db()->prepare("SELECT * FROM listings WHERE status='approved' AND category_id=? ORDER BY id DESC");
+        $st->execute([$clCatId]);
+    } else {
+        $st = db()->query("SELECT * FROM listings WHERE status='approved' ORDER BY id DESC");
+    }
+    $clListings = $st->fetchAll();
+    ?>
+    <div class="section-title"><?= icon('megaphone', 'ic') ?>الإعلانات المبوّبة</div>
+    <div class="admin-box" style="margin-bottom:14px;text-align:center">
+      <a href="?page=post_ad" class="btn btn-primary"><?= icon('plus', 'ic-sm') ?>نشر إعلان جديد</a>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+      <a href="?page=classifieds" class="btn <?= !$clCatId ? 'btn-primary' : 'btn-ghost' ?>">الكل</a>
+      <?php foreach ($clCats as $cc): ?>
+        <a href="?page=classifieds&cat=<?= (int)$cc['id'] ?>" class="btn <?= $clCatId === (int)$cc['id'] ? 'btn-primary' : 'btn-ghost' ?>"><?= e($cc['icon'] ? $cc['icon'] . ' ' : '') . e($cc['name']) ?></a>
+      <?php endforeach; ?>
+    </div>
+    <?php if (!$clListings): ?>
+      <div class="empty"><?= icon('megaphone', 'ic ic-lg') ?><br>لا توجد إعلانات حالياً في هذا القسم.</div>
+    <?php else: ?>
+      <div class="apps-grid">
+        <?php foreach ($clListings as $cl): $clImgs = json_decode($cl['images'] ?? '[]', true) ?: []; ?>
+        <a class="app-card" href="?page=listing&id=<?= (int)$cl['id'] ?>">
+          <?php if ($clImgs): ?><img class="pimg" loading="lazy" decoding="async" src="<?= e($clImgs[0]) ?>" alt="<?= e($cl['title']) ?>"><?php endif; ?>
+          <div class="app-card-body">
+            <div class="app-card-name"><?= e($cl['title']) ?></div>
+            <?php if ($cl['price']): ?><div style="color:var(--accent);font-weight:700;margin-top:4px"><?= e($cl['price']) ?>$</div><?php endif; ?>
+            <div style="color:var(--muted);font-size:11px;margin-top:6px"><?= icon('eye', 'ic-sm') ?> <?= number_format((int)$cl['views']) ?></div>
+          </div>
+        </a>
+        <?php endforeach; ?>
+      </div>
+    <?php endif; ?>
+    <?php
+    break;
+
+case 'listing':
+    $lsId = (int)($_GET['id'] ?? 0);
+    $st = db()->prepare("SELECT l.*, c.name cname, c.icon cicon FROM listings l LEFT JOIN listing_categories c ON c.id=l.category_id WHERE l.id=? AND l.status='approved'");
+    $st->execute([$lsId]);
+    $ls = $st->fetch();
+    if (!$ls) { echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>الإعلان غير موجود أو غير منشور.<br><a href="?page=classifieds" class="btn btn-primary" style="margin-top:14px;display:inline-block">تصفّح الإعلانات</a></div>'; break; }
+    if (empty($_GET['no_snapshot'])) {
+        db()->prepare("UPDATE listings SET views = views + 1 WHERE id=?")->execute([$lsId]);
+    }
+    $lsImgs = json_decode($ls['images'] ?? '[]', true) ?: [];
+    $lsConvId = null;
+    if ($user && (int)$user['id'] !== (int)$ls['user_id']) {
+        $cst = db()->prepare("SELECT id FROM listing_conversations WHERE listing_id=? AND buyer_id=?");
+        $cst->execute([$lsId, $user['id']]);
+        $crow = $cst->fetch();
+        if ($crow) $lsConvId = (int)$crow['id'];
+    }
+    ?>
+    <div class="breadcrumb" style="padding:14px 18px;font-size:13px;color:var(--muted)">
+      <a href="?">الرئيسية</a> / <a href="?page=classifieds">الإعلانات المبوّبة</a> / <span><?= e($ls['title']) ?></span>
+    </div>
+    <div class="admin-box">
+      <?php if ($lsImgs): ?>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px">
+        <?php foreach ($lsImgs as $li): ?><img src="<?= e($li) ?>" loading="lazy" decoding="async" style="width:140px;height:140px;object-fit:cover;border-radius:12px" alt="<?= e($ls['title']) ?>"><?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+      <?php if ($ls['video_url']): ?>
+      <div style="margin-bottom:14px"><a href="<?= e($ls['video_url']) ?>" target="_blank" class="btn btn-ghost"><?= icon('eye', 'ic-sm') ?>مشاهدة الفيديو</a></div>
+      <?php endif; ?>
+      <?php if ($ls['cname']): ?><span class="tag" style="position:static;display:inline-block;margin-bottom:8px"><?= e(($ls['cicon'] ? $ls['cicon'] . ' ' : '') . $ls['cname']) ?></span><?php endif; ?>
+      <h1><?= e($ls['title']) ?></h1>
+      <?php if ($ls['price']): ?><div class="pd-price"><span class="price"><?= e($ls['price']) ?>$</span></div><?php endif; ?>
+      <p class="pd-desc"><?= nl2br(e($ls['description'])) ?></p>
+      <div style="color:var(--muted);font-size:12px;margin-top:8px"><?= icon('eye', 'ic-sm') ?> <?= number_format((int)$ls['views']) ?> مشاهدة · <?= e(substr($ls['created_at'], 0, 10)) ?></div>
+    </div>
+
+    <div class="admin-box" style="margin-top:14px">
+      <h3><?= icon('telegram', 'ic-sm') ?>التواصل مع البائع</h3>
+      <div id="lsPhoneWrap">
+        <button class="btn btn-ghost" onclick="document.getElementById('lsPhoneWrap').innerHTML='<strong>📞 <?= e($ls['phone']) ?></strong>'">إظهار رقم الهاتف</button>
+      </div>
+      <?php if ($user && (int)$user['id'] !== (int)$ls['user_id']): ?>
+      <div style="margin-top:10px">
+        <button class="btn btn-primary" onclick="openListingChat(<?= (int)$ls['id'] ?>)"><?= icon('send', 'ic-sm') ?>محادثة البائع</button>
+      </div>
+      <?php elseif (!$user): ?>
+      <div style="margin-top:10px"><button class="btn btn-primary" onclick="openAuthModal()">سجّل الدخول لمحادثة البائع</button></div>
+      <?php endif; ?>
+    </div>
+
+    <?php if ($user && (int)$user['id'] !== (int)$ls['user_id']): ?>
+    <div class="admin-box" id="lsChatBox" style="margin-top:14px;display:none">
+      <h3><?= icon('send', 'ic-sm') ?>المحادثة</h3>
+      <div id="lsChatMessages" style="max-height:320px;overflow-y:auto;display:flex;flex-direction:column;gap:8px;margin-bottom:10px"></div>
+      <div style="display:flex;gap:8px">
+        <input type="text" id="lsChatInput" placeholder="اكتب رسالتك..." style="flex:1">
+        <button class="btn btn-primary" onclick="sendListingMessage()"><?= icon('send', 'ic-sm') ?></button>
+      </div>
+    </div>
+    <script>
+    let lsConvId = <?= $lsConvId ? (int)$lsConvId : 'null' ?>;
+    let lsListingId = <?= (int)$ls['id'] ?>;
+    let lsChatPoll = null;
+    function renderListingMessages(list){
+      const wrap = document.getElementById('lsChatMessages');
+      wrap.innerHTML = '';
+      list.forEach(m => {
+        const div = document.createElement('div');
+        const mine = m.sender_id === <?= (int)($user['id'] ?? 0) ?>;
+        div.style.alignSelf = mine ? 'flex-end' : 'flex-start';
+        div.style.background = mine ? 'var(--accent)' : '#1a2438';
+        div.style.color = '#fff';
+        div.style.padding = '8px 12px';
+        div.style.borderRadius = '10px';
+        div.style.maxWidth = '75%';
+        div.textContent = m.body;
+        wrap.appendChild(div);
+      });
+      wrap.scrollTop = wrap.scrollHeight;
+    }
+    async function fetchListingMessages(){
+      if (!lsConvId) return;
+      const d = new FormData(); d.append('conversation_id', lsConvId);
+      const res = await post('api_listing_fetch_messages', d);
+      if (res.ok) renderListingMessages(res.messages);
+    }
+    async function openListingChat(listingId){
+      document.getElementById('lsChatBox').style.display = 'block';
+      if (!lsConvId) {
+        const d = new FormData(); d.append('listing_id', listingId);
+        const res = await post('api_listing_start_chat', d);
+        if (res.ok) lsConvId = res.conversation_id; else { toast(res.msg || 'فشل بدء المحادثة'); return; }
+      }
+      fetchListingMessages();
+      if (lsChatPoll) clearInterval(lsChatPoll);
+      lsChatPoll = setInterval(fetchListingMessages, 4000);
+    }
+    function sendListingMessage(){
+      const input = document.getElementById('lsChatInput');
+      const body = input.value.trim();
+      if (!body || !lsConvId) return;
+      const d = new FormData(); d.append('conversation_id', lsConvId); d.append('body', body);
+      post('api_listing_send_message', d).then(res => {
+        if (res.ok) { input.value = ''; fetchListingMessages(); } else toast(res.msg || 'فشل إرسال الرسالة');
+      });
+    }
+    if (lsConvId) { document.addEventListener('DOMContentLoaded', () => openListingChat(lsListingId)); }
+    </script>
+    <?php endif; ?>
+    <?php
+    break;
+
 case 'admin':
     require_admin();
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'agents'=>['star','طلبات الوكلاء'],'posts'=>['doc','المقالات (SEO)'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'agents'=>['star','طلبات الوكلاء'],'classifieds'=>['megaphone','الإعلانات المبوّبة'],'posts'=>['doc','المقالات (SEO)'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -4624,6 +5201,7 @@ case 'admin':
         $pending_agents = (int)db()->query("SELECT COUNT(*) c FROM agent_applications WHERE status='pending'")->fetch()['c'];
         $posts_count = (int)db()->query("SELECT COUNT(*) c FROM landing_posts WHERE published=1")->fetch()['c'];
         $posts_views_total = (int)db()->query("SELECT COALESCE(SUM(views),0) s FROM landing_posts")->fetch()['s'];
+        $listings_pending_count = (int)db()->query("SELECT COUNT(*) c FROM listings WHERE status='pending'")->fetch()['c'];
 
         $today = date('Y-m-d') . ' 00:00:00';
         $weekAgo = date('Y-m-d', strtotime('-7 days')) . ' 00:00:00';
@@ -4653,6 +5231,7 @@ case 'admin':
         <div class="stat-card"><?= icon('star', 'ic') ?><div><div class="num"><?= $pending_agents ?></div><div class="lbl">طلبات وكلاء معلّقة</div></div></div>
         <div class="stat-card"><?= icon('doc', 'ic') ?><div><div class="num"><?= $posts_count ?></div><div class="lbl">مقالات منشورة</div></div></div>
         <div class="stat-card"><?= icon('eye', 'ic') ?><div><div class="num"><?= number_format($posts_views_total) ?></div><div class="lbl">مشاهدات المقالات</div></div></div>
+        <div class="stat-card"><?= icon('megaphone', 'ic') ?><div><div class="num"><?= $listings_pending_count ?></div><div class="lbl">إعلانات مبوّبة بانتظار المراجعة</div></div></div>
       </div>
       <div class="formrow">
         <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_today ?></div><div class="lbl">مستخدمون جدد اليوم</div></div></div>
@@ -5071,6 +5650,7 @@ case 'admin':
             'ticker' => 'الشريط الإعلاني المتحرك',
             'live_ticker' => 'شريط أحدث التطبيقات والألعاب المباشر',
             'latest_apps' => 'أحدث التطبيقات والألعاب',
+            'latest_listings' => 'أحدث الإعلانات المبوّبة',
             'trending_apps' => 'الأكثر تحميلاً',
             'products' => 'شبكة المنتجات حسب التصنيف',
             'soon' => 'قسم "قريباً"',
@@ -5238,6 +5818,76 @@ case 'admin':
             <td style="display:flex;gap:4px;flex-wrap:wrap">
               <form method="post" action="?action=admin_agent_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$aa['id'] ?>"><input type="hidden" name="status" value="approved"><button class="btn btn-ghost">قبول</button></form>
               <form method="post" action="?action=admin_agent_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$aa['id'] ?>"><input type="hidden" name="status" value="rejected"><button class="btn btn-ghost">رفض</button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'classifieds'):
+        $listingCats = db()->query("SELECT * FROM listing_categories ORDER BY sort_order ASC, id ASC")->fetchAll();
+        $listingsAll = db()->query("SELECT l.*, u.name uname, u.username, c.name cname FROM listings l
+            LEFT JOIN users u ON u.id=l.user_id LEFT JOIN listing_categories c ON c.id=l.category_id
+            ORDER BY (l.status='pending') DESC, l.id DESC")->fetchAll();
+        $listingPendingCount = 0; foreach ($listingsAll as $ll) if ($ll['status'] === 'pending') $listingPendingCount++;
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('plus', 'ic') ?>إضافة / تعديل قسم إعلانات</h3>
+        <form method="post" action="?action=admin_save_listing_category">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="id" id="lcid">
+          <div class="formrow">
+            <input name="name" id="lcname" placeholder="اسم القسم (مثال: سيارات ومركبات)" required>
+            <input name="icon" id="lcicon" placeholder="إيموجي يمثّل القسم (مثال: 🚗)" maxlength="10">
+          </div>
+          <button class="btn" type="submit">حفظ القسم</button>
+          <button class="btn btn-ghost" type="button" onclick="document.getElementById('lcid').value='';document.getElementById('lcname').value='';document.getElementById('lcicon').value=''">قسم جديد</button>
+        </form>
+      </div>
+
+      <div class="admin-box">
+        <h3>أقسام الإعلانات الحالية</h3>
+        <table>
+          <tr><th>الأيقونة</th><th>الاسم</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($listingCats as $lc): ?>
+          <tr>
+            <td><?= e($lc['icon'] ?: '—') ?></td>
+            <td><?= e($lc['name']) ?></td>
+            <td><?= $lc['active'] ? 'مفعّل' : 'متوقف' ?></td>
+            <td style="display:flex;gap:4px;flex-wrap:wrap">
+              <button class="btn btn-ghost" type="button" onclick="document.getElementById('lcid').value='<?= (int)$lc['id'] ?>';document.getElementById('lcname').value='<?= e($lc['name']) ?>';document.getElementById('lcicon').value='<?= e($lc['icon']) ?>'">تعديل</button>
+              <form method="post" action="?action=admin_toggle_listing_category"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$lc['id'] ?>"><button class="btn btn-ghost"><?= $lc['active'] ? 'تعطيل' : 'تفعيل' ?></button></form>
+              <form method="post" action="?action=admin_delete_listing_category" onsubmit="return confirm('حذف القسم؟')"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$lc['id'] ?>"><button class="btn btn-ghost">حذف</button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('megaphone', 'ic') ?>الإعلانات المنشورة من المستخدمين (<?= $listingPendingCount ?> بانتظار المراجعة)</h3>
+        <?php if (!$listingsAll): ?><div class="empty">لا توجد إعلانات بعد.</div><?php endif; ?>
+        <table>
+          <tr><th>العنوان</th><th>القسم</th><th>الناشر</th><th>الهاتف</th><th>الحالة</th><th>الصفحة الثابتة</th><th>إجراء</th></tr>
+          <?php foreach ($listingsAll as $ll): ?>
+          <tr>
+            <td><?= e($ll['title']) ?></td>
+            <td><?= e($ll['cname'] ?: '—') ?></td>
+            <td><?= e($ll['uname'] ?: $ll['username'] ?: '—') ?></td>
+            <td><?= e($ll['phone']) ?></td>
+            <td><?= e($ll['status'] === 'approved' ? 'منشور' : ($ll['status'] === 'rejected' ? 'مرفوض' : 'قيد المراجعة')) ?></td>
+            <td><?= $ll['html_path'] ? '<a href="' . e($ll['html_path']) . '" target="_blank">عرض</a>' : '—' ?></td>
+            <td style="display:flex;gap:4px;flex-wrap:wrap">
+              <?php if ($ll['status'] !== 'approved'): ?>
+              <form method="post" action="?action=admin_listing_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ll['id'] ?>"><input type="hidden" name="decision" value="approve"><button class="btn btn-ghost">قبول ونشر</button></form>
+              <?php endif; ?>
+              <?php if ($ll['status'] !== 'rejected'): ?>
+              <form method="post" action="?action=admin_listing_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ll['id'] ?>"><input type="hidden" name="decision" value="reject"><button class="btn btn-ghost">رفض</button></form>
+              <?php endif; ?>
+              <?php if ($ll['status'] === 'approved'): ?>
+              <form method="post" action="?action=admin_listing_regenerate_html"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ll['id'] ?>"><button class="btn btn-ghost">إعادة توليد HTML</button></form>
+              <?php endif; ?>
+              <form method="post" action="?action=admin_delete_listing" onsubmit="return confirm('حذف الإعلان؟')"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ll['id'] ?>"><button class="btn btn-ghost">حذف</button></form>
             </td>
           </tr>
           <?php endforeach; ?>
@@ -5736,6 +6386,7 @@ default:
   <a href="?page=apps&kind=game" class="<?= $page === 'apps' && $appsKindNav === 'game' ? 'active' : '' ?>"><?= icon('rocket', 'ic') ?>ألعاب</a>
   <a href="?page=store" class="<?= $page === 'store' ? 'active' : '' ?>"><?= icon('cart', 'ic') ?>المتجر</a>
   <a href="?page=favorites" class="<?= $page === 'favorites' ? 'active' : '' ?>"><?= icon('heart', 'ic') ?>المفضّلة</a>
+  <a href="?page=classifieds" class="<?= $page === 'classifieds' ? 'active' : '' ?>"><?= icon('megaphone', 'ic') ?>إعلانات</a>
 </div>
 
 <button id="scrollTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="أعلى الصفحة"><?= icon('chevron-up', 'ic') ?></button>
