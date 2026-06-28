@@ -1,6 +1,6 @@
 <?php
 /**
- * zanxpk — متجر تطبيقات وألعاب أندرويد + متجر منتجات رقمية + لوحة إدارة
+ * Yassota — متجر تطبيقات وألعاب أندرويد + متجر منتجات رقمية + لوحة إدارة
  * ملف واحد يحتوي كل شيء: PHP + HTML + CSS + JS
  */
 
@@ -180,6 +180,19 @@ function migrate(): void
         link VARCHAR(500) NULL,
         active TINYINT NOT NULL DEFAULT 1,
         sort_order INT NOT NULL DEFAULT 0,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS landing_posts (
+        id $id,
+        slug VARCHAR(190) NOT NULL UNIQUE,
+        title VARCHAR(190) NOT NULL,
+        excerpt VARCHAR(300) NULL,
+        content TEXT NULL,
+        cover_image VARCHAR(500) NULL,
+        meta_title VARCHAR(190) NULL,
+        meta_description VARCHAR(255) NULL,
+        published TINYINT NOT NULL DEFAULT 1,
+        views INT NOT NULL DEFAULT 0,
         created_at $ts
     )$engine",
     "CREATE TABLE IF NOT EXISTS telegram_users (
@@ -417,13 +430,25 @@ function migrate(): void
         created_at " . (DB_DRIVER === 'sqlite' ? "TEXT DEFAULT (datetime('now'))" : "DATETIME DEFAULT CURRENT_TIMESTAMP") . "
     )");
 
+    $pdo->exec("CREATE TABLE IF NOT EXISTS agent_applications (
+        id " . (DB_DRIVER === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INT AUTO_INCREMENT PRIMARY KEY') . ",
+        user_id INT NULL,
+        full_name VARCHAR(190) NOT NULL,
+        phone VARCHAR(60) NULL,
+        email VARCHAR(190) NULL,
+        message VARCHAR(800) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        admin_note VARCHAR(255) NULL,
+        created_at " . (DB_DRIVER === 'sqlite' ? "TEXT DEFAULT (datetime('now'))" : "DATETIME DEFAULT CURRENT_TIMESTAMP") . "
+    )");
+
     // seed default settings
     $defaults = [
-        'site_name' => 'zanxpk',
-        'site_description' => 'منصة zanxpk لتحميل أفضل التطبيقات والألعاب والتسوّق الإلكتروني',
-        'site_keywords' => 'متجر,تطبيقات,ألعاب,تحميل,zanxpk',
+        'site_name' => 'Yassota',
+        'site_description' => 'منصة Yassota لتحميل أفضل التطبيقات والألعاب والتسوّق الإلكتروني',
+        'site_keywords' => 'متجر,تطبيقات,ألعاب,تحميل,Yassota',
         'logo_url' => '',
-        'banner_title' => 'مرحباً بك في zanxpk',
+        'banner_title' => 'مرحباً بك في Yassota',
         'banner_subtitle' => 'حمّل أفضل التطبيقات والألعاب وتسوّق منتجاتك المفضّلة',
         'banner_bg_image' => '',
         'footer_text' => '',
@@ -655,10 +680,39 @@ function migrate(): void
             ->execute();
     }
 
+    // ترحيل لمرة واحدة: تغيير اسم الموقع إلى Yassota (إذا كان لا يزال على الاسم القديم zanxpk).
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='site_rename_yassota_migrated'")->fetchColumn() === '') {
+        $curName = (string)$pdo->query("SELECT v FROM settings WHERE k='site_name'")->fetchColumn();
+        if ($curName === '' || $curName === 'zanxpk') {
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('site_name', 'Yassota') ON CONFLICT(k) DO UPDATE SET v='Yassota'"
+                : "INSERT INTO settings (k, v) VALUES ('site_name', 'Yassota') ON DUPLICATE KEY UPDATE v='Yassota'")
+                ->execute();
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('site_rename_yassota_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('site_rename_yassota_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
     $walletCount = (int)$pdo->query("SELECT COUNT(*) c FROM wallets")->fetch()['c'];
     if ($walletCount === 0) {
         $pdo->prepare("INSERT INTO wallets (type, label, address) VALUES (?,?,?)")
-            ->execute(['usdt', 'USDT (شحن المحفظة)', '5e87321b9ab229a23cdce035290b10cb']);
+            ->execute(['usdt', 'USDT (TRC20)', 'ضع عنوان محفظة USDT (TRC20) الحقيقي الخاص بك من لوحة الإدارة']);
+    }
+
+    // ترحيل لمرة واحدة: قبول USDT فقط كوسيلة دفع، وتعطيل أي وسيلة أخرى كانت مفعّلة.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='usdt_only_migrated'")->fetchColumn() === '') {
+        $pdo->prepare("UPDATE wallets SET active=0 WHERE type <> 'usdt'")->execute();
+        $usdtActive = (int)$pdo->query("SELECT COUNT(*) c FROM wallets WHERE type='usdt' AND active=1")->fetch()['c'];
+        if ($usdtActive === 0) {
+            $lastUsdtId = $pdo->query("SELECT id FROM wallets WHERE type='usdt' ORDER BY id DESC LIMIT 1")->fetchColumn();
+            if ($lastUsdtId) $pdo->prepare("UPDATE wallets SET active=1 WHERE id=?")->execute([$lastUsdtId]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('usdt_only_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('usdt_only_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
     }
     $shamCount = (int)$pdo->query("SELECT COUNT(*) c FROM wallets WHERE type='sham'")->fetch()['c'];
     if ($shamCount === 0) {
@@ -1725,7 +1779,7 @@ if ($action && str_starts_with($action, 'api_')) {
     header('Content-Type: application/json; charset=utf-8');
     $u = current_user();
 
-    if (!$u && !in_array($action, ['api_ping', 'api_report_app'])) {
+    if (!$u && !in_array($action, ['api_ping', 'api_report_app', 'api_submit_agent_application'])) {
         echo json_encode(['ok' => false, 'msg' => 'يجب تسجيل الدخول أولاً.']); exit;
     }
 
@@ -1758,6 +1812,18 @@ if ($action && str_starts_with($action, 'api_')) {
             if ($title === '') { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم المنتج المقترح.']); exit; }
             db()->prepare("INSERT INTO product_suggestions (user_id, title, details) VALUES (?,?,?)")->execute([$u['id'], $title, $details]);
             echo json_encode(['ok' => true, 'msg' => 'تم إرسال اقتراحك، شكراً لك!']); exit;
+
+        case 'api_submit_agent_application':
+            csrf_check();
+            $agFullName = trim($_POST['full_name'] ?? '');
+            $agPhone = trim($_POST['phone'] ?? '');
+            $agEmail = trim($_POST['email'] ?? '');
+            $agMessage = mb_substr(trim($_POST['message'] ?? ''), 0, 800);
+            if ($agFullName === '') { echo json_encode(['ok' => false, 'msg' => 'يرجى إدخال الاسم الكامل.']); exit; }
+            if ($agPhone === '' && $agEmail === '') { echo json_encode(['ok' => false, 'msg' => 'يرجى إدخال رقم هاتف أو بريد إلكتروني للتواصل معك.']); exit; }
+            db()->prepare("INSERT INTO agent_applications (user_id, full_name, phone, email, message) VALUES (?,?,?,?,?)")
+                ->execute([$u ? $u['id'] : null, $agFullName, $agPhone ?: null, $agEmail ?: null, $agMessage ?: null]);
+            echo json_encode(['ok' => true, 'msg' => 'تم استلام طلبك بنجاح! سيتم التواصل معك خلال 48 ساعة كحد أقصى.']); exit;
 
         case 'api_toggle_wishlist':
             csrf_check();
@@ -2430,6 +2496,43 @@ if ($action && str_starts_with($action, 'admin_')) {
             db()->prepare("UPDATE product_suggestions SET status=? WHERE id=?")->execute([$_POST['status'] === 'dismissed' ? 'dismissed' : 'reviewed', (int)$_POST['id']]);
             redirect('?page=admin&tab=suggestions');
 
+        case 'admin_agent_decision':
+            $agStatus = in_array($_POST['status'] ?? '', ['approved', 'rejected'], true) ? $_POST['status'] : 'pending';
+            db()->prepare("UPDATE agent_applications SET status=?, admin_note=? WHERE id=?")
+                ->execute([$agStatus, trim($_POST['admin_note'] ?? '') ?: null, (int)$_POST['id']]);
+            redirect('?page=admin&tab=agents');
+
+        case 'admin_save_post':
+            $postId = (int)($_POST['id'] ?? 0);
+            $postTitle = trim($_POST['title'] ?? '');
+            $postSlug = trim($_POST['slug'] ?? '');
+            if ($postSlug === '') $postSlug = $postTitle;
+            $postSlug = trim(preg_replace('/-+/', '-', preg_replace('/[^a-z0-9\x{0600}-\x{06FF}]+/u', '-', mb_strtolower($postSlug))), '-');
+            if ($postSlug === '') $postSlug = 'post-' . substr(bin2hex(random_bytes(4)), 0, 8);
+            $postExcerpt = mb_substr(trim($_POST['excerpt'] ?? ''), 0, 300);
+            $postContent = $_POST['content'] ?? '';
+            $postCover = trim($_POST['cover_image'] ?? '');
+            $postMetaTitle = trim($_POST['meta_title'] ?? '');
+            $postMetaDesc = trim($_POST['meta_description'] ?? '');
+            $postPublished = !empty($_POST['published']) ? 1 : 0;
+            if ($postTitle === '') { flash('يرجى إدخال عنوان للمنشور.', 'error'); redirect('?page=admin&tab=posts'); }
+            if ($postId > 0) {
+                db()->prepare("UPDATE landing_posts SET slug=?, title=?, excerpt=?, content=?, cover_image=?, meta_title=?, meta_description=?, published=? WHERE id=?")
+                    ->execute([$postSlug, $postTitle, $postExcerpt ?: null, $postContent, $postCover ?: null, $postMetaTitle ?: null, $postMetaDesc ?: null, $postPublished, $postId]);
+            } else {
+                db()->prepare("INSERT INTO landing_posts (slug, title, excerpt, content, cover_image, meta_title, meta_description, published) VALUES (?,?,?,?,?,?,?,?)")
+                    ->execute([$postSlug, $postTitle, $postExcerpt ?: null, $postContent, $postCover ?: null, $postMetaTitle ?: null, $postMetaDesc ?: null, $postPublished]);
+            }
+            redirect('?page=admin&tab=posts');
+
+        case 'admin_delete_post':
+            db()->prepare("DELETE FROM landing_posts WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=posts');
+
+        case 'admin_toggle_post':
+            db()->prepare("UPDATE landing_posts SET published = 1 - published WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=posts');
+
         case 'admin_report_decision':
             db()->prepare("UPDATE app_reports SET status='resolved' WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=reports');
@@ -2588,6 +2691,13 @@ if ($page === 'product') {
     $seoProduct = $st->fetch();
     if (!$seoProduct) { http_response_code(404); }
 }
+$seoPost = null;
+if ($page === 'post') {
+    $st = db()->prepare("SELECT * FROM landing_posts WHERE slug=? AND published=1");
+    $st->execute([trim((string)($_GET['slug'] ?? ''))]);
+    $seoPost = $st->fetch();
+    if (!$seoPost) { http_response_code(404); }
+}
 $seoApp = null;
 if (in_array($page, ['app', 'app_download'], true)) {
     $st = db()->prepare("SELECT * FROM apps WHERE id=? AND status='published'");
@@ -2595,12 +2705,17 @@ if (in_array($page, ['app', 'app_download'], true)) {
     $seoApp = $st->fetch();
     if (!$seoApp) { http_response_code(404); }
 }
-$pageLabels = ['home' => 'الرئيسية', 'favorites' => 'المفضّلة', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر', 'thankyou' => 'شكراً لزيارتك', 'about' => 'من نحن', 'faq' => 'الأسئلة الشائعة', 'contact' => 'تواصل معنا', 'guide' => 'دليل تحميل التطبيقات والألعاب أندرويد بأمان', 'top' => 'أفضل تطبيقات وألعاب أندرويد مهكرة ومجانية'];
+$pageLabels = ['home' => 'الرئيسية', 'favorites' => 'المفضّلة', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر', 'thankyou' => 'شكراً لزيارتك', 'about' => 'من نحن', 'faq' => 'الأسئلة الشائعة', 'contact' => 'تواصل معنا', 'guide' => 'دليل تحميل التطبيقات والألعاب أندرويد بأمان', 'top' => 'أفضل تطبيقات وألعاب أندرويد مهكرة ومجانية', 'checkout' => 'إتمام الشراء', 'become_agent' => 'كن وكيلاً وحقق أرباحاً', 'posts' => 'مقالات ومنشورات'];
 if ($seoApp) {
     $seoTitle = ($seoApp['seo_title'] ?: $seoApp['name']) . ' — تحميل ' . ($seoApp['kind'] === 'game' ? 'لعبة' : 'تطبيق') . ' مجاناً — ' . e($siteName);
     $seoDesc = $seoApp['seo_description'] ?: ($seoApp['short_description'] ?: mb_substr((string)$seoApp['description'], 0, 155));
     $seoImage = $seoApp['icon'] ?: $logo;
     $seoCanonical = app_canonical_url($seoApp);
+} elseif ($seoPost) {
+    $seoTitle = $seoPost['meta_title'] ?: $seoPost['title'];
+    $seoDesc = $seoPost['meta_description'] ?: ($seoPost['excerpt'] ?: mb_substr((string)strip_tags($seoPost['content']), 0, 155));
+    $seoImage = $seoPost['cover_image'] ?: $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=post&slug=' . rawurlencode($seoPost['slug']);
 } elseif ($seoProduct) {
     $seoTitle = $seoProduct['name'] . ' — ' . e($siteName);
     $seoDesc = $seoProduct['meta_description'] ?: mb_substr((string)$seoProduct['description'], 0, 155);
@@ -3298,6 +3413,8 @@ function googleTranslateElementInit(){
     <a href="?page=favorites"><?= icon('heart') ?> المفضّلة</a>
     <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
     <a href="?page=suggest"><?= icon('megaphone') ?> اقترح منتجاً</a>
+    <a href="?page=become_agent"><?= icon('star') ?> كن وكيلاً وحقق أرباحاً</a>
+    <a href="?page=posts"><?= icon('doc') ?> مقالات ومنشورات</a>
     <a href="?page=about"><?= icon('shield') ?> من نحن</a>
     <a href="?page=guide"><?= icon('doc') ?> دليل التحميل</a>
     <a href="?page=top"><?= icon('star') ?> أفضل التطبيقات</a>
@@ -3676,6 +3793,7 @@ case 'product':
         <div class="pd-price"><span class="price"><?= e($p['price']) ?>$</span><?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?></div>
         <?php if ($p['description']): ?><p class="pd-desc"><?= nl2br(e($p['description'])) ?></p><?php endif; ?>
         <button class="btn btn-primary buy" style="width:100%" onclick="buyProduct(<?= (int)$p['id'] ?>)"><?= icon('cart', 'ic-sm') ?>طلب شراء</button>
+        <a href="?page=checkout&id=<?= (int)$p['id'] ?>" class="btn btn-ghost" style="width:100%;margin-top:8px;display:block;text-align:center"><?= icon('orders', 'ic-sm') ?>صفحة الشراء الكاملة (USDT)</a>
       </div>
     </div>
     <?php
@@ -3716,6 +3834,158 @@ case 'product':
         if (res.ok) setTimeout(() => location.reload(), 900);
       });
       return false;
+    }
+    </script>
+    <?php
+    break;
+
+case 'checkout':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لإتمام عملية الشراء.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $coSt = db()->prepare("SELECT * FROM products WHERE id=? AND status='active'");
+    $coSt->execute([(int)($_GET['id'] ?? 0)]);
+    $coProduct = $coSt->fetch();
+    if (!$coProduct) { echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>المنتج غير موجود أو غير متاح.<br><a href="?" class="btn btn-primary" style="margin-top:14px;display:inline-block">عودة للرئيسية</a></div>'; break; }
+    $coUsdtWallet = null;
+    foreach ($activeWallets as $w) { if ($w['type'] === 'usdt') { $coUsdtWallet = $w; break; } }
+    ?>
+    <div class="breadcrumb" style="padding:14px 18px;font-size:13px;color:var(--muted)">
+      <a href="?">الرئيسية</a> / <a href="?page=product&id=<?= (int)$coProduct['id'] ?>"><?= e($coProduct['name']) ?></a> / <span>إتمام الشراء</span>
+    </div>
+    <div class="section-title"><?= icon('cart', 'ic') ?>إتمام عملية الشراء</div>
+
+    <div class="admin-box" style="display:flex;align-items:center;gap:14px;margin-bottom:14px">
+      <?php if ($coProduct['image']): ?><img src="<?= e($coProduct['image']) ?>" style="width:64px;height:64px;border-radius:12px;object-fit:cover;flex-shrink:0"><?php endif; ?>
+      <div>
+        <h3 style="margin:0"><?= e($coProduct['name']) ?></h3>
+        <div class="price" id="coFinalPrice" style="font-size:18px"><?= e($coProduct['price']) ?>$</div>
+      </div>
+    </div>
+
+    <div class="admin-box" style="margin-bottom:14px;border-color:var(--accent2)">
+      <h3><?= icon('coins', 'ic') ?>الخطوة 1 — إرسال المبلغ عبر USDT (TRC20)</h3>
+      <?php if ($coUsdtWallet): ?>
+      <p style="color:var(--muted);font-size:13px">قم بإرسال المبلغ بالضبط (<strong><?= e($coProduct['price']) ?>$</strong> بما يعادله USDT) إلى العنوان أدناه، ثم انسخ رقم العملية (TXID) وأدخله في الخطوة الثانية.</p>
+      <div class="topup-method" style="margin-top:10px">
+        <div class="topup-method-head"><strong><?= icon('coins', 'ic-sm') ?>USDT (TRC20)</strong></div>
+        <div class="topup-method-addr">
+          <code><?= e($coUsdtWallet['address']) ?></code>
+          <button type="button" class="btn-copy" onclick="copyAddr(this)" data-addr="<?= e($coUsdtWallet['address']) ?>"><?= icon('copy', 'ic-sm') ?></button>
+        </div>
+      </div>
+      <p style="color:var(--danger);font-size:12px;margin-top:8px"><?= icon('shield', 'ic-sm') ?>تأكد من اختيار شبكة TRC20 فقط عند الإرسال لتجنّب ضياع المبلغ.</p>
+      <?php else: ?>
+      <p style="color:var(--danger);font-size:13px">لم يتم ضبط عنوان محفظة USDT من لوحة الإدارة بعد. يرجى التواصل مع الدعم.</p>
+      <?php endif; ?>
+    </div>
+
+    <div class="admin-box" style="margin-bottom:14px">
+      <h3><?= icon('check', 'ic') ?>الخطوة 2 — إثبات الدفع</h3>
+      <label>الآيدي / الحساب الخاص بالطلب <span style="color:var(--danger)">*</span>
+        <input type="text" id="coAccountId" placeholder="أدخل الآيدي / الحساب الخاص بالطلب" required>
+      </label>
+      <label style="margin-top:10px;display:block">رقم العملية (TXID) <span style="color:var(--danger)">*</span>
+        <input type="text" id="coTxNote" placeholder="رقم عملية الإرسال (TXID) من محفظتك">
+      </label>
+      <label style="margin-top:10px;display:block">صورة الإيصال <span style="color:var(--danger)">*</span>
+        <div class="upload-box" id="coReceiptBox">
+          <div class="upload-box-empty">
+            <?= icon('upload', 'ic') ?>
+            <div class="upload-box-text"><strong>اضغط لاختيار صورة</strong> أو اسحبها هنا</div>
+            <div class="upload-box-hint">JPG, PNG, WEBP — حتى 5MB</div>
+          </div>
+          <div class="upload-box-preview" style="display:none">
+            <img id="coReceiptPreview">
+            <div class="upload-box-preview-info"><span id="coReceiptName"></span></div>
+            <button type="button" class="upload-box-remove" onclick="coClearReceiptFile(event)"><?= icon('x', 'ic-sm') ?></button>
+          </div>
+          <input type="file" id="coReceiptFile" accept="image/*" required>
+        </div>
+      </label>
+      <label style="margin-top:10px;display:block">كود الخصم (اختياري)
+        <div class="upload-row">
+          <input type="text" id="coCouponCode" placeholder="أدخل كود الخصم إن وجد">
+          <button type="button" class="btn btn-ghost" onclick="coApplyCoupon(<?= (int)$coProduct['id'] ?>, <?= (float)$coProduct['price'] ?>)">تطبيق</button>
+        </div>
+        <div id="coCouponMsg" style="font-size:13px;margin-top:4px"></div>
+      </label>
+    </div>
+
+    <div class="admin-box" style="margin-bottom:14px">
+      <h3><?= icon('clock', 'ic') ?>الخطوة 3 — التحقق والتفعيل</h3>
+      <p style="color:var(--muted);font-size:13px;margin:0">بعد إرسال الطلب، يقوم فريقنا بالتحقق اليدوي من عملية الدفع (مطابقة TXID والمبلغ)، ويتم تفعيل طلبك أو التواصل معك خلال مدة أقصاها 48 ساعة. يمكنك متابعة حالة الطلب من صفحة "طلباتي".</p>
+    </div>
+
+    <button type="button" class="btn btn-primary" style="width:100%" id="coSubmitBtn" onclick="submitCheckoutForm(<?= (int)$coProduct['id'] ?>)"><?= icon('check', 'ic-sm') ?>تأكيد الطلب</button>
+    <script>
+    let coAppliedCoupon = null;
+    function coResetReceiptBox(){
+      const box = document.getElementById('coReceiptBox');
+      box.classList.remove('has-file');
+      box.querySelector('.upload-box-empty').style.display = 'flex';
+      box.querySelector('.upload-box-preview').style.display = 'none';
+    }
+    function coClearReceiptFile(ev){
+      ev.preventDefault(); ev.stopPropagation();
+      document.getElementById('coReceiptFile').value = '';
+      coResetReceiptBox();
+    }
+    (function(){
+      const box = document.getElementById('coReceiptBox');
+      const input = document.getElementById('coReceiptFile');
+      if (!box || !input) return;
+      input.addEventListener('change', function(){
+        const f = this.files[0];
+        if (!f) { coResetReceiptBox(); return; }
+        box.classList.add('has-file');
+        box.querySelector('.upload-box-empty').style.display = 'none';
+        box.querySelector('.upload-box-preview').style.display = 'flex';
+        document.getElementById('coReceiptPreview').src = URL.createObjectURL(f);
+        document.getElementById('coReceiptName').textContent = f.name;
+      });
+    })();
+    async function coApplyCoupon(productId, basePrice){
+      const code = document.getElementById('coCouponCode').value.trim();
+      const msgEl = document.getElementById('coCouponMsg');
+      if (!code) { msgEl.textContent = ''; coAppliedCoupon = null; document.getElementById('coFinalPrice').textContent = basePrice + '$'; return; }
+      const d = new FormData();
+      d.append('code', code);
+      d.append('product_id', productId);
+      const res = await post('api_validate_coupon', d);
+      if (res.ok) {
+        coAppliedCoupon = code;
+        msgEl.style.color = '#2ecc71';
+        msgEl.textContent = 'تم تطبيق خصم ' + res.discount_percent + '%';
+        document.getElementById('coFinalPrice').textContent = res.new_price + '$';
+      } else {
+        coAppliedCoupon = null;
+        msgEl.style.color = '#e74c3c';
+        msgEl.textContent = res.msg || 'كود غير صالح';
+        document.getElementById('coFinalPrice').textContent = basePrice + '$';
+      }
+    }
+    async function submitCheckoutForm(productId){
+      const accountId = document.getElementById('coAccountId').value.trim();
+      const txNote = document.getElementById('coTxNote').value.trim();
+      const file = document.getElementById('coReceiptFile').files[0];
+      if (!accountId) return toast('يجب إدخال الآيدي.');
+      if (!txNote) return toast('يجب إدخال رقم العملية (TXID).');
+      if (!file) return toast('صورة الإيصال إجبارية.');
+      const btn = document.getElementById('coSubmitBtn');
+      btn.disabled = true;
+      const up = new FormData();
+      up.append('file', file);
+      const upRes = await post('api_upload_receipt', up);
+      if (!upRes.ok) { btn.disabled = false; return toast(upRes.msg || 'فشل رفع الإيصال.'); }
+      const d = new FormData();
+      d.append('product_id', productId);
+      d.append('account_id', accountId);
+      d.append('receipt_image', upRes.url);
+      d.append('tx_note', txNote);
+      if (coAppliedCoupon) d.append('coupon_code', coAppliedCoupon);
+      const res = await post('api_buy_product', d);
+      btn.disabled = false;
+      toast(res.msg);
+      if (res.ok) setTimeout(() => location.href = '?page=orders', 1200);
     }
     </script>
     <?php
@@ -4156,6 +4426,54 @@ case 'orders':
     <?php
     break;
 
+case 'become_agent':
+    ?>
+    <div class="section-title"><?= icon('star', 'ic') ?>كن وكيلاً وحقق أرباحاً</div>
+    <div class="admin-box" style="margin-bottom:14px;border-color:var(--accent2)">
+      <h3><?= icon('rocket', 'ic') ?>كيف يعمل برنامج الوكلاء؟</h3>
+      <p style="color:var(--muted);font-size:14px;line-height:1.8">
+        انضم كوكيل رسمي وانشر تطبيقاتنا وألعابنا لجمهورك (قناتك، مجموعاتك، صفحاتك)، واحصل على نسبة أرباح عالية جداً من كل نشاط ينتج عن نشرك — كلما زاد نشرك، زادت أرباحك.
+        للانضمام، قدّم طلباً وأرسل معلوماتك الشخصية مع رقم هاتفك أو بريدك الإلكتروني للتواصل، وسيقوم فريقنا بمراجعة طلبك والرد عليك خلال <strong>48 ساعة كحد أقصى</strong>.
+      </p>
+    </div>
+    <div class="admin-box">
+      <h3><?= icon('send', 'ic') ?>تقديم طلب الانضمام</h3>
+      <label>الاسم الكامل <span style="color:var(--danger)">*</span>
+        <input type="text" id="agFullName" placeholder="اسمك الكامل" <?= $user ? 'value="' . e($user['name']) . '"' : '' ?>>
+      </label>
+      <label style="margin-top:10px;display:block">رقم الهاتف (واتساب/تيليجرام)
+        <input type="text" id="agPhone" placeholder="رقم هاتفك للتواصل">
+      </label>
+      <label style="margin-top:10px;display:block">البريد الإلكتروني
+        <input type="email" id="agEmail" placeholder="بريدك الإلكتروني" <?= $user ? 'value="' . e($user['email']) . '"' : '' ?>>
+      </label>
+      <label style="margin-top:10px;display:block">رسالة (اختياري)
+        <textarea id="agMessage" rows="4" placeholder="حدّثنا عن قناتك/جمهورك وكيف تنوي النشر (اختياري)" style="width:100%;background:#101a2e;border:1px solid #28304a;border-radius:10px;padding:10px;color:var(--text);font-family:inherit"></textarea>
+      </label>
+      <div id="agMsg" style="font-size:13px;margin-top:8px"></div>
+      <button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="submitAgentApplication()"><?= icon('send', 'ic-sm') ?>إرسال الطلب</button>
+    </div>
+    <script>
+    function submitAgentApplication(){
+      const fullName = document.getElementById('agFullName').value.trim();
+      const phone = document.getElementById('agPhone').value.trim();
+      const email = document.getElementById('agEmail').value.trim();
+      const message = document.getElementById('agMessage').value.trim();
+      const msgEl = document.getElementById('agMsg');
+      if (!fullName) { msgEl.style.color = '#e74c3c'; msgEl.textContent = 'يرجى إدخال الاسم الكامل.'; return; }
+      if (!phone && !email) { msgEl.style.color = '#e74c3c'; msgEl.textContent = 'يرجى إدخال رقم هاتف أو بريد إلكتروني.'; return; }
+      const d = new FormData();
+      d.append('full_name', fullName); d.append('phone', phone); d.append('email', email); d.append('message', message);
+      post('api_submit_agent_application', d).then(res => {
+        msgEl.style.color = res.ok ? '#2ecc71' : '#e74c3c';
+        msgEl.textContent = res.msg || '';
+        if (res.ok) { document.getElementById('agFullName').value = ''; document.getElementById('agPhone').value = ''; document.getElementById('agMessage').value = ''; }
+      });
+    }
+    </script>
+    <?php
+    break;
+
 case 'suggest':
     if (!$user) { echo '<div class="empty">سجّل الدخول لإرسال اقتراح منتج.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     ?>
@@ -4242,12 +4560,54 @@ case 'top':
     }
     break;
 
+case 'posts':
+    $postsList = db()->query("SELECT id, slug, title, excerpt, cover_image, views, created_at FROM landing_posts WHERE published=1 ORDER BY id DESC")->fetchAll();
+    ?>
+    <div class="section-title"><?= icon('doc', 'ic') ?>مقالات ومنشورات</div>
+    <?php if (!$postsList): ?>
+      <div class="empty">لا توجد مقالات بعد.</div>
+    <?php else: ?>
+      <div class="apps-grid">
+        <?php foreach ($postsList as $pst): ?>
+        <a class="app-card" href="?page=post&slug=<?= rawurlencode($pst['slug']) ?>">
+          <?php if ($pst['cover_image']): ?><img class="pimg" loading="lazy" decoding="async" src="<?= e($pst['cover_image']) ?>" alt="<?= e($pst['title']) ?>"><?php endif; ?>
+          <div class="app-card-body">
+            <div class="app-card-name"><?= e($pst['title']) ?></div>
+            <?php if ($pst['excerpt']): ?><div style="color:var(--muted);font-size:12px;margin-top:4px"><?= e(mb_substr($pst['excerpt'], 0, 90)) ?></div><?php endif; ?>
+            <div style="color:var(--muted);font-size:11px;margin-top:6px"><?= icon('eye', 'ic-sm') ?> <?= number_format((int)$pst['views']) ?></div>
+          </div>
+        </a>
+        <?php endforeach; ?>
+      </div>
+    <?php endif; ?>
+    <?php
+    break;
+
+case 'post':
+    $postSlugReq = trim((string)($_GET['slug'] ?? ''));
+    $st = db()->prepare("SELECT * FROM landing_posts WHERE slug=? AND published=1"); $st->execute([$postSlugReq]);
+    $postRow = $st->fetch();
+    if (!$postRow) { echo '<div class="empty">المقال غير موجود.</div>'; break; }
+    db()->prepare("UPDATE landing_posts SET views = views + 1 WHERE id=?")->execute([$postRow['id']]);
+    ?>
+    <div class="admin-box" style="line-height:1.9">
+      <h1 style="margin-bottom:10px;font-size:22px"><?= e($postRow['title']) ?></h1>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:16px"><?= icon('eye', 'ic-sm') ?> <?= number_format((int)$postRow['views'] + 1) ?> مشاهدة · <?= e($postRow['created_at']) ?></div>
+      <?php if ($postRow['cover_image']): ?><img src="<?= e($postRow['cover_image']) ?>" loading="lazy" decoding="async" style="width:100%;border-radius:14px;margin-bottom:16px" alt="<?= e($postRow['title']) ?>"><?php endif; ?>
+      <div><?= $postRow['content'] ?></div>
+    </div>
+    <div class="admin-box" style="margin-top:14px;text-align:center">
+      <a href="?page=posts" class="btn btn-ghost"><?= icon('doc', 'ic-sm') ?>تصفح مقالات أخرى</a>
+    </div>
+    <?php
+    break;
+
 case 'admin':
     require_admin();
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'agents'=>['star','طلبات الوكلاء'],'posts'=>['doc','المقالات (SEO)'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -4261,6 +4621,9 @@ case 'admin':
         $views_total = db()->query("SELECT COALESCE(SUM(views),0) s FROM apps")->fetch()['s'];
         $tg_users_count = (int)db()->query("SELECT COUNT(*) c FROM telegram_users")->fetch()['c'];
         $revenue_total = (float)db()->query("SELECT COALESCE(SUM(price),0) s FROM orders WHERE status='completed'")->fetch()['s'];
+        $pending_agents = (int)db()->query("SELECT COUNT(*) c FROM agent_applications WHERE status='pending'")->fetch()['c'];
+        $posts_count = (int)db()->query("SELECT COUNT(*) c FROM landing_posts WHERE published=1")->fetch()['c'];
+        $posts_views_total = (int)db()->query("SELECT COALESCE(SUM(views),0) s FROM landing_posts")->fetch()['s'];
 
         $today = date('Y-m-d') . ' 00:00:00';
         $weekAgo = date('Y-m-d', strtotime('-7 days')) . ' 00:00:00';
@@ -4287,6 +4650,9 @@ case 'admin':
         <div class="stat-card"><?= icon('eye', 'ic') ?><div><div class="num"><?= number_format($views_total) ?></div><div class="lbl">إجمالي المشاهدات</div></div></div>
         <div class="stat-card"><?= icon('telegram', 'ic') ?><div><div class="num"><?= number_format($tg_users_count) ?></div><div class="lbl">مستخدمو بوت تيليجرام</div></div></div>
         <div class="stat-card"><?= icon('cart', 'ic') ?><div><div class="num"><?= number_format($revenue_total, 2) ?>$</div><div class="lbl">إيرادات الطلبات المكتملة</div></div></div>
+        <div class="stat-card"><?= icon('star', 'ic') ?><div><div class="num"><?= $pending_agents ?></div><div class="lbl">طلبات وكلاء معلّقة</div></div></div>
+        <div class="stat-card"><?= icon('doc', 'ic') ?><div><div class="num"><?= $posts_count ?></div><div class="lbl">مقالات منشورة</div></div></div>
+        <div class="stat-card"><?= icon('eye', 'ic') ?><div><div class="num"><?= number_format($posts_views_total) ?></div><div class="lbl">مشاهدات المقالات</div></div></div>
       </div>
       <div class="formrow">
         <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_today ?></div><div class="lbl">مستخدمون جدد اليوم</div></div></div>
@@ -4850,6 +5216,98 @@ case 'admin':
           <?php endforeach; ?>
         </table>
       </div>
+
+    <?php elseif ($tab === 'agents'):
+        $agentApps = db()->query("SELECT * FROM agent_applications ORDER BY id DESC")->fetchAll();
+        $agentPending = 0;
+        foreach ($agentApps as $aa) if ($aa['status'] === 'pending') $agentPending++;
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('star', 'ic') ?>طلبات الانضمام كوكيل (<?= $agentPending ?> معلّق)</h3>
+        <?php if (!$agentApps): ?><div class="empty">لا توجد طلبات وكلاء بعد.</div><?php endif; ?>
+        <table>
+          <tr><th>الاسم</th><th>الهاتف</th><th>البريد</th><th>الرسالة</th><th>الحالة</th><th>التاريخ</th><th>إجراء</th></tr>
+          <?php foreach ($agentApps as $aa): ?>
+          <tr>
+            <td><?= e($aa['full_name']) ?></td>
+            <td><?= e($aa['phone'] ?: '—') ?></td>
+            <td><?= e($aa['email'] ?: '—') ?></td>
+            <td><?= e($aa['message'] ?: '—') ?></td>
+            <td><?= e($aa['status'] === 'approved' ? 'مقبول' : ($aa['status'] === 'rejected' ? 'مرفوض' : 'معلّق')) ?></td>
+            <td><?= e($aa['created_at']) ?></td>
+            <td style="display:flex;gap:4px;flex-wrap:wrap">
+              <form method="post" action="?action=admin_agent_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$aa['id'] ?>"><input type="hidden" name="status" value="approved"><button class="btn btn-ghost">قبول</button></form>
+              <form method="post" action="?action=admin_agent_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$aa['id'] ?>"><input type="hidden" name="status" value="rejected"><button class="btn btn-ghost">رفض</button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'posts'):
+        $landingPosts = db()->query("SELECT * FROM landing_posts ORDER BY id DESC")->fetchAll();
+        $totalPostViews = 0; foreach ($landingPosts as $lp) $totalPostViews += (int)$lp['views'];
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('plus', 'ic') ?>إضافة / تعديل مقال SEO</h3>
+        <p style="opacity:.7;font-size:13px">صفحات مستقلة بعناوين مختلفة تماماً عن الموقع لجذب زوار جدد من محركات البحث. الرابط: ?page=post&amp;slug=...</p>
+        <form method="post" action="?action=admin_save_post" enctype="multipart/form-data">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="id" id="lpid">
+          <div class="formrow">
+            <input name="title" id="lptitle" placeholder="عنوان المقال (مختلف وجاذب للزوار)" required>
+            <input name="slug" id="lpslug" placeholder="الرابط المختصر slug (اختياري، يُولّد من العنوان)">
+          </div>
+          <div class="upload-row">
+            <input type="text" name="cover_image" id="lpcover" placeholder="رابط صورة الغلاف (أو ارفع ملفاً)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" name="cover_file" accept="image/*" style="display:none" onchange="uploadInto(this,'lpcover')"></label>
+          </div>
+          <textarea name="excerpt" id="lpexcerpt" placeholder="مقتطف قصير يظهر في قائمة المقالات" rows="2"></textarea>
+          <textarea name="content" id="lpcontent" placeholder="محتوى المقال (يدعم HTML)" rows="8"></textarea>
+          <input name="meta_title" id="lpmetatitle" placeholder="عنوان SEO (اختياري، يظهر في نتائج البحث)">
+          <textarea name="meta_description" id="lpmetadesc" placeholder="وصف SEO (اختياري)" rows="2"></textarea>
+          <label style="display:flex;align-items:center;gap:6px;margin:10px 0"><input type="checkbox" name="published" id="lppublished" value="1" checked> منشور وظاهر للزوار</label>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ المقال</button>
+        </form>
+      </div>
+      <div class="admin-box">
+        <h3><?= icon('eye', 'ic') ?>إحصائيات المقالات: <?= count($landingPosts) ?> مقال، <?= number_format($totalPostViews) ?> مشاهدة إجمالية</h3>
+        <?php if (!$landingPosts): ?><div class="empty">لا توجد مقالات بعد.</div><?php endif; ?>
+        <table>
+          <tr><th>العنوان</th><th>الرابط</th><th>المشاهدات</th><th>الحالة</th><th></th></tr>
+          <?php foreach ($landingPosts as $lp): ?>
+          <tr>
+            <td><?= e($lp['title']) ?></td>
+            <td><a href="?page=post&slug=<?= rawurlencode($lp['slug']) ?>" target="_blank">/?page=post&amp;slug=<?= e($lp['slug']) ?></a></td>
+            <td><?= number_format((int)$lp['views']) ?></td>
+            <td><?= $lp['published'] ? 'منشور' : 'مسودة' ?></td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap">
+              <button class="btn btn-ghost" type="button" onclick='fillPostForm(<?= json_encode($lp, JSON_UNESCAPED_UNICODE) ?>)'><?= icon('edit', 'ic-sm') ?></button>
+              <form method="post" action="?action=admin_toggle_post" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$lp['id'] ?>"><button class="btn btn-ghost"><?= $lp['published'] ? 'إخفاء' : 'نشر' ?></button></form>
+              <form method="post" action="?action=admin_delete_post" style="display:inline">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="id" value="<?= (int)$lp['id'] ?>">
+                <button class="btn btn-danger" onclick="return confirm('حذف المقال؟')"><?= icon('trash', 'ic-sm') ?></button>
+              </form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+      <script>
+      function fillPostForm(p) {
+        document.getElementById('lpid').value = p.id;
+        document.getElementById('lptitle').value = p.title || '';
+        document.getElementById('lpslug').value = p.slug || '';
+        document.getElementById('lpcover').value = p.cover_image || '';
+        document.getElementById('lpexcerpt').value = p.excerpt || '';
+        document.getElementById('lpcontent').value = p.content || '';
+        document.getElementById('lpmetatitle').value = p.meta_title || '';
+        document.getElementById('lpmetadesc').value = p.meta_description || '';
+        document.getElementById('lppublished').checked = !!parseInt(p.published);
+        document.querySelector('#lptitle').scrollIntoView({behavior:'smooth'});
+      }
+      </script>
 
     <?php elseif ($tab === 'reports'):
         $appReports = db()->query("SELECT r.*, a.name AS app_name FROM app_reports r LEFT JOIN apps a ON a.id=r.app_id WHERE r.status='open' ORDER BY r.id DESC")->fetchAll();
