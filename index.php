@@ -187,6 +187,38 @@ function migrate(): void
         sort_order INT NOT NULL DEFAULT 0,
         active TINYINT NOT NULL DEFAULT 1
     )$engine",
+    "CREATE TABLE IF NOT EXISTS chat_messages (
+        id $id,
+        user_id INT NOT NULL,
+        message VARCHAR(2000) NOT NULL,
+        created_at $ts,
+        is_deleted TINYINT NOT NULL DEFAULT 0
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS agent_applications (
+        id $id,
+        user_id INT NOT NULL,
+        reason TEXT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS agent_earnings (
+        id $id,
+        agent_user_id INT NOT NULL,
+        amount_usd DECIMAL(12,4) NOT NULL,
+        source VARCHAR(30) NOT NULL,
+        description VARCHAR(255) NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS agent_withdrawals (
+        id $id,
+        agent_user_id INT NOT NULL,
+        amount_usd DECIMAL(12,4) NOT NULL,
+        wallet_type VARCHAR(20) NOT NULL,
+        wallet_address VARCHAR(190) NOT NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        admin_note VARCHAR(255) NULL,
+        created_at $ts
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -197,8 +229,15 @@ function migrate(): void
     };
     $addCol('users', 'ref_code', "VARCHAR(20) NULL");
     $addCol('users', 'referred_by', "INT NULL");
+    $addCol('users', 'xp', "INT NOT NULL DEFAULT 0");
+    $addCol('users', 'display_name', "VARCHAR(40) NULL");
+    $addCol('users', 'display_name_changed_at', "TEXT NULL");
+    $addCol('users', 'is_agent', "TINYINT NOT NULL DEFAULT 0");
+    $addCol('users', 'agent_commission', "DECIMAL(5,2) NOT NULL DEFAULT 5");
+    $addCol('users', 'agent_balance', "DECIMAL(12,4) NOT NULL DEFAULT 0");
     $addCol('banners', 'title', "VARCHAR(190) NULL");
     $addCol('banners', 'size_label', "VARCHAR(60) NULL");
+    $addCol('products', 'download_url', "VARCHAR(500) NULL");
 
     // توليد رموز إحالة لمن لا يملكها
     foreach ($pdo->query("SELECT id FROM users WHERE ref_code IS NULL OR ref_code=''")->fetchAll() as $row) {
@@ -227,6 +266,14 @@ function migrate(): void
         'wheel_prizes' => '0,5,10,20,50,100,200,500', // جوائز العجلة (تفصلها فاصلة)
         // الإحالة
         'referral_reward' => '100',     // مكافأة دعوة صديق
+        // الوكلاء
+        'agent_min_withdraw_usd' => '10',
+        'agent_platform_share' => '30', // نسبة من AdSense تذهب لحصص الوكلاء
+        'agent_default_commission' => '5',
+        // XP
+        'xp_captcha' => '1',
+        'xp_task' => '5',
+        'xp_referral' => '20',
         // مكافأة مشاهدة إعلان 30 ثانية
         'ad_watch_reward' => '50',
         'ad_watch_seconds' => '30',
@@ -247,6 +294,24 @@ function migrate(): void
     foreach (['privacy' => 'سياسة الخصوصية الخاصة بمنصة Yassota...', 'terms' => 'شروط الاستخدام الخاصة بمنصة Yassota...'] as $slug => $content) {
         $st = $pdo->prepare("INSERT INTO pages (slug, content) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = ?)");
         $st->execute([$slug, $content, $slug]);
+    }
+
+    // بذر تطبيقات مفتوحة المصدر عند أول تشغيل
+    $cnt = (int)$pdo->query("SELECT COUNT(*) FROM products")->fetchColumn();
+    if ($cnt === 0) {
+        $ins = $pdo->prepare("INSERT INTO products (name, icon, description, tag, download_url, price, status) VALUES (?,?,?,?,?,0,'active')");
+        foreach ([
+            ['NewPipe', '▶️', 'بديل يوتيوب مفتوح المصدر — تحميل فيديوهات وبودكاست بدون إعلانات', 'مفتوح المصدر', 'https://github.com/TeamNewPipe/NewPipe/releases/latest'],
+            ['VLC Media Player', '🎬', 'مشغّل وسائط مجاني يدعم جميع الصيغ الصوتية والمرئية', 'مجاني', 'https://www.videolan.org/vlc/download-android.html'],
+            ['Signal', '🔒', 'تطبيق رسائل آمن 100% — تشفير من طرف إلى طرف ومفتوح المصدر', 'خصوصية', 'https://signal.org/android/apk/'],
+            ['Termux', '💻', 'محاكي طرفية لينكس قوي لأجهزة Android — للمطوّرين', 'مطوّرون', 'https://f-droid.org/packages/com.termux/'],
+            ['OsmAnd', '🗺️', 'تطبيق خرائط وملاحة مجاني يعمل دون اتصال بالإنترنت', 'تنقل', 'https://osmand.net/downloads/'],
+            ['Bitwarden', '🔑', 'مدير كلمات مرور مفتوح المصدر وآمن — مجاني للأفراد', 'أمان', 'https://bitwarden.com/download/'],
+            ['K-9 Mail', '📧', 'تطبيق بريد إلكتروني متقدم لأندرويد — مفتوح المصدر', 'إنتاجية', 'https://k9mail.app/download'],
+            ['F-Droid', '🏪', 'متجر تطبيقات مفتوح المصدر — بديل Google Play', 'متجر', 'https://f-droid.org/'],
+            ['AnkiDroid', '📚', 'بطاقات تعليمية ذكية لتعزيز الحفظ والتذكر', 'تعليم', 'https://ankidroid.org/download.html'],
+            ['LibreOffice Viewer', '📄', 'فتح وتحرير ملفات Word وExcel وPowerPoint مجاناً', 'إنتاجية', 'https://www.libreoffice.org/download/android-viewer/'],
+        ] as $s) $ins->execute($s);
     }
 }
 migrate();
@@ -330,6 +395,23 @@ function add_points(int $uid, int $amount, string $source, string $desc = ''): v
     db()->prepare("UPDATE users SET points = points + ? WHERE id = ?")->execute([$amount, $uid]);
     db()->prepare("INSERT INTO earn_logs (user_id, amount, source, description) VALUES (?,?,?,?)")
         ->execute([$uid, $amount, $source, $desc]);
+}
+
+function get_rank(int $xp): array
+{
+    if ($xp >= 10000) return ['name'=>'أسطورة','icon'=>'💎','level'=>5,'color'=>'#00d2ff','frame'=>'diamond','next'=>null,'next_xp'=>0];
+    if ($xp >= 5000)  return ['name'=>'نخبة',  'icon'=>'🔮','level'=>4,'color'=>'#a08bff','frame'=>'purple', 'next'=>'أسطورة','next_xp'=>10000];
+    if ($xp >= 2000)  return ['name'=>'محترف', 'icon'=>'⭐','level'=>3,'color'=>'#ffd86b','frame'=>'gold',   'next'=>'نخبة',  'next_xp'=>5000];
+    if ($xp >= 500)   return ['name'=>'نشيط',  'icon'=>'🥈','level'=>2,'color'=>'#c0c0c0','frame'=>'silver', 'next'=>'محترف', 'next_xp'=>2000];
+    return              ['name'=>'مبتدئ', 'icon'=>'🥉','level'=>1,'color'=>'#cd7f32','frame'=>'bronze', 'next'=>'نشيط',  'next_xp'=>500];
+}
+function add_xp(int $uid, int $amount): void
+{
+    db()->prepare("UPDATE users SET xp = xp + ? WHERE id = ?")->execute([$amount, $uid]);
+}
+function get_display_name(array $user): string
+{
+    return $user['display_name'] ?? $user['name'] ?? 'مستخدم';
 }
 
 function csrf_token(): string
@@ -464,6 +546,7 @@ function google_handle_callback(string $code): void
             $rw = (int)setting('referral_reward', 100);
             add_points((int)$referrer, $rw, 'referral', 'مكافأة دعوة صديق جديد');
             add_points((int)$uid, (int)round($rw / 2), 'referral', 'مكافأة ترحيب عبر دعوة');
+            add_xp((int)$referrer, (int)setting('xp_referral', 20));
         }
     }
     $_SESSION['uid'] = $uid;
@@ -581,6 +664,7 @@ if ($action && str_starts_with($action, 'api_')) {
             unset($_SESSION['captcha_code']);
             $reward = (int)setting('captcha_reward', 10);
             add_points($u['id'], $reward, 'captcha', 'إنجاز كابتشا');
+            add_xp($u['id'], (int)setting('xp_captcha', 1));
             if ($log) db()->prepare("UPDATE captcha_logs SET count=count+1 WHERE id=?")->execute([$log['id']]);
             else db()->prepare("INSERT INTO captcha_logs (user_id, day, count) VALUES (?,?,1)")->execute([$u['id'], $day]);
             echo json_encode(['ok' => true, 'msg' => "تم! +{$reward} عملة Yassota", 'reward' => $reward, 'remaining' => $max - $count - 1]);
@@ -610,6 +694,7 @@ if ($action && str_starts_with($action, 'api_')) {
             }
             db()->prepare("INSERT INTO task_completions (user_id, task_id, day) VALUES (?,?,?)")->execute([$u['id'], $tid, $day]);
             add_points($u['id'], (int)$task['reward'], 'task', 'مهمة: ' . $task['title']);
+            add_xp($u['id'], (int)setting('xp_task', 5));
             echo json_encode(['ok' => true, 'msg' => "+{$task['reward']} عملة Yassota"]);
             exit;
 
@@ -678,6 +763,71 @@ if ($action && str_starts_with($action, 'api_')) {
             echo json_encode(['ok' => true, 'msg' => "تم! +{$reward} عملة", 'reward' => $reward, 'remaining' => $max - $count - 1]);
             exit;
 
+        case 'api_send_chat':
+            csrf_check();
+            $msg = trim($_POST['message'] ?? '');
+            if (!$msg || mb_strlen($msg) > 500) { echo json_encode(['ok'=>false,'msg'=>'رسالة غير صالحة.']); exit; }
+            db()->prepare("INSERT INTO chat_messages (user_id, message) VALUES (?,?)")->execute([$u['id'], $msg]);
+            // الاحتفاظ بـ 100 رسالة فقط
+            try {
+                db()->exec("DELETE FROM chat_messages WHERE id NOT IN (SELECT id FROM (SELECT id FROM chat_messages ORDER BY id DESC LIMIT 100) t)");
+            } catch (Throwable $e) {}
+            echo json_encode(['ok'=>true]);
+            exit;
+
+        case 'api_get_chat':
+            $since = (int)($_GET['since'] ?? 0);
+            $st = db()->prepare("SELECT cm.id,cm.user_id,cm.message,cm.created_at,u.name uname,u.display_name,u.avatar,u.xp,u.is_agent FROM chat_messages cm JOIN users u ON u.id=cm.user_id WHERE cm.id>? AND cm.is_deleted=0 ORDER BY cm.id ASC LIMIT 30");
+            $st->execute([$since]);
+            $out = [];
+            foreach ($st->fetchAll() as $m) {
+                $rank = get_rank((int)$m['xp']);
+                $out[] = ['id'=>(int)$m['id'],'uid'=>(int)$m['user_id'],'name'=>$m['display_name']??$m['uname'],'avatar'=>$m['avatar'],'msg'=>$m['message'],'rank'=>$rank['icon'],'frame'=>$rank['frame'],'is_agent'=>(bool)$m['is_agent'],'time'=>substr($m['created_at'],11,5)];
+            }
+            echo json_encode(['ok'=>true,'messages'=>$out]);
+            exit;
+
+        case 'api_change_username':
+            csrf_check();
+            $name = trim($_POST['display_name'] ?? '');
+            if (!$name || mb_strlen($name) < 2 || mb_strlen($name) > 30) { echo json_encode(['ok'=>false,'msg'=>'الاسم يجب أن يكون بين 2 و30 حرف.']); exit; }
+            if (!preg_match('/^[\p{L}\p{N}_\. ]+$/u', $name)) { echo json_encode(['ok'=>false,'msg'=>'الاسم يحتوي على رموز غير مسموح بها.']); exit; }
+            if ($u['display_name_changed_at']) {
+                $diff = time() - strtotime($u['display_name_changed_at']);
+                if ($diff < 30 * 86400) {
+                    $rem = ceil((30 * 86400 - $diff) / 86400);
+                    echo json_encode(['ok'=>false,'msg'=>"لا يمكن تغيير الاسم إلا مرة كل 30 يوماً. المتبقي: $rem يوم."]); exit;
+                }
+            }
+            db()->prepare("UPDATE users SET display_name=?, display_name_changed_at=? WHERE id=?")->execute([$name, date('Y-m-d H:i:s'), $u['id']]);
+            echo json_encode(['ok'=>true,'msg'=>'تم تحديث الاسم بنجاح.']);
+            exit;
+
+        case 'api_apply_agent':
+            csrf_check();
+            if ($u['is_agent']) { echo json_encode(['ok'=>false,'msg'=>'أنت بالفعل وكيل معتمد.']); exit; }
+            $st = db()->prepare("SELECT id FROM agent_applications WHERE user_id=?"); $st->execute([$u['id']]);
+            if ($st->fetch()) { echo json_encode(['ok'=>false,'msg'=>'لديك طلب انضمام قيد المراجعة.']); exit; }
+            $reason = trim($_POST['reason'] ?? '');
+            db()->prepare("INSERT INTO agent_applications (user_id, reason) VALUES (?,?)")->execute([$u['id'], $reason]);
+            echo json_encode(['ok'=>true,'msg'=>'تم إرسال طلبك! ستتلقى رداً خلال 24-48 ساعة.']);
+            exit;
+
+        case 'api_agent_withdraw':
+            csrf_check();
+            if (!$u['is_agent']) { echo json_encode(['ok'=>false,'msg'=>'هذه الخاصية للوكلاء فقط.']); exit; }
+            $bal = (float)$u['agent_balance'];
+            $min = (float)setting('agent_min_withdraw_usd', 10);
+            if ($bal < $min) { echo json_encode(['ok'=>false,'msg'=>"الحد الأدنى {$min}$ (رصيدك {$bal}$)"]); exit; }
+            if (!$u['wallet_address']) { echo json_encode(['ok'=>false,'msg'=>'أضف محفظتك من صفحة المحفظة أولاً.']); exit; }
+            $st2 = db()->prepare("SELECT id FROM agent_withdrawals WHERE agent_user_id=? AND status='pending'"); $st2->execute([$u['id']]);
+            if ($st2->fetch()) { echo json_encode(['ok'=>false,'msg'=>'لديك طلب سحب قيد المراجعة بالفعل.']); exit; }
+            db()->prepare("INSERT INTO agent_withdrawals (agent_user_id, amount_usd, wallet_type, wallet_address) VALUES (?,?,?,?)")
+                ->execute([$u['id'], $bal, $u['wallet_type'], $u['wallet_address']]);
+            db()->prepare("UPDATE users SET agent_balance=0 WHERE id=?")->execute([$u['id']]);
+            echo json_encode(['ok'=>true,'msg'=>'تم إرسال طلب السحب! ستتم المعالجة خلال 3-7 أيام عمل.']);
+            exit;
+
         default:
             echo json_encode(['ok' => false, 'msg' => 'غير معروف.']);
             exit;
@@ -700,12 +850,13 @@ if ($action && str_starts_with($action, 'admin_')) {
             $desc = trim($_POST['description'] ?? '');
             $tag = trim($_POST['tag'] ?? '');
             $image = trim($_POST['image'] ?? '');
+            $dlurl = trim($_POST['download_url'] ?? '');
             if ($id) {
-                db()->prepare("UPDATE products SET name=?, icon=?, price=?, old_price=?, category_id=?, description=?, tag=?, image=? WHERE id=?")
-                    ->execute([$name, $icon, $price, $old_price, $cat, $desc, $tag, $image, $id]);
+                db()->prepare("UPDATE products SET name=?, icon=?, price=?, old_price=?, category_id=?, description=?, tag=?, image=?, download_url=? WHERE id=?")
+                    ->execute([$name, $icon, $price, $old_price, $cat, $desc, $tag, $image, $dlurl, $id]);
             } else {
-                db()->prepare("INSERT INTO products (name, icon, price, old_price, category_id, description, tag, image) VALUES (?,?,?,?,?,?,?,?)")
-                    ->execute([$name, $icon, $price, $old_price, $cat, $desc, $tag, $image]);
+                db()->prepare("INSERT INTO products (name, icon, price, old_price, category_id, description, tag, image, download_url) VALUES (?,?,?,?,?,?,?,?,?)")
+                    ->execute([$name, $icon, $price, $old_price, $cat, $desc, $tag, $image, $dlurl]);
                 $id = db()->lastInsertId();
                 $st = db()->prepare("SELECT * FROM products WHERE id=?"); $st->execute([$id]);
                 tg_broadcast_product($st->fetch());
@@ -842,6 +993,66 @@ if ($action && str_starts_with($action, 'admin_')) {
             if ($_POST['op'] === 'unban') db()->prepare("UPDATE users SET is_banned=0 WHERE id=?")->execute([$uid]);
             if ($_POST['op'] === 'addpoints') add_points($uid, (int)$_POST['points'], 'admin', 'إضافة يدوية من الإدارة');
             redirect('?page=admin&tab=users');
+
+        case 'admin_process_agent':
+            $aid = (int)$_POST['app_id'];
+            $decision = $_POST['decision'] ?? '';
+            $st = db()->prepare("SELECT * FROM agent_applications WHERE id=?"); $st->execute([$aid]); $app = $st->fetch();
+            if ($app) {
+                if ($decision === 'approve') {
+                    db()->prepare("UPDATE agent_applications SET status='approved' WHERE id=?")->execute([$aid]);
+                    db()->prepare("UPDATE users SET is_agent=1, agent_commission=? WHERE id=?")->execute([(float)setting('agent_default_commission', 5), $app['user_id']]);
+                } else {
+                    db()->prepare("UPDATE agent_applications SET status='rejected' WHERE id=?")->execute([$aid]);
+                }
+            }
+            redirect('?page=admin&tab=agents');
+
+        case 'admin_set_agent_commission':
+            $uid = (int)$_POST['user_id'];
+            $comm = min(100, max(0, (float)$_POST['commission']));
+            db()->prepare("UPDATE users SET agent_commission=? WHERE id=?")->execute([$comm, $uid]);
+            redirect('?page=admin&tab=agents');
+
+        case 'admin_process_agent_withdrawal':
+            $wid = (int)$_POST['wid'];
+            $decision = $_POST['decision'] ?? '';
+            $note = trim($_POST['note'] ?? '');
+            $st = db()->prepare("SELECT * FROM agent_withdrawals WHERE id=?"); $st->execute([$wid]); $aw = $st->fetch();
+            if ($aw && $aw['status'] === 'pending') {
+                $newStatus = $decision === 'approve' ? 'approved' : 'rejected';
+                db()->prepare("UPDATE agent_withdrawals SET status=?, admin_note=? WHERE id=?")->execute([$newStatus, $note, $wid]);
+                if ($decision === 'reject') {
+                    db()->prepare("UPDATE users SET agent_balance=agent_balance+? WHERE id=?")->execute([$aw['amount_usd'], $aw['agent_user_id']]);
+                }
+            }
+            redirect('?page=admin&tab=agents');
+
+        case 'admin_distribute_earnings':
+            $revenue = (float)($_POST['revenue'] ?? 0);
+            $shareRatio = (float)setting('agent_platform_share', 30) / 100;
+            $pool = round($revenue * $shareRatio, 4);
+            $agents = db()->query("SELECT id, agent_commission FROM users WHERE is_agent=1 AND is_banned=0")->fetchAll();
+            $totalComm = array_sum(array_column($agents, 'agent_commission'));
+            $distributed = 0;
+            if ($totalComm > 0 && $pool > 0) {
+                foreach ($agents as $ag) {
+                    $amount = round(($ag['agent_commission'] / $totalComm) * $pool, 4);
+                    if ($amount > 0) {
+                        db()->prepare("UPDATE users SET agent_balance=agent_balance+? WHERE id=?")->execute([$amount, $ag['id']]);
+                        db()->prepare("INSERT INTO agent_earnings (agent_user_id, amount_usd, source, description) VALUES (?,?,'monthly','حصة توزيع عائد الإعلانات الشهري — إجمالي الإيراد $".$revenue.")")->execute([$ag['id'], $amount]);
+                        $distributed += $amount;
+                    }
+                }
+            }
+            set_setting('monthly_adsense_revenue', $revenue);
+            flash("تم توزيع $" . number_format($distributed, 2) . " على " . count($agents) . " وكيل.");
+            redirect('?page=admin&tab=agents');
+
+        case 'admin_delete_chat_msg':
+            $mid = (int)$_POST['id'];
+            db()->prepare("UPDATE chat_messages SET is_deleted=1 WHERE id=?")->execute([$mid]);
+            redirect('?page=admin&tab=chat_admin');
 
         default:
             die('إجراء غير معروف.');
@@ -1026,6 +1237,54 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .lb-rank.r2{background:linear-gradient(135deg,#d8d8e8,#9a9ab0);color:#22232e}
 .lb-rank.r3{background:linear-gradient(135deg,#e0a479,#a9603a);color:#2a1408}
 .lb-row img{width:34px;height:34px;border-radius:50%}
+
+/* ===== إطارات الرتب ===== */
+.rank-frame-bronze{box-shadow:0 0 0 3px #cd7f32}
+.rank-frame-silver{box-shadow:0 0 0 3px #c0c0c0}
+.rank-frame-gold{box-shadow:0 0 0 3px #ffd700;animation:glow-gold 2s ease-in-out infinite}
+.rank-frame-purple{box-shadow:0 0 0 3px #a08bff;animation:glow-purple 2s ease-in-out infinite}
+.rank-frame-diamond{box-shadow:0 0 0 3px #00d2ff;animation:glow-diamond 1.5s ease-in-out infinite}
+@keyframes glow-gold{0%,100%{box-shadow:0 0 0 3px #ffd700,0 0 8px #ffd700}50%{box-shadow:0 0 0 3px #ffd700,0 0 20px #ffd70099}}
+@keyframes glow-purple{0%,100%{box-shadow:0 0 0 3px #a08bff,0 0 8px #a08bff}50%{box-shadow:0 0 0 3px #a08bff,0 0 20px #a08bff99}}
+@keyframes glow-diamond{0%,100%{box-shadow:0 0 0 3px #00d2ff,0 0 10px #00d2ff}50%{box-shadow:0 0 0 3px #00d2ff,0 0 26px #00d2ffaa}}
+
+/* ===== دردشة عامة ===== */
+.chat-box{height:400px;overflow-y:auto;padding:14px;display:flex;flex-direction:column;gap:10px;scroll-behavior:smooth}
+.chat-msg{display:flex;gap:10px;align-items:flex-end}
+.chat-msg.mine{flex-direction:row-reverse}
+.chat-av{width:36px;height:36px;border-radius:50%;flex-shrink:0;object-fit:cover}
+.chat-av-ph{width:36px;height:36px;border-radius:50%;flex-shrink:0;background:var(--accent);display:flex;align-items:center;justify-content:center;font-weight:700;color:#fff;font-size:15px}
+.chat-bubble{max-width:72%;background:var(--card);border-radius:16px 16px 16px 4px;padding:8px 12px}
+.chat-msg.mine .chat-bubble{background:linear-gradient(135deg,#3a2c80,#6c5ce7);border-radius:16px 16px 4px 16px}
+.chat-meta{font-size:11px;color:var(--muted);margin-bottom:3px;display:flex;align-items:center;gap:4px;flex-wrap:wrap}
+.chat-text{font-size:14px;line-height:1.5;word-break:break-word}
+.chat-time{font-size:10px;color:var(--muted);margin-top:3px;text-align:left}
+.chat-input-row{display:flex;gap:8px;padding:10px 14px;border-top:1px solid #232a45;background:var(--bg2)}
+.chat-input-row input{flex:1;padding:10px 14px;border-radius:24px;border:1px solid #2a3050;background:#11152a;color:var(--text);font-size:14px}
+.agent-badge{background:linear-gradient(135deg,#00d2a0,#008060);color:#fff;font-size:10px;padding:2px 6px;border-radius:8px;font-weight:700;display:inline-block}
+
+/* ===== بروفايل + رتبة ===== */
+.profile-box{padding:22px}
+.profile-header{display:flex;gap:16px;align-items:center;margin-bottom:16px;flex-wrap:wrap}
+.profile-av-wrap{border-radius:50%;flex-shrink:0;display:inline-block}
+.profile-av{width:80px;height:80px;border-radius:50%;object-fit:cover;display:block}
+.profile-av-ph{width:80px;height:80px;border-radius:50%;background:var(--accent);display:flex;align-items:center;justify-content:center;font-size:32px;font-weight:700;color:#fff}
+.profile-name{font-size:20px;margin-bottom:4px;display:flex;align-items:center;gap:8px;flex-wrap:wrap}
+.profile-rank{font-size:15px;font-weight:700;margin-bottom:4px}
+.profile-xp{font-size:12px;color:var(--muted)}
+.profile-stats{display:flex;justify-content:space-around;text-align:center;margin-top:16px;gap:8px}
+.profile-stats div{display:flex;flex-direction:column;gap:4px;flex:1}
+.profile-stats strong{font-size:22px;font-weight:800;color:var(--accent2)}
+.profile-stats span{font-size:12px;color:var(--muted)}
+.xp-bar-wrap{width:100%;height:8px;background:#232a45;border-radius:8px;overflow:hidden;margin:12px 0 2px}
+.xp-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2));border-radius:8px;transition:.5s}
+
+/* ===== الوكلاء ===== */
+.agent-features{display:grid;grid-template-columns:1fr 1fr;gap:8px;margin:14px 0}
+.agent-features div{background:#232a45;border-radius:10px;padding:12px 8px;font-size:13px;font-weight:600;text-align:center}
+
+/* ===== إصلاح المسافة السفلية ===== */
+footer{padding-bottom:20px}
 </style>
 </head>
 <body>
@@ -1056,13 +1315,18 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
   <div class="sb-head"><strong><?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()">✕</button></div>
   <nav>
     <a href="?">🏠 الرئيسية</a>
+    <?php if ($user): $sbRnk=get_rank((int)$user['xp']); ?>
+    <a href="?page=profile"><?= $sbRnk['icon'] ?> ملفي — <?= $sbRnk['name'] ?></a>
+    <?php endif; ?>
     <a href="?page=earn">🪙 اكسب عملات (كابتشا)</a>
     <a href="?page=watch">📺 شاهد إعلان واربح</a>
     <a href="?page=wheel">🎡 عجلة الحظ</a>
     <a href="?page=tasks">📋 المهام اليومية</a>
     <a href="?page=referral">🎁 مركز الإحالة</a>
+    <a href="?page=agent">🤝 برنامج الوكلاء</a>
+    <a href="?page=chat">💬 الدردشة العامة</a>
     <a href="?page=leaderboard">🏆 المتصدرون</a>
-    <a href="?page=chats">💬 مجموعات الدردشة</a>
+    <a href="?page=chats">📱 مجموعات التواصل</a>
     <a href="?page=wallet">💳 محفظتي</a>
     <a href="?page=orders">📦 طلباتي</a>
     <a href="?page=privacy">🔒 سياسة الخصوصية</a>
@@ -1138,8 +1402,10 @@ case 'home':
       <a class="feature" href="?page=watch"><span class="fi">📺</span><span class="fl">شاهد إعلان</span><span class="fb">+<?= e(setting('ad_watch_reward')) ?></span></a>
       <a class="feature" href="?page=tasks"><span class="fi">📋</span><span class="fl">المهام</span><span class="fb">يومية</span></a>
       <a class="feature" href="?page=referral"><span class="fi">🎁</span><span class="fl">ادعُ صديق</span><span class="fb">+<?= e(setting('referral_reward')) ?></span></a>
+      <a class="feature" href="?page=agent"><span class="fi">🤝</span><span class="fl">كن وكيلاً</span><span class="fb">أرباح حقيقية</span></a>
+      <a class="feature" href="?page=chat"><span class="fi">💬</span><span class="fl">الدردشة</span><span class="fb">مباشر</span></a>
       <a class="feature" href="?page=leaderboard"><span class="fi">🏆</span><span class="fl">المتصدرون</span></a>
-      <a class="feature" href="?page=chats"><span class="fi">💬</span><span class="fl">المجموعات</span></a>
+      <a class="feature" href="?page=profile"><span class="fi">👤</span><span class="fl">ملفي</span><?php if ($user): $ur=get_rank((int)$user['xp']); ?><span class="fb"><?= $ur['icon'].' '.$ur['name'] ?></span><?php endif; ?></a>
       <a class="feature" href="?page=wallet"><span class="fi">💳</span><span class="fl">محفظتي</span></a>
     </div>
 
@@ -1156,9 +1422,9 @@ case 'home':
     </div>
     <?php endif; ?>
 
-    <div class="section-title">🛍️ أحدث المنتجات</div>
+    <div class="section-title">📱 التطبيقات والأدوات</div>
     <?php if (!$products): ?>
-      <div class="empty">لا توجد منتجات حالياً، تابعنا قريباً 🚀</div>
+      <div class="empty">لا توجد تطبيقات حالياً، تابعنا قريباً 🚀</div>
     <?php else: ?>
       <div class="grid" id="productGrid">
         <?php foreach ($products as $p): ?>
@@ -1166,17 +1432,26 @@ case 'home':
             <?php if ($p['tag']): ?><span class="tag"><?= e($p['tag']) ?></span><?php endif; ?>
             <div class="pimg-wrap">
               <?php if ($p['image']): ?>
-                <img loading="lazy" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>" onerror="this.parentNode.innerHTML='<span class=ph-icon><?= e($p['icon'] ?: '🛍️') ?></span>'">
+                <img loading="lazy" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>" onerror="this.parentNode.innerHTML='<span class=ph-icon><?= e($p['icon'] ?: '📱') ?></span>'">
               <?php else: ?>
-                <span class="ph-icon"><?= e($p['icon'] ?: '🛍️') ?></span>
+                <span class="ph-icon"><?= e($p['icon'] ?: '📱') ?></span>
               <?php endif; ?>
             </div>
             <h3><?= e($p['name']) ?></h3>
+            <?php if ($p['description']): ?><div class="desc"><?= e(mb_substr($p['description'],0,60)) ?></div><?php endif; ?>
             <div class="price-row">
-              <span class="price"><?= e($p['price']) ?>$</span>
-              <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
+              <?php if ((float)$p['price'] == 0): ?>
+                <span class="price" style="color:var(--accent2)">مجاني</span>
+              <?php else: ?>
+                <span class="price"><?= e($p['price']) ?>$</span>
+                <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
+              <?php endif; ?>
             </div>
-            <button class="btn buy" onclick="buyProduct(<?= (int)$p['id'] ?>)">🛒 طلب شراء</button>
+            <?php if (!empty($p['download_url'])): ?>
+              <a class="btn buy" href="<?= e($p['download_url']) ?>" target="_blank" rel="noopener">⬇️ تحميل مجاني</a>
+            <?php else: ?>
+              <button class="btn buy" onclick="buyProduct(<?= (int)$p['id'] ?>)">🛒 طلب شراء</button>
+            <?php endif; ?>
           </div>
         <?php endforeach; ?>
       </div>
@@ -1291,16 +1566,25 @@ case 'referral':
     break;
 
 case 'leaderboard':
-    $top = db()->query("SELECT name, avatar, points FROM users WHERE is_banned=0 ORDER BY points DESC LIMIT 30")->fetchAll();
+    $top = db()->query("SELECT name, display_name, avatar, points, xp, is_agent FROM users WHERE is_banned=0 ORDER BY points DESC LIMIT 30")->fetchAll();
     ?>
     <div class="section-title">🏆 قائمة المتصدرين</div>
     <div class="admin-box">
       <?php if (!$top): ?><div class="empty">لا يوجد متصدرون بعد.</div><?php endif; ?>
-      <?php foreach ($top as $i => $t): $rank = $i + 1; ?>
+      <?php foreach ($top as $i => $t):
+          $pos = $i + 1;
+          $rnk = get_rank((int)$t['xp']);
+          $dname = $t['display_name'] ?: $t['name'] ?: 'مستخدم';
+      ?>
         <div class="lb-row">
-          <div class="lb-rank <?= $rank <= 3 ? 'r' . $rank : '' ?>"><?= $rank <= 3 ? ['🥇','🥈','🥉'][$rank-1] : $rank ?></div>
-          <?php if ($t['avatar']): ?><img src="<?= e($t['avatar']) ?>" onerror="this.style.display='none'"><?php endif; ?>
-          <div style="flex:1;font-weight:600"><?= e($t['name'] ?: 'مستخدم') ?></div>
+          <div class="lb-rank <?= $pos <= 3 ? 'r' . $pos : '' ?>"><?= $pos <= 3 ? ['🥇','🥈','🥉'][$pos-1] : $pos ?></div>
+          <?php if ($t['avatar']): ?>
+            <img src="<?= e($t['avatar']) ?>" class="rank-frame-<?= $rnk['frame'] ?>" onerror="this.style.display='none'" style="width:34px;height:34px;border-radius:50%">
+          <?php endif; ?>
+          <div style="flex:1">
+            <div style="font-weight:600"><?= e($dname) ?> <?= $t['is_agent'] ? '<span class="agent-badge">وكيل</span>' : '' ?></div>
+            <div style="font-size:11px;color:<?= $rnk['color'] ?>"><?= $rnk['icon'] ?> <?= $rnk['name'] ?></div>
+          </div>
           <div style="color:#ffd86b;font-weight:800">🪙 <?= number_format((int)$t['points']) ?></div>
         </div>
       <?php endforeach; ?>
@@ -1418,12 +1702,210 @@ case 'terms':
     echo '<div class="admin-box" style="margin-top:18px;line-height:1.8">' . nl2br(e($c['content'] ?? '')) . '</div>';
     break;
 
+case 'chat':
+    if (!$user) { echo '<div class="empty">سجّل الدخول للمشاركة في الدردشة.</div>'; break; }
+    $msgs = db()->query("SELECT cm.id,cm.user_id,cm.message,cm.created_at,u.name uname,u.display_name,u.avatar,u.xp,u.is_agent FROM chat_messages cm JOIN users u ON u.id=cm.user_id WHERE cm.is_deleted=0 ORDER BY cm.id DESC LIMIT 50")->fetchAll();
+    $msgs = array_reverse($msgs);
+    $lastChatId = $msgs ? (int)end($msgs)['id'] : 0;
+    ?>
+    <div class="section-title">💬 الدردشة العامة</div>
+    <div class="admin-box" style="padding:0;overflow:hidden">
+      <div class="chat-box" id="chatBox">
+        <?php foreach ($msgs as $m):
+            $rnk = get_rank((int)$m['xp']);
+            $dn = $m['display_name'] ?? $m['uname'] ?? 'مستخدم';
+            $isMine = ((int)$m['user_id'] === (int)$user['id']);
+        ?>
+        <div class="chat-msg <?= $isMine ? 'mine' : '' ?>" data-id="<?= (int)$m['id'] ?>">
+          <?php if ($m['avatar']): ?>
+            <img class="chat-av rank-frame-<?= $rnk['frame'] ?>" src="<?= e($m['avatar']) ?>" onerror="this.outerHTML='<div class=\'chat-av-ph rank-frame-<?= $rnk['frame'] ?>\'><?= e(mb_substr($dn,0,1)) ?></div>'">
+          <?php else: ?>
+            <div class="chat-av-ph rank-frame-<?= $rnk['frame'] ?>"><?= e(mb_substr($dn,0,1)) ?></div>
+          <?php endif; ?>
+          <div class="chat-bubble">
+            <div class="chat-meta"><?= $rnk['icon'] ?> <?= e($dn) ?><?= $m['is_agent'] ? ' <span class="agent-badge">وكيل</span>' : '' ?></div>
+            <div class="chat-text"><?= e($m['message']) ?></div>
+            <div class="chat-time"><?= date('H:i', strtotime($m['created_at'])) ?></div>
+          </div>
+        </div>
+        <?php endforeach; ?>
+      </div>
+      <div class="chat-input-row">
+        <input type="text" id="chatInput" placeholder="اكتب رسالة..." maxlength="500" onkeydown="if(event.key==='Enter')sendChat()">
+        <button class="btn btn-primary" onclick="sendChat()">➤</button>
+      </div>
+    </div>
+    <p style="color:var(--muted);font-size:12px;text-align:center;margin-top:8px">اسمك في الدردشة: <strong><?= e(get_display_name($user)) ?></strong> — <a href="?page=profile" style="color:var(--accent2)">تغييره من ملفي</a></p>
+    <script>
+    let lastChatId=<?= $lastChatId ?>;
+    const ME_ID=<?= (int)$user['id'] ?>;
+    function scrollChatBottom(){const b=document.getElementById('chatBox');if(b)b.scrollTop=b.scrollHeight;}
+    scrollChatBottom();
+    async function sendChat(){
+      const inp=document.getElementById('chatInput'),msg=inp.value.trim();
+      if(!msg)return; inp.value='';
+      const d=new FormData();d.append('message',msg);d.append('csrf',CSRF);
+      const j=await fetch('?action=api_send_chat',{method:'POST',body:d}).then(r=>r.json());
+      if(!j.ok)toast(j.msg); else fetchChat();
+    }
+    function escHtml(s){return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');}
+    async function fetchChat(){
+      const j=await fetch('?action=api_get_chat&since='+lastChatId).then(r=>r.json());
+      if(!j.ok||!j.messages.length)return;
+      const box=document.getElementById('chatBox');
+      j.messages.forEach(m=>{
+        if(m.id<=lastChatId)return;
+        lastChatId=m.id;
+        const mine=m.uid===ME_ID;
+        const avHtml=m.avatar?`<img class="chat-av rank-frame-${m.frame}" src="${escHtml(m.avatar)}" onerror="this.outerHTML='<div class=\\'chat-av-ph rank-frame-${m.frame}\\'>${escHtml(m.name.substring(0,1))}</div>'">`
+          :`<div class="chat-av-ph rank-frame-${m.frame}">${escHtml(m.name.substring(0,1))}</div>`;
+        const agBadge=m.is_agent?'<span class="agent-badge">وكيل</span>':'';
+        box.insertAdjacentHTML('beforeend',`<div class="chat-msg ${mine?'mine':''}" data-id="${m.id}">${avHtml}<div class="chat-bubble"><div class="chat-meta">${m.rank} ${escHtml(m.name)} ${agBadge}</div><div class="chat-text">${escHtml(m.msg)}</div><div class="chat-time">${m.time}</div></div></div>`);
+      });
+      scrollChatBottom();
+    }
+    setInterval(fetchChat,5000);
+    </script>
+    <?php break;
+
+case 'profile':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض ملفك الشخصي.</div>'; break; }
+    $rnk = get_rank((int)$user['xp']);
+    $dn = get_display_name($user);
+    $canChange = true; $daysLeft = 0;
+    if ($user['display_name_changed_at']) {
+        $diff = time() - strtotime($user['display_name_changed_at']);
+        if ($diff < 30 * 86400) { $canChange = false; $daysLeft = ceil((30 * 86400 - $diff) / 86400); }
+    }
+    $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by=?"); $st->execute([$user['id']]);
+    $invCount = (int)$st->fetch()['c'];
+    $progress = $rnk['next_xp'] > 0 ? min(100, round(((int)$user['xp'] / $rnk['next_xp']) * 100)) : 100;
+    ?>
+    <div class="section-title">👤 ملفي الشخصي</div>
+    <div class="admin-box profile-box">
+      <div class="profile-header">
+        <div class="profile-av-wrap rank-frame-<?= $rnk['frame'] ?>">
+          <?php if ($user['avatar']): ?>
+            <img src="<?= e($user['avatar']) ?>" class="profile-av" alt="avatar">
+          <?php else: ?>
+            <div class="profile-av-ph"><?= mb_substr($dn,0,1) ?></div>
+          <?php endif; ?>
+        </div>
+        <div class="profile-info">
+          <h2 class="profile-name"><?= e($dn) ?> <?= $user['is_agent'] ? '<span class="agent-badge">وكيل</span>' : '' ?></h2>
+          <div class="profile-rank" style="color:<?= $rnk['color'] ?>"><?= $rnk['icon'] ?> <?= $rnk['name'] ?></div>
+          <div class="profile-xp"><?= number_format((int)$user['xp']) ?> XP<?= $rnk['next'] ? ' / '.number_format($rnk['next_xp']).' للوصول إلى '.$rnk['next'] : ' — أعلى رتبة!' ?></div>
+        </div>
+      </div>
+      <?php if ($rnk['next']): ?>
+      <div class="xp-bar-wrap"><div class="xp-bar" style="width:<?= $progress ?>%"></div></div>
+      <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--muted)"><span>0</span><span><?= $progress ?>%</span><span><?= number_format($rnk['next_xp']) ?></span></div>
+      <?php endif; ?>
+      <div class="profile-stats">
+        <div><strong><?= number_format((int)$user['points']) ?></strong><span>عملة</span></div>
+        <div><strong><?= $invCount ?></strong><span>مدعو</span></div>
+        <div><strong><?= number_format((int)$user['xp']) ?></strong><span>XP</span></div>
+      </div>
+      <div style="margin-top:16px;padding-top:14px;border-top:1px solid #232a45">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:8px">🏅 الرتب: مبتدئ(0) → نشيط(500) → محترف(2000) → نخبة(5000) → أسطورة(10000)</div>
+      </div>
+    </div>
+    <div class="admin-box">
+      <h3>✏️ اسمك في الدردشة</h3>
+      <?php if ($canChange): ?>
+      <p style="color:var(--muted);font-size:13px;margin-bottom:10px">يمكن التغيير مرة واحدة كل 30 يوماً.</p>
+      <div style="display:flex;gap:8px">
+        <input id="newUsername" value="<?= e($dn) ?>" placeholder="الاسم المعروض" maxlength="30" style="flex:1;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff">
+        <button class="btn btn-primary" onclick="changeUsername()">حفظ</button>
+      </div>
+      <?php else: ?>
+      <p style="color:var(--muted)">🔒 يمكن التغيير بعد <strong style="color:var(--accent2)"><?= $daysLeft ?> يوم</strong>.</p>
+      <?php endif; ?>
+    </div>
+    <?php break;
+
+case 'agent':
+    if (!$user) { echo '<div class="empty">سجّل الدخول للوصول لبرنامج الوكلاء.</div>'; break; }
+    $st = db()->prepare("SELECT * FROM agent_applications WHERE user_id=?"); $st->execute([$user['id']]); $myApp = $st->fetch();
+    $agentShare = (float)setting('agent_platform_share', 30);
+    ?>
+    <div class="section-title">🤝 برنامج الوكلاء — اربح معنا</div>
+    <?php if ($user['is_agent']):
+        $st = db()->prepare("SELECT * FROM agent_earnings WHERE agent_user_id=? ORDER BY id DESC LIMIT 20"); $st->execute([$user['id']]); $earnRows = $st->fetchAll();
+        $st2 = db()->prepare("SELECT * FROM agent_withdrawals WHERE agent_user_id=? AND status='pending'"); $st2->execute([$user['id']]); $pendingWd = $st2->fetch();
+        $st3 = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by=?"); $st3->execute([$user['id']]); $myRefs = (int)$st3->fetch()['c'];
+    ?>
+    <div class="admin-box">
+      <div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
+        <span style="font-size:36px">✅</span>
+        <div>
+          <div style="font-size:18px;font-weight:800">وكيل معتمد <span class="agent-badge">وكيل</span></div>
+          <div style="color:var(--muted);font-size:13px">عمولتك: <strong style="color:var(--accent2)"><?= $user['agent_commission'] ?>%</strong> من حصة عائدات الإعلانات</div>
+        </div>
+      </div>
+      <div class="profile-stats" style="margin:0 0 16px">
+        <div><strong style="color:#ffd86b">$<?= number_format((float)$user['agent_balance'],2) ?></strong><span>رصيد معلق</span></div>
+        <div><strong><?= $myRefs ?></strong><span>مُحال</span></div>
+        <div><strong><?= count($earnRows) ?></strong><span>معاملة</span></div>
+      </div>
+      <?php if (!$pendingWd && (float)$user['agent_balance'] >= (float)setting('agent_min_withdraw_usd',10)): ?>
+        <button class="btn btn-success" style="width:100%" onclick="agentWithdraw()">💸 طلب سحب ($<?= number_format((float)$user['agent_balance'],2) ?>)</button>
+      <?php elseif ($pendingWd): ?>
+        <div style="background:#1d3b2e;border-radius:10px;padding:12px;text-align:center">⏳ طلب سحب قيد المراجعة ($<?= number_format((float)$pendingWd['amount_usd'],2) ?>)</div>
+      <?php else: ?>
+        <p style="color:var(--muted);font-size:13px">الحد الأدنى للسحب: $<?= setting('agent_min_withdraw_usd',10) ?> (رصيدك: $<?= number_format((float)$user['agent_balance'],2) ?>)</p>
+      <?php endif; ?>
+    </div>
+    <?php if ($earnRows): ?>
+    <div class="admin-box">
+      <h3>📋 سجل الأرباح</h3>
+      <table>
+        <tr><th>المبلغ</th><th>الوصف</th><th>التاريخ</th></tr>
+        <?php foreach ($earnRows as $er): ?>
+        <tr>
+          <td style="color:#00d2a0;font-weight:700">+$<?= number_format($er['amount_usd'],4) ?></td>
+          <td><?= e($er['description'] ?: $er['source']) ?></td>
+          <td><?= date('Y-m-d', strtotime($er['created_at'])) ?></td>
+        </tr>
+        <?php endforeach; ?>
+      </table>
+    </div>
+    <?php endif;
+    else: // Not an agent yet
+    ?>
+    <div class="admin-box" style="text-align:center;padding:28px 18px">
+      <div style="font-size:48px;margin-bottom:12px">🚀</div>
+      <h2 style="margin-bottom:10px">انضم كوكيل وحقق دخلاً حقيقياً</h2>
+      <p style="color:var(--muted);line-height:1.8;max-width:460px;margin:0 auto 20px">
+        يحصل الوكلاء على حصة من عائدات إعلانات Monetag/AdSense الشهرية.<br>
+        إجمالي حصص الوكلاء <strong style="color:var(--accent2)"><?= $agentShare ?>%</strong> من الدخل الإجمالي.<br>
+        تُوزَّع شهرياً حسب نسبة عمولة كل وكيل ونشاطه.
+      </p>
+      <div class="agent-features">
+        <div>💰 أرباح شهرية حقيقية</div>
+        <div>🔗 رابط إحالة خاص</div>
+        <div>📊 لوحة تتبع الأرباح</div>
+        <div>💸 سحب عبر USDT / شام كاش</div>
+      </div>
+      <?php if ($myApp && $myApp['status'] === 'pending'): ?>
+        <div style="background:#1d2a1c;border-radius:10px;padding:14px;margin-top:14px">⏳ طلبك قيد المراجعة. سنردّ عليك خلال 24-48 ساعة.</div>
+      <?php elseif ($myApp && $myApp['status'] === 'rejected'): ?>
+        <div style="background:#3b1d1d;border-radius:10px;padding:14px;margin-top:14px">❌ تم رفض طلبك. تواصل معنا لمزيد من المعلومات.</div>
+      <?php else: ?>
+        <div style="margin-top:14px">
+          <textarea id="agentReason" placeholder="لماذا تريد أن تصبح وكيلاً؟ (اختياري)" rows="3" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:var(--text);resize:none;margin-bottom:8px"></textarea>
+          <button class="btn btn-primary" style="width:100%" onclick="applyAgent()">📨 تقديم طلب الانضمام كوكيل</button>
+        </div>
+      <?php endif; ?>
+    </div>
+    <?php endif; break;
+
 case 'admin':
     require_admin();
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
+      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','agents'=>'🤝 الوكلاء','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 مجموعات','chat_admin'=>'💬 الدردشة العامة','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= $label ?></a>
       <?php endforeach; ?>
     </div>
@@ -1461,7 +1943,8 @@ case 'admin':
             <input name="name" id="pname" placeholder="اسم المنتج" required>
             <input name="icon" id="picon" placeholder="إيقونة (emoji) اختياري">
             <input name="image" id="pimage" placeholder="رابط صورة (اختياري)">
-            <input name="price" id="pprice" type="number" step="0.01" placeholder="السعر $" required>
+            <input name="download_url" id="pdownload" placeholder="رابط التحميل المجاني (فارغ = شراء بنقاط)">
+            <input name="price" id="pprice" type="number" step="0.01" placeholder="السعر $ (0 للمجاني)" required>
             <input name="old_price" id="poldprice" type="number" step="0.01" placeholder="السعر قبل الخصم (اختياري)">
             <input name="tag" id="ptag" placeholder="وسم مثل: جديد / خصم">
             <select name="category_id"><option value="">بدون قسم</option><?php foreach ($cats as $c): ?><option value="<?= (int)$c['id'] ?>"><?= e($c['name']) ?></option><?php endforeach; ?></select>
@@ -1565,6 +2048,118 @@ case 'admin':
                 <button name="decision" value="reject" class="btn btn-danger">❌</button>
               </form>
               <?php endif; ?>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'agents'):
+        $apps = db()->query("SELECT a.*, u.name uname, u.email FROM agent_applications a JOIN users u ON u.id=a.user_id ORDER BY a.id DESC")->fetchAll();
+        $agents = db()->query("SELECT u.id, u.name, u.email, u.agent_commission, u.agent_balance, u.xp FROM users u WHERE u.is_agent=1 ORDER BY u.id DESC")->fetchAll();
+        $agWds = db()->query("SELECT aw.*, u.name uname FROM agent_withdrawals aw JOIN users u ON u.id=aw.agent_user_id ORDER BY aw.id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3>📤 توزيع عائدات الإعلانات على الوكلاء</h3>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:10px">أدخل إيراد AdSense/Monetag الشهري — سيُوزَّع <?= setting('agent_platform_share',30) ?>% منه على الوكلاء بحسب نسبة عمولة كل منهم.</p>
+        <form method="post" action="?action=admin_distribute_earnings" style="display:flex;gap:8px">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input name="revenue" type="number" step="0.01" placeholder="الإيراد الشهري بالدولار" required style="flex:1">
+          <button class="btn btn-success">توزيع</button>
+        </form>
+      </div>
+      <div class="admin-box">
+        <h3>🔔 طلبات الانضمام (<?= count(array_filter($apps, fn($a)=>$a['status']==='pending')) ?> معلق)</h3>
+        <table>
+          <tr><th>المستخدم</th><th>البريد</th><th>السبب</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($apps as $a): ?>
+          <tr>
+            <td><?= e($a['uname']) ?></td><td><?= e($a['email']) ?></td>
+            <td style="font-size:12px"><?= e(mb_substr($a['reason']??'',0,60)) ?></td>
+            <td><span class="badge <?= e($a['status']) ?>"><?= e($a['status']) ?></span></td>
+            <td>
+              <?php if ($a['status']==='pending'): ?>
+              <form method="post" action="?action=admin_process_agent" style="display:flex;gap:4px">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="app_id" value="<?= (int)$a['id'] ?>">
+                <button name="decision" value="approve" class="btn btn-success">✅ قبول</button>
+                <button name="decision" value="reject" class="btn btn-danger">❌ رفض</button>
+              </form>
+              <?php endif; ?>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+      <div class="admin-box">
+        <h3>👥 الوكلاء المعتمدون (<?= count($agents) ?>)</h3>
+        <table>
+          <tr><th>الاسم</th><th>العمولة %</th><th>الرصيد $</th><th>XP</th><th>تعديل العمولة</th></tr>
+          <?php foreach ($agents as $ag): ?>
+          <tr>
+            <td><?= e($ag['name']) ?></td>
+            <td><?= $ag['agent_commission'] ?>%</td>
+            <td style="color:#00d2a0">$<?= number_format((float)$ag['agent_balance'],2) ?></td>
+            <td><?= number_format((int)$ag['xp']) ?></td>
+            <td>
+              <form method="post" action="?action=admin_set_agent_commission" style="display:flex;gap:4px">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="user_id" value="<?= (int)$ag['id'] ?>">
+                <input type="number" name="commission" value="<?= $ag['agent_commission'] ?>" step="0.1" min="0" max="100" style="width:70px">
+                <button class="btn btn-ghost">حفظ</button>
+              </form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+      <div class="admin-box">
+        <h3>💸 طلبات السحب للوكلاء</h3>
+        <table>
+          <tr><th>الوكيل</th><th>المبلغ</th><th>الطريقة</th><th>العنوان</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($agWds as $aw): ?>
+          <tr>
+            <td><?= e($aw['uname']) ?></td>
+            <td>$<?= number_format($aw['amount_usd'],2) ?></td>
+            <td><?= e($aw['wallet_type']) ?></td>
+            <td style="font-family:monospace;font-size:11px"><?= e($aw['wallet_address']) ?></td>
+            <td><span class="badge <?= e($aw['status']) ?>"><?= e($aw['status']) ?></span><?= $aw['admin_note'] ? '<br><small style="color:var(--muted)">'.e($aw['admin_note']).'</small>' : '' ?></td>
+            <td>
+              <?php if ($aw['status']==='pending'): ?>
+              <form method="post" action="?action=admin_process_agent_withdrawal" style="display:flex;gap:4px;flex-direction:column">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="wid" value="<?= (int)$aw['id'] ?>">
+                <input name="note" placeholder="ملاحظة (اختياري)" style="padding:4px;border-radius:6px;border:1px solid #2a3050;background:#11152a;color:#fff">
+                <div style="display:flex;gap:4px">
+                  <button name="decision" value="approve" class="btn btn-success">✅ دفع</button>
+                  <button name="decision" value="reject" class="btn btn-danger">❌ رفض</button>
+                </div>
+              </form>
+              <?php endif; ?>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'chat_admin'):
+        $chatMsgs = db()->query("SELECT cm.*, u.name uname FROM chat_messages cm JOIN users u ON u.id=cm.user_id WHERE cm.is_deleted=0 ORDER BY cm.id DESC LIMIT 100")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3>💬 رسائل الدردشة العامة (آخر 100)</h3>
+        <table>
+          <tr><th>المستخدم</th><th>الرسالة</th><th>الوقت</th><th></th></tr>
+          <?php foreach ($chatMsgs as $cm): ?>
+          <tr>
+            <td><?= e($cm['uname']) ?></td>
+            <td style="font-size:13px"><?= e(mb_substr($cm['message'],0,80)) ?></td>
+            <td><?= date('m-d H:i', strtotime($cm['created_at'])) ?></td>
+            <td>
+              <form method="post" action="?action=admin_delete_chat_msg">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="id" value="<?= (int)$cm['id'] ?>">
+                <button class="btn btn-danger">🗑️</button>
+              </form>
             </td>
           </tr>
           <?php endforeach; ?>
@@ -1793,9 +2388,9 @@ default:
 <div class="bottom-nav">
   <a href="?" class="<?= $page === 'home' ? 'active' : '' ?>"><span class="bi">🏠</span>الرئيسية</a>
   <a href="?page=earn" class="<?= $page === 'earn' ? 'active' : '' ?>"><span class="bi">🪙</span>اكسب</a>
-  <a href="?page=tasks" class="<?= $page === 'tasks' ? 'active' : '' ?>"><span class="bi">📋</span>مهام</a>
-  <a href="?page=wallet" class="<?= $page === 'wallet' ? 'active' : '' ?>"><span class="bi">💳</span>محفظتي</a>
-  <a href="?page=orders" class="<?= $page === 'orders' ? 'active' : '' ?>"><span class="bi">📦</span>طلباتي</a>
+  <a href="?page=chat" class="<?= $page === 'chat' ? 'active' : '' ?>"><span class="bi">💬</span>دردشة</a>
+  <a href="?page=agent" class="<?= $page === 'agent' ? 'active' : '' ?>"><span class="bi">🤝</span>وكيل</a>
+  <a href="?page=profile" class="<?= $page === 'profile' ? 'active' : '' ?>"><span class="bi">👤</span>ملفي</a>
 </div>
 
 <footer>© <?= date('Y') ?> <?= e($siteName) ?> — جميع الحقوق محفوظة</footer>
@@ -2020,6 +2615,27 @@ function orTest(){
 
 /* ===== Service Worker (لتثبيت التطبيق وAPK) ===== */
 if ('serviceWorker' in navigator){ navigator.serviceWorker.register('?action=sw').catch(()=>{}); }
+
+/* ===== ملف شخصي: تغيير الاسم ===== */
+function changeUsername(){
+  const n=document.getElementById('newUsername');
+  if(!n)return;
+  const name=n.value.trim();
+  if(!name){toast('أدخل الاسم');return;}
+  const d=new FormData();d.append('display_name',name);
+  post('api_change_username',d).then(res=>{toast(res.msg);if(res.ok)setTimeout(()=>location.reload(),1400);});
+}
+
+/* ===== الوكلاء ===== */
+function applyAgent(){
+  const r=document.getElementById('agentReason');
+  const d=new FormData();d.append('reason',r?r.value:'');
+  post('api_apply_agent',d).then(res=>{toast(res.msg);if(res.ok)setTimeout(()=>location.reload(),1500);});
+}
+function agentWithdraw(){
+  if(!confirm('تأكيد طلب سحب رصيد الوكيل بالكامل؟'))return;
+  post('api_agent_withdraw',new FormData()).then(res=>{toast(res.msg);if(res.ok)setTimeout(()=>location.reload(),1500);});
+}
 </script>
 </body>
 </html>
