@@ -211,3 +211,79 @@ h2 { margin-bottom: 14px; font-size: 20px; }
 .nav-btn .nav-icon { font-size: 22px; }
 
 .nav-btn.active { color: #ffd54f; }
+
+.subscription-box, .withdraw-box {
+  background: rgba(255,255,255,0.06);
+  border-radius: 14px;
+  padding: 16px;
+  margin-bottom: 14px;
+}
+
+.subscription-box h3, .withdraw-box h3 { margin-bottom: 8px; font-size: 16px; }
+
+.purchase-methods {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  margin-top: 12px;
+}
+
+.method-btn {
+  background: linear-gradient(135deg, #4a90e2, #357abd);
+  border: none;
+  border-radius: 10px;
+  padding: 12px;
+  color: #fff;
+  font-weight: bold;
+  cursor: pointer;
+  font-size: 14px;
+  text-align: left;
+}
+
+.method-btn[data-method="stars"] { background: linear-gradient(135deg, #ffd54f, #f9a825); color: #222; }
+.method-btn[data-method="usdt_qr"] { background: linear-gradient(135deg, #26a69a, #1b7a74); }
+.method-btn[data-method="binance_p2p"] { background: linear-gradient(135deg, #f0ad4e, #ec971f); }
+
+.method-btn:hover { opacity: 0.85; }
+
+.payment-modal {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 0;
+  background: rgba(0,0,0,0.8);
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  z-index: 1000;
+}
+
+.payment-modal.hidden { display: none; }
+
+.payment-content {
+  background: #1c2a4a;
+  border-radius: 16px;
+  padding: 20px;
+  max-width: 90vw;
+  max-height: 80vh;
+  overflow-y: auto;
+  text-align: center;
+}
+
+.payment-content h2 { margin-bottom: 10px; }
+
+.qr-code { margin: 16px 0; }
+.qr-code img { max-width: 200px; border-radius: 8px; }
+
+.wallet-address {
+  background: rgba(255,255,255,0.08);
+  border-radius: 8px;
+  padding: 10px;
+  margin: 12px 0;
+  word-break: break-all;
+  font-size: 12px;
+  font-family: monospace;
+}
+
+.close-modal { background: #666; padding: 6px 12px; margin-top: 12px; }

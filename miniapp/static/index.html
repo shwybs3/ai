@@ -56,9 +56,19 @@
       <h2>💼 المحفظة</h2>
       <div class="wallet-balance">🪙 <span id="walletCoins">0</span></div>
       <div class="wallet-level">المستوى: <span id="walletLevel">🥚 مبتدئ</span></div>
-      <input id="withdrawAmount" type="number" placeholder="المبلغ المطلوب سحبه" min="1">
-      <button id="withdrawBtn" class="withdraw-btn">💸 طلب سحب</button>
-      <p class="hint small">يتم مراجعة طلبات السحب من قبل الإدارة يدوياً.</p>
+
+      <div id="subscriptionBox" class="subscription-box">
+        <h3>⭐ اشتراك دائم</h3>
+        <p class="hint">احصل على وصول كامل مدى الحياة!</p>
+        <div id="purchaseMethods" class="purchase-methods"></div>
+      </div>
+
+      <div id="withdrawBox" class="withdraw-box">
+        <h3>💸 سحب العملات</h3>
+        <input id="withdrawAmount" type="number" placeholder="المبلغ المطلوب سحبه" min="1">
+        <button id="withdrawBtn" class="withdraw-btn">طلب سحب</button>
+        <p class="hint small">يتم مراجعة طلبات السحب من قبل الإدارة يدوياً.</p>
+      </div>
     </section>
 
   </main>

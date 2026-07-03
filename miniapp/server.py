@@ -13,6 +13,7 @@ import time
 from urllib.parse import parse_qsl
 
 from flask import Flask, jsonify, request, send_from_directory
+from subscriptions import init_subscription_schema, create_payment_order, get_payment_order, confirm_payment, has_subscription, SUBSCRIPTION_PRICES, PaymentMethod
 
 BOT_TOKEN = os.environ.get("MINIAPP_BOT_TOKEN", "")
 DB_FILE = os.path.join(os.path.dirname(__file__), "miniapp.db")
@@ -42,6 +43,7 @@ def db():
 
 
 def init_db():
+    init_subscription_schema()
     conn = db()
     conn.execute("""
         CREATE TABLE IF NOT EXISTS users (
@@ -317,6 +319,67 @@ def withdraw():
     conn.commit()
     conn.close()
     return jsonify({"ok": True})
+
+
+@app.route("/api/subscription", methods=["GET"])
+def get_subscription():
+    user = auth_user()
+    if not user:
+        return jsonify({"error": "unauthorized"}), 401
+    return jsonify({
+        "has_subscription": has_subscription(user["id"]),
+        "prices": {str(k): v for k, v in SUBSCRIPTION_PRICES.items()},
+        "binance_wallet": os.environ.get("BINANCE_WALLET_USDT", ""),
+    })
+
+
+@app.route("/api/purchase", methods=["POST"])
+def purchase():
+    user = auth_user()
+    if not user:
+        return jsonify({"error": "unauthorized"}), 401
+    method = (request.json or {}).get("method", "stars")
+    try:
+        method = PaymentMethod(method)
+    except ValueError:
+        return jsonify({"error": "invalid_method"}), 400
+    amount = SUBSCRIPTION_PRICES.get(method, 0)
+    order_id = create_payment_order(user["id"], method.value, amount)
+    if method == PaymentMethod.STARS:
+        return jsonify({
+            "order_id": order_id,
+            "method": "stars",
+            "amount": amount,
+            "payload": f"subscription_{user['id']}_{order_id}",
+        })
+    elif method == PaymentMethod.USDT_QR:
+        return jsonify({
+            "order_id": order_id,
+            "method": "usdt_qr",
+            "amount": amount,
+            "wallet": os.environ.get("BINANCE_WALLET_USDT", ""),
+            "note": "أرسل الـ USDT إلى العنوان أعلاه، ثم أرسل بروفة التحويل.",
+        })
+    else:  # BINANCE_P2P
+        return jsonify({
+            "order_id": order_id,
+            "method": "binance_p2p",
+            "amount": amount,
+            "note": "حول عبر Binance P2P واسم المنتج 'Subscription Payment'",
+        })
+
+
+@app.route("/api/confirm-payment", methods=["POST"])
+def confirm_payment_route():
+    user = auth_user()
+    if not user:
+        return jsonify({"error": "unauthorized"}), 401
+    order_id = (request.json or {}).get("order_id", "")
+    order = get_payment_order(order_id)
+    if not order or order["user_id"] != user["id"]:
+        return jsonify({"error": "invalid_order"}), 400
+    result = confirm_payment(order_id)
+    return jsonify({"ok": bool(result), "subscription": result})
 
 
 if __name__ == "__main__":

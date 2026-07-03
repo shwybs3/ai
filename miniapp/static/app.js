@@ -183,5 +183,93 @@ document.querySelectorAll(".nav-btn").forEach((btn) => {
   });
 });
 
+async function loadSubscription() {
+  const data = await api("/api/subscription");
+  if (!data.error) {
+    const container = document.getElementById("purchaseMethods");
+    container.innerHTML = "";
+    ["stars", "usdt_qr", "binance_p2p"].forEach((method) => {
+      const price = data.prices[method] || "N/A";
+      const labels = { stars: "⭐ نجوم", usdt_qr: "💵 USDT", binance_p2p: "🏦 Binance P2P" };
+      const btn = document.createElement("button");
+      btn.className = "method-btn";
+      btn.setAttribute("data-method", method);
+      btn.textContent = `${labels[method]} — ${price}`;
+      btn.addEventListener("click", () => startPurchase(method, price, data.binance_wallet));
+      container.appendChild(btn);
+    });
+  }
+}
+
+async function startPurchase(method, price, wallet) {
+  const res = await api("/api/purchase", { method: "POST", body: JSON.stringify({ method }) });
+  if (res.error) return tg?.showAlert?.("خطأ في طلب الشراء");
+
+  if (method === "stars") {
+    showPaymentModal(`⭐ شراء الاشتراك بـ ${price} نجمة`, `
+      <p>سيتم تحصيل ${price} نجمة من حسابك.</p>
+      <button onclick="simulateStarPayment('${res.order_id}')">✅ تأكيد الشراء</button>
+    `);
+  } else if (method === "usdt_qr") {
+    showPaymentModal("💵 دفع عبر USDT", `
+      <p>أرسل <b>${price}</b> USDT إلى:</p>
+      <div class="wallet-address">${wallet}</div>
+      <p>ثم اضغط تأكيد بعد الإرسال.</p>
+      <button onclick="confirmPayment('${res.order_id}')">✅ تأكيد الإرسال</button>
+    `);
+  } else {
+    showPaymentModal("🏦 تحويل Binance P2P", `
+      <p>حوّل <b>${price}</b> USDT عبر Binance P2P</p>
+      <p>اسم المنتج: <b>Subscription Payment</b></p>
+      <p>ثم اضغط تأكيد.</p>
+      <button onclick="confirmPayment('${res.order_id}')">✅ تأكيد الدفع</button>
+    `);
+  }
+}
+
+function showPaymentModal(title, content) {
+  let modal = document.getElementById("paymentModal");
+  if (!modal) {
+    modal = document.createElement("div");
+    modal.id = "paymentModal";
+    modal.className = "payment-modal";
+    document.body.appendChild(modal);
+  }
+  modal.innerHTML = `
+    <div class="payment-content">
+      <h2>${title}</h2>
+      ${content}
+      <button class="close-modal" onclick="closePaymentModal()">إغلاق</button>
+    </div>
+  `;
+  modal.classList.remove("hidden");
+}
+
+function closePaymentModal() {
+  const modal = document.getElementById("paymentModal");
+  if (modal) modal.classList.add("hidden");
+}
+
+async function confirmPayment(orderId) {
+  const res = await api("/api/confirm-payment", { method: "POST", body: JSON.stringify({ order_id: orderId }) });
+  if (res.ok) {
+    tg?.showAlert?.("✅ تم تفعيل الاشتراك الدائم! شكراً لك!");
+    closePaymentModal();
+    loadState();
+    loadSubscription();
+  } else {
+    tg?.showAlert?.("خطأ في تأكيد الدفع.");
+  }
+}
+
+async function simulateStarPayment(orderId) {
+  await api("/api/confirm-payment", { method: "POST", body: JSON.stringify({ order_id: orderId }) });
+  tg?.showAlert?.("✅ تم الشراء بنجاح!");
+  closePaymentModal();
+  loadState();
+  loadSubscription();
+}
+
 setInterval(loadState, 5000);
 loadState();
+loadSubscription();
