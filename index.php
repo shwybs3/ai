@@ -238,6 +238,11 @@ function migrate(): void
         // OpenRouter
         'openrouter_key' => '',
         'openrouter_model' => 'openai/gpt-4o-mini',
+        // AdMob (للتطبيق APK) — المُعرّفات ليست أسراراً (تُضمَّن في العميل علناً)
+        'admob_app_id' => 'ca-app-pub-5506877998492189~9990105460',
+        'admob_rewarded_id' => 'ca-app-pub-5506877998492189/9929596951',
+        'admob_interstitial_id' => '',   // أنشئ وحدة Interstitial في AdMob وضع مُعرّفها هنا
+        'admob_test_mode' => '1',        // 1 = إعلانات اختبار، 0 = إعلانات حقيقية
         // قياسات البنرات (نص إرشادي للأدمن)
         'banner_size_hint' => '1200×400 بكسل (نسبة 3:1) — صيغة JPG/PNG/WebP',
     ];
@@ -349,6 +354,23 @@ function openrouter_key(): string
     $k = trim((string)setting('openrouter_key', ''));
     return $k !== '' ? $k : (string)OPENROUTER_KEY;
 }
+function admob_cfg(): array
+{
+    $test = (bool)(int)setting('admob_test_mode', '1');
+    if ($test) {
+        return [
+            'app_id'       => 'ca-app-pub-3940256099942544~3347511713',
+            'rewarded'     => 'ca-app-pub-3940256099942544/5354046379',
+            'interstitial' => 'ca-app-pub-3940256099942544/1033173712',
+            'test'         => true,
+        ];
+    }
+    $app_id       = trim((string)setting('admob_app_id', ''))       ?: (defined('ADMOB_APP_ID')       ? ADMOB_APP_ID       : '');
+    $rewarded     = trim((string)setting('admob_rewarded_id', ''))   ?: (defined('ADMOB_REWARDED_ID')   ? ADMOB_REWARDED_ID   : '');
+    $interstitial = trim((string)setting('admob_interstitial_id', '')) ?: (defined('ADMOB_INTERSTITIAL_ID') ? ADMOB_INTERSTITIAL_ID : '');
+    return ['app_id' => $app_id, 'rewarded' => $rewarded, 'interstitial' => $interstitial, 'test' => false];
+}
+
 function openrouter_request(string $path, string $method = 'GET', ?array $body = null): array
 {
     $key = openrouter_key();
@@ -1423,7 +1445,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
+      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','ads'=>'📣 إعلانات','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= $label ?></a>
       <?php endforeach; ?>
     </div>
@@ -1704,6 +1726,37 @@ case 'admin':
         <pre id="orResult" style="white-space:pre-wrap;background:#11152a;border-radius:10px;padding:12px;margin-top:12px;min-height:40px;font-size:13px;color:#cfe9df"></pre>
       </div>
 
+    <?php elseif ($tab === 'ads'):
+        $ac2 = admob_cfg();
+    ?>
+      <div class="admin-box">
+        <h3>📣 إعدادات Google AdMob</h3>
+        <form method="post" action="?action=admin_save_settings" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <label style="grid-column:1/-1">App ID (معرّف التطبيق)
+            <input name="admob_app_id" value="<?= e(setting('admob_app_id')) ?>" placeholder="ca-app-pub-XXXXXXXXXXXXXXXX~XXXXXXXXXX"></label>
+          <label style="grid-column:1/-1">Rewarded Interstitial ID (شاهد واربح)
+            <input name="admob_rewarded_id" value="<?= e(setting('admob_rewarded_id')) ?>" placeholder="ca-app-pub-XXXXXXXXXXXXXXXX/XXXXXXXXXX"></label>
+          <label style="grid-column:1/-1">Interstitial ID (إعلان الكابتشا)
+            <input name="admob_interstitial_id" value="<?= e(setting('admob_interstitial_id')) ?>" placeholder="ca-app-pub-XXXXXXXXXXXXXXXX/XXXXXXXXXX (أنشئ وحدة منفصلة)"></label>
+          <label>وضع الاختبار
+            <select name="admob_test_mode" style="padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff;width:100%">
+              <option value="1" <?= setting('admob_test_mode')!=='0'?'selected':'' ?>>مفعّل — إعلانات اختبار (آمن للتطوير)</option>
+              <option value="0" <?= setting('admob_test_mode')==='0'?'selected':'' ?>>مطفأ — إعلانات حقيقية (للإطلاق فقط)</option>
+            </select></label>
+          <button class="btn btn-primary" style="align-self:end">💾 حفظ الإعدادات</button>
+        </form>
+      </div>
+      <div class="admin-box">
+        <h3>📋 سطر AndroidManifest.xml</h3>
+        <p style="color:var(--muted);font-size:13px">انسخ هذا السطر داخل <code style="background:#1a2035;padding:2px 6px;border-radius:4px">&lt;application&gt;</code> في ملف AndroidManifest.xml:</p>
+        <pre style="background:#11152a;border-radius:10px;padding:14px;font-size:12px;overflow-x:auto;color:#cfe9df;white-space:pre-wrap">&lt;meta-data
+    android:name="com.google.android.gms.ads.APPLICATION_ID"
+    android:value="<?= e(setting('admob_app_id')) ?>" /&gt;</pre>
+        <p style="color:var(--muted);font-size:12px;margin-top:8px">الوحدة الفعّالة حالياً: Rewarded = <code style="color:var(--accent2)"><?= e($ac2['rewarded']) ?></code><?= $ac2['test'] ? ' <span style="color:#f59e0b">[وضع اختبار]</span>' : '' ?></p>
+        <p style="color:#f59e0b;font-size:12px">⚠️ لا تطفئ وضع الاختبار إلا بعد مراجعة <a href="https://support.google.com/admob/answer/6128543" target="_blank" rel="noopener" style="color:var(--accent2)">سياسات AdMob</a> والحصول على موافقة التطبيق.</p>
+      </div>
+
     <?php elseif ($tab === 'pages'):
         $privacy = db()->query("SELECT content FROM pages WHERE slug='privacy'")->fetch();
         $terms = db()->query("SELECT content FROM pages WHERE slug='terms'")->fetch();
@@ -1819,10 +1872,25 @@ default:
 <script>
 const CSRF = "<?= csrf_token() ?>";
 const CAPTCHA_AD_SECS = <?= (int)setting('captcha_ad_seconds', 5) ?>;
+<?php $ac = admob_cfg(); ?>
+window.ADMOB = {
+  rewarded:     "<?= addslashes($ac['rewarded']) ?>",
+  interstitial: "<?= addslashes($ac['interstitial']) ?>",
+  test:         <?= $ac['test'] ? 'true' : 'false' ?>
+};
 
 /* إعلان إجباري قصير (interstitial) — يستدعي AdMob في نسخة APK */
+let _forcedAdCb = null;
+window.adClosed = function(){ if(_forcedAdCb){ const cb=_forcedAdCb; _forcedAdCb=null; cb(); } };
+window.adFailed = function(msg){ console.warn('AdMob failed:', msg); if(_forcedAdCb){ const cb=_forcedAdCb; _forcedAdCb=null; cb(); } };
+window.adDismissed = function(){ const btn=document.getElementById('watchBtn'); if(btn){ btn.disabled=false; btn.textContent='▶️ ابدأ مشاهدة الإعلان'; } };
+
 function forcedAd(secs, cb){
-  if (window.Android && window.Android.showInterstitial){ window.Android.showInterstitial(); cb(); return; }
+  if (window.Android && window.Android.showInterstitial && window.ADMOB.interstitial){
+    _forcedAdCb = cb;
+    window.Android.showInterstitial(window.ADMOB.interstitial);
+    return;
+  }
   let ov = document.createElement('div');
   ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#fff;text-align:center;padding:20px';
   ov.innerHTML='<div style="font-size:13px;opacity:.7">إعلان</div><div style="font-size:50px">📺</div><div style="font-size:18px;font-weight:700">إعلان برعاية Yassota</div><div id="adCount" style="font-size:14px;opacity:.85"></div>';
@@ -1941,8 +2009,7 @@ function filterCat(el, cat){
 /* ===== مشاهدة إعلان مكافأ (مع AdMob في نسخة APK) ===== */
 function watchAd(secs){
   const btn = document.getElementById('watchBtn');
-  // في تطبيق APK: استدعِ هنا إعلان AdMob المكافأ عبر الجسر، ثم نادِ grantAd() عند الإكمال.
-  if (window.Android && window.Android.showRewardedAd){ window.Android.showRewardedAd(); return; }
+  if (window.Android && window.Android.showRewardedAd){ window.Android.showRewardedAd(window.ADMOB.rewarded); return; }
   btn.disabled = true; let r = secs;
   const iv = setInterval(()=>{
     r--; btn.textContent = '⏳ جارٍ العرض... ' + r + ' ث';
