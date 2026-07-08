@@ -12,10 +12,11 @@ if (!file_exists(__DIR__ . '/config.php')) {
     die('يرجى إنشاء config.php من config.sample.php أولاً.');
 }
 require __DIR__ . '/config.php';
+require __DIR__ . '/image_optimizer.php';
 
 // ثوابت اختيارية قد لا تكون موجودة في config.php القديم
 foreach ([
-    'ADMOB_APP_ID', 'ADMOB_REWARDED_ID', 'ADMOB_INTERSTITIAL_ID', 'OPENROUTER_KEY',
+    'ADMOB_APP_ID', 'ADMOB_REWARDED_ID', 'ADMOB_INTERSTITIAL_ID', 'OPENROUTER_KEY', 'ADSENSE_CLIENT_ID',
 ] as $opt) { if (!defined($opt)) define($opt, ''); }
 
 /* ======================================================================
@@ -151,7 +152,9 @@ function migrate(): void
     )$engine",
     "CREATE TABLE IF NOT EXISTS pages (
         slug VARCHAR(40) PRIMARY KEY,
-        content TEXT NULL
+        content TEXT NULL,
+        meta_title VARCHAR(190) NULL,
+        meta_description VARCHAR(255) NULL
     )$engine",
     "CREATE TABLE IF NOT EXISTS telegram_users (
         chat_id VARCHAR(40) PRIMARY KEY,
@@ -243,18 +246,274 @@ function migrate(): void
         'admob_rewarded_id' => 'ca-app-pub-5506877998492189/9929596951',
         'admob_interstitial_id' => '',   // أنشئ وحدة Interstitial في AdMob وضع مُعرّفها هنا
         'admob_test_mode' => '1',        // 1 = إعلانات اختبار، 0 = إعلانات حقيقية
+        // Google AdSense
+        'adsense_client_id' => 'ca-pub-5506877998492189',
+        'adsense_enabled' => '1',
         // قياسات البنرات (نص إرشادي للأدمن)
         'banner_size_hint' => '1200×400 بكسل (نسبة 3:1) — صيغة JPG/PNG/WebP',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
 
-    foreach (['privacy' => 'سياسة الخصوصية الخاصة بمنصة Yassota...', 'terms' => 'شروط الاستخدام الخاصة بمنصة Yassota...'] as $slug => $content) {
-        $st = $pdo->prepare("INSERT INTO pages (slug, content) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = ?)");
-        $st->execute([$slug, $content, $slug]);
+    $pageDefaults = [
+        'privacy' => [
+            'content' => '<h2>سياسة الخصوصية</h2>
+<p><strong>آخر تحديث: يوليو 2025</strong></p>
+
+<h3>مقدمة</h3>
+<p>نرحب بك في منصة <strong>Yassota CASH</strong>. نحن نأخذ خصوصيتك على محمل الجد ونلتزم بحماية بياناتك الشخصية. تصف هذه السياسة كيفية جمع معلوماتك واستخدامها وحمايتها عند استخدامك لمنصتنا.</p>
+
+<h3>المعلومات التي نجمعها</h3>
+<ul>
+<li><strong>معلومات الحساب:</strong> عند إنشاء حساب نجمع بريدك الإلكتروني واسمك.</li>
+<li><strong>معلومات الاستخدام:</strong> نتتبع نشاطك مثل المهام المكتملة والعملات المكتسبة وسجلات السحب.</li>
+<li><strong>البيانات التقنية:</strong> نجمع عنوان IP ونوع المتصفح والنظام التشغيلي لأغراض الأمان وتحسين الخدمة.</li>
+<li><strong>ملفات تعريف الارتباط:</strong> نستخدم Cookies لتذكر جلستك وتفضيلاتك.</li>
+</ul>
+
+<h3>كيف نستخدم بياناتك</h3>
+<ul>
+<li>إدارة حسابك وتقديم خدمات المنصة.</li>
+<li>معالجة طلبات السحب والشراء بأمان.</li>
+<li>إرسال الإشعارات المتعلقة بحسابك وعمليات الرصيد.</li>
+<li>تحسين المنصة وتجربة المستخدم.</li>
+<li>الكشف عن الاحتيال وحماية المنصة.</li>
+<li>عرض الإعلانات ذات الصلة عبر Google AdSense.</li>
+</ul>
+
+<h3>الإعلانات — Google AdSense</h3>
+<p>تستخدم هذه المنصة Google AdSense لعرض الإعلانات. قد تستخدم Google ملفات تعريف الارتباط (مثل DoubleClick) لتقديم إعلانات مبنية على زياراتك السابقة لهذا الموقع وغيره. يمكنك:</p>
+<ul>
+<li>إلغاء استخدام DoubleClick عبر <a href="https://www.google.com/settings/ads" target="_blank" rel="noopener">إعدادات الإعلانات على Google</a>.</li>
+<li>إلغاء الاشتراك عبر <a href="http://www.aboutads.info/choices/" target="_blank" rel="noopener">مبادرة شفافية الإعلانات</a>.</li>
+</ul>
+<p>سياسة الخصوصية الخاصة بـ Google متاحة على: <a href="https://policies.google.com/privacy" target="_blank" rel="noopener">policies.google.com/privacy</a></p>
+
+<h3>مشاركة البيانات مع أطراف ثالثة</h3>
+<p>لا نبيع بياناتك الشخصية إطلاقاً. قد نشارك البيانات مع:</p>
+<ul>
+<li>مزودي الخدمات التقنية الذين يساعدوننا في تشغيل المنصة (مع التزامهم بالسرية).</li>
+<li>Google لخدمات الإعلانات والتحليلات.</li>
+<li>الجهات القانونية عند وجود التزام قانوني صريح.</li>
+</ul>
+
+<h3>حقوقك</h3>
+<p>يحق لك في أي وقت:</p>
+<ul>
+<li>الوصول إلى بياناتك الشخصية وطلب نسخة منها.</li>
+<li>تصحيح أي بيانات غير دقيقة.</li>
+<li>طلب حذف حسابك وجميع بياناتك.</li>
+<li>الاعتراض على معالجة بياناتك لأغراض تسويقية.</li>
+</ul>
+
+<h3>الأمان</h3>
+<p>نستخدم تشفير HTTPS ومصادقة آمنة وضوابط وصول صارمة لحماية بياناتك. رغم ذلك، لا يمكن لأي نظام ضمان أمان مطلق على الإنترنت.</p>
+
+<h3>تغييرات على هذه السياسة</h3>
+<p>قد نحدّث هذه السياسة من وقت لآخر. سنُعلمك بالتغييرات الجوهرية عبر المنصة. الاستمرار في استخدام المنصة بعد التحديث يُعدّ قبولاً للسياسة الجديدة.</p>
+
+<h3>التواصل معنا</h3>
+<p>لأي استفسارات حول سياسة الخصوصية تواصل معنا عبر صفحة <a href="?page=contact">التواصل</a>.</p>',
+            'meta_title' => 'سياسة الخصوصية — Yassota CASH',
+            'meta_description' => 'سياسة الخصوصية لمنصة Yassota CASH — كيف نجمع بياناتك ونحميها ونستخدمها.',
+        ],
+        'terms' => [
+            'content' => '<h2>شروط الاستخدام</h2>
+<p><strong>آخر تحديث: يوليو 2025</strong></p>
+
+<h3>القبول بالشروط</h3>
+<p>باستخدامك لمنصة <strong>Yassota CASH</strong> فإنك تقرّ بأنك قرأت هذه الشروط وفهمتها ووافقت عليها كاملاً. إن لم توافق على أي بند، يُرجى التوقف عن استخدام المنصة.</p>
+
+<h3>وصف الخدمة</h3>
+<p>Yassota CASH منصة مكافآت رقمية تتيح للمستخدمين كسب عملات افتراضية واستبدالها. وسائل الكسب تشمل:</p>
+<ul>
+<li>مشاهدة الإعلانات الاختيارية (Rewarded Ads).</li>
+<li>حل مسائل التحقق البصري (Captcha).</li>
+<li>إكمال المهام اليومية المتاحة.</li>
+<li>دعوة أصدقاء للانضمام عبر رابط الإحالة.</li>
+<li>المشاركة في عجلة الحظ.</li>
+<li>شراء المنتجات والخدمات الرقمية من المتجر.</li>
+</ul>
+
+<h3>إنشاء الحساب</h3>
+<ul>
+<li>يجب أن يكون عمرك 13 سنة أو أكثر لاستخدام المنصة.</li>
+<li>معلومات الحساب يجب أن تكون صحيحة وحديثة.</li>
+<li>أنت مسؤول عن سرية كلمة المرور وأمان حسابك.</li>
+<li>حساب واحد فقط لكل مستخدم — الحسابات المتعددة مخالفة للشروط.</li>
+</ul>
+
+<h3>قواعد الاستخدام المقبول</h3>
+<p>يُحظر تحت طائلة الإيقاف الفوري:</p>
+<ul>
+<li>استخدام برامج أتمتة (بوتات) لكسب العملات بشكل غير مشروع.</li>
+<li>التحايل على نظام الكابتشا أو الإعلانات.</li>
+<li>إنشاء حسابات وهمية لاستغلال نظام الإحالة.</li>
+<li>مشاركة أو بيع الحساب لطرف ثالث.</li>
+<li>محاولة اختراق المنصة أو التلاعب ببياناتها.</li>
+<li>نشر محتوى مسيء أو غير قانوني.</li>
+</ul>
+
+<h3>العملات والسحب</h3>
+<ul>
+<li>العملات المكتسبة هي نقاط افتراضية قابلة للاستبدال بحد أدنى للسحب يحدده الإدارة.</li>
+<li>نحتفظ بحق رفض طلبات السحب المشبوهة أو المخالفة للشروط.</li>
+<li>أسعار الاستبدال قابلة للتغيير وفق قرار الإدارة.</li>
+<li>العملات المكتسبة بطرق احتيالية سيتم مصادرتها وسيتم إغلاق الحساب.</li>
+</ul>
+
+<h3>الإعلانات</h3>
+<p>تعرض المنصة إعلانات عبر Google AdSense وشبكات إعلانية أخرى. هذه الإعلانات تُمكّن المنصة من تقديم خدماتها مجاناً. يُرجى عدم النقر على الإعلانات بشكل متعمد أو إساءة استخدامها.</p>
+
+<h3>المنتجات والطلبات</h3>
+<ul>
+<li>المنتجات المعروضة رقمية وقد تستلزم وقت معالجة من 1-24 ساعة.</li>
+<li>في حال وجود مشكلة في طلبك تواصل مع الدعم خلال 48 ساعة.</li>
+<li>لا يمكن استرداد النقاط المستخدمة في الشراء إلا في حالات الإخفاق المؤكد.</li>
+</ul>
+
+<h3>المسؤولية</h3>
+<p>المنصة مقدّمة "كما هي". نسعى لضمان الاستمرارية لكننا لا نضمن توفر الخدمة 100% من الوقت. لا نتحمل مسؤولية أي خسائر مالية مباشرة أو غير مباشرة ناتجة عن استخدام المنصة.</p>
+
+<h3>التغييرات على الشروط</h3>
+<p>نحتفظ بحق تعديل هذه الشروط في أي وقت. سيتم إخطارك بالتغييرات الجوهرية عبر المنصة. الاستمرار في الاستخدام يعني القبول بالشروط المُحدَّثة.</p>
+
+<h3>القانون المعمول به</h3>
+<p>تخضع هذه الشروط للقوانين المعمول بها. في حال وجود نزاع يتم التسوية بالتفاوض أولاً ثم التحكيم.</p>
+
+<h3>التواصل</h3>
+<p>للاستفسار عن أي بند من هذه الشروط تواصل معنا عبر صفحة <a href="?page=contact">التواصل</a>.</p>',
+            'meta_title' => 'شروط الاستخدام — Yassota CASH',
+            'meta_description' => 'شروط استخدام منصة Yassota CASH — القواعد والحقوق والمسؤوليات.',
+        ],
+        'about' => [
+            'content' => '<h2>من نحن</h2>
+
+<h3>منصة Yassota CASH</h3>
+<p><strong>Yassota CASH</strong> منصة مكافآت رقمية عربية تُتيح للمستخدمين كسب عملات افتراضية واستبدالها بمكافآت حقيقية. تأسست المنصة بهدف تقديم طريقة بسيطة وممتعة لكسب الدخل الإضافي عبر الإنترنت.</p>
+
+<h3>ماذا نقدم؟</h3>
+<ul>
+<li>📺 <strong>مشاهدة الإعلانات:</strong> شاهد إعلانات قصيرة واكسب عملات فورية.</li>
+<li>🪙 <strong>نظام الكابتشا:</strong> حل مسائل التحقق السهلة وتراكم الأرباح يومياً.</li>
+<li>📋 <strong>المهام اليومية:</strong> مهام يومية متنوعة بمكافآت مضمونة.</li>
+<li>🎡 <strong>عجلة الحظ:</strong> دوّر العجلة وفز بجوائز ضخمة.</li>
+<li>🎁 <strong>برنامج الإحالة:</strong> ادعُ أصدقاءك واكسب لكل من ينضم عبر رابطك.</li>
+<li>🛍️ <strong>المتجر الرقمي:</strong> أنفق عملاتك في شراء منتجات وخدمات رقمية حصرية.</li>
+<li>💸 <strong>السحب:</strong> حوّل عملاتك إلى رصيد حقيقي عبر USDT أو الشام كاش.</li>
+</ul>
+
+<h3>مميزاتنا</h3>
+<ul>
+<li>✅ مجاني تماماً — لا تحتاج لدفع أي مبلغ للبدء.</li>
+<li>✅ واجهة عربية سهلة وسريعة.</li>
+<li>✅ دعم فني عبر تيليجرام.</li>
+<li>✅ نظام شفاف ومكافآت حقيقية.</li>
+<li>✅ متاح كتطبيق Android مجاني.</li>
+</ul>
+
+<h3>كيف تبدأ؟</h3>
+<ol>
+<li>سجّل حساباً مجانياً بدقيقة واحدة.</li>
+<li>أكمل ملفك الشخصي لتحصل على مكافأة ترحيبية.</li>
+<li>ابدأ بالمهام اليومية وعجلة الحظ.</li>
+<li>تراكم عملاتك واسحبها عند الوصول للحد الأدنى.</li>
+</ol>
+
+<h3>تواصل معنا</h3>
+<p>نحن دائماً هنا لمساعدتك. تواصل معنا عبر صفحة <a href="?page=contact">التواصل</a> أو مباشرة عبر تيليجرام.</p>',
+            'meta_title' => 'من نحن — Yassota CASH',
+            'meta_description' => 'تعرف على منصة Yassota CASH — منصة مكافآت رقمية عربية لكسب العملات واستبدالها بمكافآت حقيقية.',
+        ],
+        'contact' => [
+            'content' => '<h2>تواصل معنا</h2>
+<p>نسعد بتواصلك معنا في أي وقت. فريق دعمنا جاهز للإجابة على استفساراتك ومساعدتك.</p>
+
+<h3>وسائل التواصل</h3>
+<ul>
+<li>📱 <strong>تيليجرام (الأسرع):</strong> <a href="https://t.me/yassota_support" target="_blank" rel="noopener">@yassota_support</a></li>
+<li>📧 <strong>البريد الإلكتروني:</strong> support@yassota.com</li>
+</ul>
+
+<h3>ساعات الدعم</h3>
+<p>فريق الدعم متاح من السبت إلى الخميس، من الساعة 9 صباحاً حتى 10 مساءً (بتوقيت العرب السعودية). نرد عادةً خلال 2-6 ساعات.</p>
+
+<h3>للإبلاغ عن مشكلة</h3>
+<p>عند التواصل بشأن مشكلة، يُرجى تضمين:</p>
+<ul>
+<li>اسم المستخدم أو البريد الإلكتروني المرتبط بحسابك.</li>
+<li>وصف دقيق للمشكلة.</li>
+<li>لقطة شاشة إن أمكن.</li>
+</ul>
+
+<h3>اقتراحات وتحسينات</h3>
+<p>نُقدّر ملاحظاتك ومقترحاتك لتحسين المنصة. تواصل معنا عبر أي من الوسائل أعلاه وسنأخذها بعين الاعتبار.</p>',
+            'meta_title' => 'تواصل معنا — Yassota CASH',
+            'meta_description' => 'تواصل مع فريق دعم Yassota CASH عبر تيليجرام أو البريد الإلكتروني.',
+        ],
+        'faq' => [
+            'content' => '<h2>الأسئلة الشائعة</h2>
+
+<h3>ما هي Yassota CASH؟</h3>
+<p>Yassota CASH منصة مكافآت رقمية مجانية تُتيح لك كسب عملات افتراضية واستبدالها بمكافآت حقيقية. يمكنك الكسب عبر مشاهدة الإعلانات، وحل الكابتشا، وإكمال المهام، وإحالة الأصدقاء.</p>
+
+<h3>هل الموقع مجاني؟</h3>
+<p>نعم، الانضمام والاستخدام مجاني تماماً. لا رسوم خفية ولا يُطلب منك دفع أي مبلغ للبدء في الكسب.</p>
+
+<h3>كيف أسحب أرباحي؟</h3>
+<p>بعد تراكم الحد الأدنى من النقاط، اذهب إلى صفحة المحفظة وأرسل طلب سحب. ندعم حالياً USDT والشام كاش. تُعالَج الطلبات خلال 24-72 ساعة.</p>
+
+<h3>ما الحد الأدنى للسحب؟</h3>
+<p>الحد الأدنى للسحب يُحدد من قِبل الإدارة وقد يتغير. يمكنك دائماً الاطلاع على القيمة الحالية في صفحة المحفظة.</p>
+
+<h3>هل يمكنني فتح أكثر من حساب؟</h3>
+<p>لا، يُسمح بحساب واحد فقط لكل مستخدم. إنشاء حسابات متعددة يُعدّ مخالفة للشروط وقد يؤدي إلى إغلاق جميع الحسابات.</p>
+
+<h3>لماذا تُعرض إعلانات على الموقع؟</h3>
+<p>الإعلانات هي المصدر الرئيسي لتمويل المنصة وتمكيننا من تقديم خدماتنا مجاناً ومكافأة مستخدمينا. إعلانات مشاهدة الفيديو تعطيك عملات مباشرة كمكافأة.</p>
+
+<h3>هل التطبيق متاح على Android؟</h3>
+<p>نعم! يمكنك تحميل تطبيق Yassota CASH المجاني لنظام Android للحصول على تجربة أفضل وإشعارات فورية.</p>
+
+<h3>ما الفرق بين الكابتشا والمهام؟</h3>
+<ul>
+<li><strong>الكابتشا:</strong> حل مسائل تحقق بصرية بشكل متكرر لتراكم العملات.</li>
+<li><strong>المهام:</strong> أنشطة محددة (مشاهدة صفحة، الاشتراك، إلخ) بمكافأة محددة وحد يومي.</li>
+</ul>
+
+<h3>لم أتلقَّ مكافأتي — ماذا أفعل؟</h3>
+<p>تواصل مع الدعم عبر صفحة <a href="?page=contact">التواصل</a> مع تفاصيل المشكلة ولقطة شاشة. سنحل الأمر في أقرب وقت.</p>
+
+<h3>كيف أشكو من مشكلة؟</h3>
+<p>راسلنا عبر <a href="?page=contact">صفحة التواصل</a> أو مباشرة على تيليجرام وسنرد في أقرب وقت.</p>',
+            'meta_title' => 'الأسئلة الشائعة — Yassota CASH',
+            'meta_description' => 'إجابات على أكثر الأسئلة شيوعاً حول منصة Yassota CASH — الكسب، السحب، الإعلانات.',
+        ],
+    ];
+    // تأكد أن أعمدة meta موجودة قبل بذر المحتوى (تحديث من نسخة قديمة بلا هذه الأعمدة)
+    foreach (['meta_title' => 'VARCHAR(190) NULL', 'meta_description' => 'VARCHAR(255) NULL'] as $col => $def) {
+        try {
+            $cols = array_column(
+                $pdo->query(DB_DRIVER === 'sqlite' ? "PRAGMA table_info(pages)" : "SHOW COLUMNS FROM pages")->fetchAll(),
+                DB_DRIVER === 'sqlite' ? 'name' : 'Field'
+            );
+            if (!in_array($col, $cols, true)) $pdo->exec("ALTER TABLE pages ADD COLUMN $col $def");
+        } catch (Throwable $e) {}
+    }
+    $stPage = $pdo->prepare("INSERT INTO pages (slug, content, meta_title, meta_description) SELECT ?, ?, ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = ?)");
+    foreach ($pageDefaults as $slug => $d) {
+        $stPage->execute([$slug, $d['content'], $d['meta_title'], $d['meta_description'], $slug]);
     }
 }
-migrate();
+
+// تشغيل migrate() مرة واحدة فقط عبر ملف علامة — يحل مشكلة ثقل الاستجابة في كل طلب
+const SCHEMA_MIGRATION_VERSION = 3;
+$__mFlag = __DIR__ . '/uploads/.schema_v' . SCHEMA_MIGRATION_VERSION . '.lock';
+if (!file_exists($__mFlag)) {
+    if (!is_dir(__DIR__ . '/uploads')) @mkdir(__DIR__ . '/uploads', 0755, true);
+    migrate();
+    @file_put_contents($__mFlag, date('c'));
+}
 
 /* ======================================================================
    2) HELPERS
@@ -542,6 +801,45 @@ if ($action === 'manifest') {
 if ($action === 'appicon') {
     header('Content-Type: image/svg+xml; charset=utf-8');
     echo brand_logo_svg(512);
+    exit;
+}
+
+// ملف ads.txt (مطلوب لـ AdSense)
+if ($action === 'ads_txt' || (isset($_SERVER['REQUEST_URI']) && rtrim(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/') === '/ads.txt')) {
+    header('Content-Type: text/plain; charset=utf-8');
+    $adsenseId = setting('adsense_client_id') ?: (defined('ADSENSE_CLIENT_ID') ? ADSENSE_CLIENT_ID : '');
+    if ($adsenseId) {
+        echo "google.com, {$adsenseId}, DIRECT, f08c47fec0942fa0\n";
+    } else {
+        echo "google.com, ca-pub-5506877998492189, DIRECT, f08c47fec0942fa0\n";
+    }
+    exit;
+}
+
+// خريطة الموقع XML
+if ($action === 'sitemap') {
+    header('Content-Type: application/xml; charset=utf-8');
+    $base = rtrim(SITE_URL ?: ('https://' . ($_SERVER['HTTP_HOST'] ?? 'localhost')), '/');
+    $urls = [
+        ['loc' => $base . '/', 'priority' => '1.0', 'changefreq' => 'daily'],
+        ['loc' => $base . '/?page=about', 'priority' => '0.8', 'changefreq' => 'monthly'],
+        ['loc' => $base . '/?page=privacy', 'priority' => '0.3', 'changefreq' => 'monthly'],
+        ['loc' => $base . '/?page=terms', 'priority' => '0.3', 'changefreq' => 'monthly'],
+        ['loc' => $base . '/?page=contact', 'priority' => '0.5', 'changefreq' => 'monthly'],
+        ['loc' => $base . '/?page=faq', 'priority' => '0.6', 'changefreq' => 'monthly'],
+    ];
+    $products = db()->query("SELECT id, name FROM products WHERE status='active'")->fetchAll();
+    foreach ($products as $p) {
+        $urls[] = ['loc' => $base . '/?page=home&product=' . (int)$p['id'], 'priority' => '0.5', 'changefreq' => 'weekly'];
+    }
+    echo '<?xml version="1.0" encoding="UTF-8"?>';
+    echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">';
+    foreach ($urls as $u) {
+        echo '<url><loc>' . htmlspecialchars($u['loc']) . '</loc>';
+        echo '<changefreq>' . ($u['changefreq'] ?? 'monthly') . '</changefreq>';
+        echo '<priority>' . $u['priority'] . '</priority></url>';
+    }
+    echo '</urlset>';
     exit;
 }
 
@@ -850,13 +1148,21 @@ if ($action && str_starts_with($action, 'admin_')) {
             flash('تم حفظ الإعدادات.');
             redirect('?page=admin&tab=settings');
 
-        case 'admin_save_page':
-            db()->prepare(DB_DRIVER === 'sqlite'
-                ? "INSERT INTO pages (slug, content) VALUES (?,?) ON CONFLICT(slug) DO UPDATE SET content=?"
-                : "INSERT INTO pages (slug, content) VALUES (?,?) ON DUPLICATE KEY UPDATE content=?")
-                ->execute([$_POST['slug'], $_POST['content'], $_POST['content']]);
+        case 'admin_save_page': {
+            $slug = preg_replace('/[^a-z0-9_-]/', '', $_POST['slug'] ?? '');
+            $content   = $_POST['content']          ?? '';
+            $metaTitle = trim($_POST['meta_title']  ?? '');
+            $metaDesc  = trim($_POST['meta_description'] ?? '');
+            $allowedSlugs = ['privacy','terms','about','contact','faq'];
+            if ($slug && in_array($slug, $allowedSlugs, true)) {
+                db()->prepare(DB_DRIVER === 'sqlite'
+                    ? "INSERT INTO pages (slug, content, meta_title, meta_description) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET content=?, meta_title=?, meta_description=?"
+                    : "INSERT INTO pages (slug, content, meta_title, meta_description) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE content=?, meta_title=?, meta_description=?")
+                    ->execute([$slug, $content, $metaTitle, $metaDesc, $content, $metaTitle, $metaDesc]);
+            }
             flash('تم حفظ الصفحة.');
             redirect('?page=admin&tab=pages');
+        }
 
         case 'admin_user_action':
             $uid = (int)$_POST['id'];
@@ -878,11 +1184,24 @@ $siteName = setting('site_name');
 $logo = setting('logo_url');
 ?>
 <!DOCTYPE html>
+<?php
+// بيانات الصفحة الحالية (meta_title / meta_description) من جدول pages
+$_pageMeta = [];
+if (in_array($page, ['privacy','terms','about','contact','faq'], true)) {
+    $__pm = db()->prepare("SELECT meta_title, meta_description FROM pages WHERE slug=?");
+    $__pm->execute([$page]);
+    $_pageMeta = $__pm->fetch() ?: [];
+}
+$_headTitle = ($_pageMeta['meta_title'] ?? '') ?: (e($siteName) . ' — ' . e(setting('banner_subtitle')));
+$_headDesc  = ($_pageMeta['meta_description'] ?? '') ?: setting('site_description');
+$_adsenseId = setting('adsense_client_id') ?: (defined('ADSENSE_CLIENT_ID') && ADSENSE_CLIENT_ID ? ADSENSE_CLIENT_ID : 'ca-pub-5506877998492189');
+$_adsenseOn = setting('adsense_enabled', '1') !== '0';
+?>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title><?= e($siteName) ?> — <?= e(setting('banner_subtitle')) ?></title>
-<meta name="description" content="<?= e(setting('site_description')) ?>">
+<title><?= $_headTitle ?></title>
+<meta name="description" content="<?= e($_headDesc) ?>">
 <meta name="keywords" content="<?= e(setting('site_keywords')) ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
 <meta name="theme-color" content="#0f1320">
@@ -890,11 +1209,16 @@ $logo = setting('logo_url');
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="manifest" href="?action=manifest">
+<link rel="sitemap" type="application/xml" href="?action=sitemap">
 <?php if (!$logo): ?><link rel="apple-touch-icon" href="?action=appicon"><?php endif; ?>
-<meta property="og:title" content="<?= e($siteName) ?>">
-<meta property="og:description" content="<?= e(setting('site_description')) ?>">
+<meta property="og:title" content="<?= e($_headTitle) ?>">
+<meta property="og:description" content="<?= e($_headDesc) ?>">
 <?php if ($logo): ?><meta property="og:image" content="<?= e($logo) ?>"><link rel="icon" href="<?= e($logo) ?>"><?php endif; ?>
-<link rel="canonical" href="<?= e(SITE_URL ?: '') ?>">
+<link rel="canonical" href="<?= e((SITE_URL ?: '') . ($page !== 'home' ? '?page=' . $page : '')) ?>">
+<?php if ($_adsenseOn): ?>
+<meta name="google-adsense-account" content="<?= e($_adsenseId) ?>">
+<script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=<?= e($_adsenseId) ?>" crossorigin="anonymous"></script>
+<?php endif; ?>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"Organization","name":"<?= e($siteName) ?>","url":"<?= e(SITE_URL) ?>"<?= $logo ? ',"logo":"' . e($logo) . '"' : '' ?>}
 </script>
@@ -963,6 +1287,13 @@ table th,table td{padding:8px;border-bottom:1px solid #232a45;text-align:right}
 .admin-tabs a{padding:8px 14px;border-radius:10px;background:#232a45;font-size:13px}
 .admin-tabs a.active{background:var(--accent)}
 .admin-box{background:var(--card);margin:0 18px 20px;border-radius:var(--radius);padding:18px;overflow-x:auto}
+.page-content h2{font-size:20px;margin:0 0 16px;color:var(--accent2)}
+.page-content h3{font-size:16px;margin:18px 0 8px;color:var(--text)}
+.page-content p{margin:0 0 10px;color:#c5cadf}
+.page-content ul,.page-content ol{padding-right:20px;margin:0 0 10px;color:#c5cadf}
+.page-content li{margin-bottom:4px}
+.page-content a{color:var(--accent2);text-decoration:underline}
+.page-content strong{color:var(--text)}
 .formrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px}
 .badge{padding:2px 8px;border-radius:8px;font-size:11px}
 .badge.pending{background:#5a4a1c}
@@ -1087,6 +1418,9 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
     <a href="?page=chats">💬 مجموعات الدردشة</a>
     <a href="?page=wallet">💳 محفظتي</a>
     <a href="?page=orders">📦 طلباتي</a>
+    <a href="?page=about">🏢 من نحن</a>
+    <a href="?page=faq">❓ الأسئلة الشائعة</a>
+    <a href="?page=contact">📞 تواصل معنا</a>
     <a href="?page=privacy">🔒 سياسة الخصوصية</a>
     <a href="?page=terms">📜 شروط الاستخدام</a>
     <?php if (is_admin()): ?><a href="?page=admin">🎛️ لوحة الإدارة</a><?php endif; ?>
@@ -1436,9 +1770,40 @@ case 'orders':
 
 case 'privacy':
 case 'terms':
-    $st = db()->prepare("SELECT content FROM pages WHERE slug=?"); $st->execute([$page]); $c = $st->fetch();
-    echo '<div class="admin-box" style="margin-top:18px;line-height:1.8">' . nl2br(e($c['content'] ?? '')) . '</div>';
+case 'about':
+case 'contact':
+case 'faq': {
+    $pageLabels = ['privacy'=>'سياسة الخصوصية','terms'=>'شروط الاستخدام','about'=>'من نحن','contact'=>'تواصل معنا','faq'=>'الأسئلة الشائعة'];
+    $st = db()->prepare("SELECT content, meta_title, meta_description FROM pages WHERE slug=?");
+    $st->execute([$page]); $pg = $st->fetch();
+    $pageTitle = $pageLabels[$page] ?? $page;
+    ?>
+    <div style="max-width:820px;margin:0 auto;padding:0 4px">
+      <div style="padding:14px 0 6px;display:flex;align-items:center;gap:8px;color:var(--muted);font-size:13px">
+        <a href="?" style="color:var(--accent2)">الرئيسية</a>
+        <span>›</span>
+        <span><?= e($pageTitle) ?></span>
+      </div>
+      <div class="admin-box" style="margin-top:4px">
+        <div class="page-content" style="line-height:2;font-size:15px">
+          <?php if ($pg && $pg['content']): ?>
+            <?= $pg['content'] // HTML مباشر — يعدّله الأدمن فقط ?>
+          <?php else: ?>
+            <p style="color:var(--muted)">لا يوجد محتوى بعد. أضفه من لوحة الإدارة &rarr; تبويب الصفحات.</p>
+          <?php endif; ?>
+        </div>
+      </div>
+      <div style="display:flex;gap:14px;flex-wrap:wrap;padding:16px 0;font-size:13px;color:var(--muted)">
+        <a href="?page=privacy" style="color:var(--accent2)">سياسة الخصوصية</a>
+        <a href="?page=terms" style="color:var(--accent2)">شروط الاستخدام</a>
+        <a href="?page=about" style="color:var(--accent2)">من نحن</a>
+        <a href="?page=contact" style="color:var(--accent2)">تواصل معنا</a>
+        <a href="?page=faq" style="color:var(--accent2)">الأسئلة الشائعة</a>
+      </div>
+    </div>
+    <?php
     break;
+}
 
 case 'admin':
     require_admin();
@@ -1758,26 +2123,43 @@ case 'admin':
       </div>
 
     <?php elseif ($tab === 'pages'):
-        $privacy = db()->query("SELECT content FROM pages WHERE slug='privacy'")->fetch();
-        $terms = db()->query("SELECT content FROM pages WHERE slug='terms'")->fetch();
+        $allPages = [];
+        foreach (['privacy','terms','about','contact','faq'] as $_s) {
+            $__r = db()->prepare("SELECT content, meta_title, meta_description FROM pages WHERE slug=?");
+            $__r->execute([$_s]);
+            $allPages[$_s] = $__r->fetch() ?: ['content'=>'','meta_title'=>'','meta_description'=>''];
+        }
+        $pageLabelsAdmin = ['privacy'=>['🔒','سياسة الخصوصية'],'terms'=>['📜','شروط الاستخدام'],'about'=>['🏢','من نحن'],'contact'=>['📞','تواصل معنا'],'faq'=>['❓','الأسئلة الشائعة']];
     ?>
+      <div class="admin-box" style="color:var(--muted);font-size:13px;padding:12px 18px">
+        ℹ️ المحتوى يدعم HTML. استخدم <code>&lt;h2&gt;</code>, <code>&lt;h3&gt;</code>, <code>&lt;p&gt;</code>, <code>&lt;ul&gt;</code>, <code>&lt;li&gt;</code>, <code>&lt;a&gt;</code> للتنسيق. يُعرض مباشرة دون هروب.
+      </div>
+      <?php foreach ($pageLabelsAdmin as $_slug => [$_icon, $_label]): ?>
       <div class="admin-box">
-        <h3>🔒 سياسة الخصوصية</h3>
+        <h3><?= $_icon ?> <?= $_label ?></h3>
         <form method="post" action="?action=admin_save_page">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input type="hidden" name="slug" value="privacy">
-          <textarea name="content" rows="6"><?= e($privacy['content'] ?? '') ?></textarea>
-          <button class="btn btn-primary">حفظ</button>
+          <input type="hidden" name="slug" value="<?= $_slug ?>">
+          <label style="display:block;margin-bottom:8px">عنوان SEO (اختياري)
+            <input name="meta_title" value="<?= e($allPages[$_slug]['meta_title'] ?? '') ?>" placeholder="<?= e($_label) ?> — Yassota CASH">
+          </label>
+          <label style="display:block;margin-bottom:8px">وصف SEO (اختياري)
+            <input name="meta_description" value="<?= e($allPages[$_slug]['meta_description'] ?? '') ?>" placeholder="وصف قصير يظهر في نتائج البحث">
+          </label>
+          <label style="display:block;margin-bottom:8px">المحتوى (HTML مسموح)
+            <textarea name="content" rows="10" style="font-family:monospace;font-size:12px"><?= e($allPages[$_slug]['content'] ?? '') ?></textarea>
+          </label>
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+            <button class="btn btn-primary">💾 حفظ</button>
+            <a href="?page=<?= $_slug ?>" target="_blank" class="btn btn-ghost" style="font-size:12px">👁 معاينة</a>
+          </div>
         </form>
       </div>
+      <?php endforeach; ?>
       <div class="admin-box">
-        <h3>📜 شروط الاستخدام</h3>
-        <form method="post" action="?action=admin_save_page">
-          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input type="hidden" name="slug" value="terms">
-          <textarea name="content" rows="6"><?= e($terms['content'] ?? '') ?></textarea>
-          <button class="btn btn-primary">حفظ</button>
-        </form>
+        <h3>📄 ads.txt</h3>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:10px">ملف ads.txt يُولَّد تلقائياً من معرّف AdSense. رابطه: <a href="?action=ads_txt" target="_blank" style="color:var(--accent2)"><?= e(SITE_URL ?: '') ?>?action=ads_txt</a></p>
+        <p style="color:var(--muted);font-size:12px">إذا كانت استضافتك تتطلب ملفاً ثابتاً، انسخ محتوى الرابط أعلاه وضعه في <code>ads.txt</code> في جذر الموقع.</p>
       </div>
 
     <?php elseif ($tab === 'users'):
@@ -1824,6 +2206,13 @@ case 'admin':
           <label>📺 أقصى مشاهدات باليوم<input name="ad_watch_max_per_day" value="<?= e(setting('ad_watch_max_per_day')) ?>"></label>
           <label>⏱️ مدة إعلان الكابتشا (ثوانٍ)<input name="captcha_ad_seconds" value="<?= e(setting('captcha_ad_seconds')) ?>"></label>
           <label>📐 قياس البنرات (نص إرشادي)<input name="banner_size_hint" value="<?= e(setting('banner_size_hint')) ?>"></label>
+          <label style="grid-column:1/-1">معرّف Google AdSense (ca-pub-xxxxxxxxxx)<input name="adsense_client_id" value="<?= e(setting('adsense_client_id')) ?>" placeholder="ca-pub-5506877998492189"></label>
+          <label>تفعيل AdSense
+            <select name="adsense_enabled" style="padding:8px;border-radius:8px;border:1px solid #2a3050;background:#11152a;color:#fff;width:100%">
+              <option value="1" <?= setting('adsense_enabled','1')==='1'?'selected':'' ?>>مفعّل</option>
+              <option value="0" <?= setting('adsense_enabled','1')==='0'?'selected':'' ?>>متوقف</option>
+            </select>
+          </label>
           <label style="grid-column:1/-1">📰 شريط الأخبار (كل سطر = خبر)<textarea name="news_ticker" rows="4"><?= e(setting('news_ticker')) ?></textarea></label>
         </form>
         <button class="btn btn-primary" form="" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()">💾 حفظ الإعدادات</button>
@@ -1851,7 +2240,17 @@ default:
   <a href="?page=orders" class="<?= $page === 'orders' ? 'active' : '' ?>"><span class="bi">📦</span>طلباتي</a>
 </div>
 
-<footer>© <?= date('Y') ?> <?= e($siteName) ?> — جميع الحقوق محفوظة</footer>
+<footer>
+  <div style="display:flex;flex-wrap:wrap;justify-content:center;gap:12px 20px;margin-bottom:10px">
+    <a href="?page=about" style="color:var(--accent2)">من نحن</a>
+    <a href="?page=faq" style="color:var(--accent2)">الأسئلة الشائعة</a>
+    <a href="?page=contact" style="color:var(--accent2)">تواصل معنا</a>
+    <a href="?page=privacy" style="color:var(--muted)">سياسة الخصوصية</a>
+    <a href="?page=terms" style="color:var(--muted)">شروط الاستخدام</a>
+    <a href="?action=sitemap" style="color:var(--muted)">خريطة الموقع</a>
+  </div>
+  <div>© <?= date('Y') ?> <?= e($siteName) ?> — جميع الحقوق محفوظة</div>
+</footer>
 
 <?php if (!isset($_COOKIE['policy_accepted']) || $_COOKIE['policy_accepted'] !== setting('policy_version', '1')): ?>
 <div class="policy-modal" id="policyModal">

@@ -37,5 +37,9 @@ define('ADMOB_INTERSTITIAL_ID', ''); // إعلان بيني قياسي للكا�
 // المفتاح يمكن ضبطه أيضاً من لوحة الإدارة، وهذه قيمة افتراضية اختيارية
 define('OPENROUTER_KEY', '');
 
+// ===== Google AdSense =====
+// يمكن ضبط المعرّف أيضاً من لوحة الإدارة ← الإعدادات ← adsense_client_id
+define('ADSENSE_CLIENT_ID', 'ca-pub-5506877998492189');
+
 // ===== عام =====
 define('SITE_URL', ''); // رابط الموقع بدون / في النهاية
