@@ -373,6 +373,27 @@ function migrate(): void
     add_column_if_missing($pdo, 'apps', 'dislikes_count', 'INT NOT NULL DEFAULT 0');
     add_column_if_missing($pdo, 'apps', 'source', "VARCHAR(20) NULL");
 
+    // ==== المرحلة 1: نظام المحفظة والرصيد + المستويات + إعدادات المستخدم الموسعة ====
+    add_column_if_missing($pdo, 'users', 'balance', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'level', 'INT NOT NULL DEFAULT 1');
+    add_column_if_missing($pdo, 'users', 'xp', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'disabled_until', 'VARCHAR(30) NULL');
+    add_column_if_missing($pdo, 'users', 'two_factor_secret', 'VARCHAR(64) NULL');
+    add_column_if_missing($pdo, 'users', 'two_factor_enabled', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'privacy_hide_balance', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'privacy_profile_visibility', "VARCHAR(20) NOT NULL DEFAULT 'public'");
+    add_column_if_missing($pdo, 'users', 'notify_telegram_orders', 'INT NOT NULL DEFAULT 1');
+    add_column_if_missing($pdo, 'users', 'notify_telegram_wallet', 'INT NOT NULL DEFAULT 1');
+    add_column_if_missing($pdo, 'users', 'notify_email_orders', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'notify_email_wallet', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'notify_email_promotions', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'ui_theme', "VARCHAR(20) NOT NULL DEFAULT 'dark'");
+    add_column_if_missing($pdo, 'users', 'ui_language', "VARCHAR(6) NOT NULL DEFAULT 'ar'");
+    add_column_if_missing($pdo, 'users', 'ui_accent', "VARCHAR(20) NULL");
+    add_column_if_missing($pdo, 'topup_requests', 'tx_number', 'VARCHAR(120) NULL');
+    add_column_if_missing($pdo, 'topup_requests', 'receipt_image', 'VARCHAR(500) NULL');
+    add_column_if_missing($pdo, 'topup_requests', 'tg_message_id', 'VARCHAR(60) NULL');
+
     // فهارس على الأعمدة الأكثر استخداماً في الاستعلامات لتسريع تحميل الصفحات وتقليل تجمّد الموقع
     $indexes = [
         'idx_users_email' => ['users', 'email'],
@@ -506,6 +527,31 @@ function migrate(): void
         'admob_rewarded_id' => 'ca-app-pub-5506877998492189/9929596951',
         'admob_interstitial_id' => '',
         'admob_test_mode' => '1',
+        // ===== إعدادات المحفظة والشحن =====
+        'wallet_min_topup' => '5',
+        'wallet_max_topup' => '500',
+        'wallet_quick_amounts' => '5,10,25,50,100,200',
+        'wallet_currency' => 'USD',
+        'wallet_currency_symbol' => '$',
+        'wallet_show_balance_in_topbar' => '1',
+        'wallet_page_headline' => 'اشحن محفظتك بأمان',
+        'wallet_page_subheadline' => 'اختر المبلغ، حوّل الدفعة، وفعّل رصيدك خلال دقائق',
+        'wallet_min_withdraw' => '10',
+        'wallet_withdraw_enabled' => '1',
+        // ===== إشعارات تيليجرام =====
+        'tg_notify_new_topup' => '1',
+        'tg_notify_new_withdraw' => '1',
+        'tg_notify_new_order' => '1',
+        'tg_notify_new_user' => '1',
+        'tg_notify_bot_username' => '',
+        // ===== الأمان (2FA) =====
+        'security_2fa_enabled_globally' => '1',
+        'security_login_alert_email' => '0',
+        // ===== المظهر =====
+        'ui_default_theme' => 'dark',
+        'ui_default_language' => 'ar',
+        'ui_allow_theme_change' => '1',
+        'ui_allow_language_change' => '1',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -862,7 +908,7 @@ function migrate(): void
  * الآن تُنفَّذ مرة واحدة فقط عند أول تشغيل (أو بعد رفع نسخة جديدة من الملف)، ثم تُتخطى تلقائياً
  * عبر ملف علامة بسيط لا يحتاج أي استعلام لقاعدة البيانات في الحالة الطبيعية.
  */
-define('SCHEMA_MIGRATION_VERSION', '3');
+define('SCHEMA_MIGRATION_VERSION', '4');
 $__migrationFlag = __DIR__ . '/uploads/.schema_v' . SCHEMA_MIGRATION_VERSION . '.lock';
 if (!is_file($__migrationFlag)) {
     migrate();
@@ -931,6 +977,11 @@ function icon(string $name, string $class = 'ic'): string
         'settings' => '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2-1.2L14.2 3H9.8l-.4 2.6a7 7 0 0 0-2 1.2l-2.3-.9-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-.9c.6.5 1.3.9 2 1.2l.4 2.6h4.4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/>',
         'plus' => '<path d="M12 5v14M5 12h14"/>',
         'megaphone' => '<path d="M3 10v4l3 .6V18a1.5 1.5 0 0 0 3 0v-2.8l9 1.8V9L9 10.8 6 10z"/>',
+        'bell' => '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2.5H4.5z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+        'qr' => '<rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/><path d="M13.5 13.5v3M13.5 20.5h3M17 13.5v3M20.5 17v3.5"/>',
+        'key' => '<circle cx="8" cy="13" r="4"/><path d="M11 12l9-9M15 5l3 3"/>',
+        'globe2' => '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>',
+        'palette' => '<path d="M12 3a9 9 0 1 0 0 18c1.7 0 3-1.3 3-3 0-.8-.3-1.5-.8-2.1-.5-.6-.7-1.3-.7-2 0-1.6 1.4-3 3-3H18a3 3 0 0 0 3-3c0-4.4-4-8-9-8z"/><circle cx="7.5" cy="10.5" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16.5" cy="10.5" r="1"/>',
         'chart' => '<path d="M4 19h16M7 19V11M12 19V6M17 19v-8"/>',
         'gift' => '<rect x="4" y="10" width="16" height="10" rx="1.5"/><path d="M4 10h16M12 10v10"/><path d="M12 10c-3 0-4-1.6-4-3a2.2 2.2 0 0 1 4-1.3c.3-.4.6-.7 1-.9M12 10c3 0 4-1.6 4-3a2.2 2.2 0 0 0-4-1.3c-.3-.4-.6-.7-1-.9"/>',
         'pages' => '<path d="M6 3h9l5 5v13H6z"/><path d="M15 3v5h5M9 12h6M9 16h6"/>',
@@ -998,6 +1049,104 @@ function set_setting(string $k, $v): void
 // لقيم config.php كخيار احتياطي فقط.
 function bot_token(): string { return setting('bot_token') ?: (defined('BOT_TOKEN') ? BOT_TOKEN : ''); }
 function owner_id(): string { return setting('owner_id') ?: (defined('OWNER_ID') ? (string)OWNER_ID : ''); }
+
+function user_balance(int $uid): float
+{
+    $st = db()->prepare("SELECT balance FROM users WHERE id=?");
+    $st->execute([$uid]);
+    return (float)($st->fetchColumn() ?: 0);
+}
+function add_balance(int $uid, float $amount, string $source = 'topup', string $desc = ''): void
+{
+    db()->prepare("UPDATE users SET balance = balance + ? WHERE id = ?")->execute([$amount, $uid]);
+    db()->prepare("INSERT INTO earn_logs (user_id, amount, source, description) VALUES (?,?,?,?)")
+        ->execute([$uid, (int)round($amount * 100), $source, $desc]);
+}
+function fmt_money(float $amount): string
+{
+    return number_format($amount, 2) . setting('wallet_currency_symbol', '$');
+}
+function level_from_xp(int $xp): int
+{
+    return max(1, (int)floor(sqrt(max(0, $xp) / 50)) + 1);
+}
+function xp_to_next(int $xp): int
+{
+    $level = level_from_xp($xp);
+    $next = 50 * ($level * $level);
+    return max(1, $next - $xp);
+}
+function xp_progress_percent(int $xp): int
+{
+    $level = level_from_xp($xp);
+    $prev = 50 * (($level - 1) * ($level - 1));
+    $next = 50 * ($level * $level);
+    $span = max(1, $next - $prev);
+    return max(0, min(100, (int)round((($xp - $prev) / $span) * 100)));
+}
+function grant_xp(int $uid, int $amount): void
+{
+    db()->prepare("UPDATE users SET xp = xp + ?, level = ? WHERE id = ?")
+        ->execute([$amount, level_from_xp((int)(user_field($uid, 'xp') + $amount)), $uid]);
+}
+function user_field(int $uid, string $col)
+{
+    static $cache = [];
+    $key = $uid . ':' . $col;
+    if (isset($cache[$key])) return $cache[$key];
+    $st = db()->prepare("SELECT `$col` FROM users WHERE id=?");
+    $st->execute([$uid]);
+    return $cache[$key] = $st->fetchColumn();
+}
+function tg_send_admin(string $text, array $inlineKeyboard = null): ?string
+{
+    $token = bot_token();
+    $chatId = owner_id();
+    if (!$token || !$chatId) return null;
+    $body = ['chat_id' => $chatId, 'text' => $text, 'parse_mode' => 'HTML', 'disable_web_page_preview' => true];
+    if ($inlineKeyboard) $body['reply_markup'] = json_encode(['inline_keyboard' => $inlineKeyboard], JSON_UNESCAPED_UNICODE);
+    $ch = curl_init("https://api.telegram.org/bot$token/sendMessage");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 8,
+    ]);
+    $resp = curl_exec($ch);
+    curl_close($ch);
+    $data = json_decode($resp ?: '{}', true);
+    return isset($data['result']['message_id']) ? (string)$data['result']['message_id'] : null;
+}
+function tg_answer_callback(string $callbackId, string $text = '', bool $showAlert = false): void
+{
+    $token = bot_token();
+    if (!$token) return;
+    $ch = curl_init("https://api.telegram.org/bot$token/answerCallbackQuery");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query(['callback_query_id' => $callbackId, 'text' => $text, 'show_alert' => $showAlert ? 'true' : 'false']),
+        CURLOPT_TIMEOUT => 5,
+    ]);
+    curl_exec($ch);
+    curl_close($ch);
+}
+function tg_edit_message(string $chatId, string $messageId, string $newText): void
+{
+    $token = bot_token();
+    if (!$token) return;
+    $ch = curl_init("https://api.telegram.org/bot$token/editMessageText");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode(['chat_id' => $chatId, 'message_id' => $messageId, 'text' => $newText, 'parse_mode' => 'HTML'], JSON_UNESCAPED_UNICODE),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 5,
+    ]);
+    curl_exec($ch);
+    curl_close($ch);
+}
 
 function admob_cfg(): array {
     $test = setting('admob_test_mode', '1') === '1';
@@ -1687,6 +1836,63 @@ if ($action === 'accept_policy') {
     echo 'ok'; exit;
 }
 
+if ($action === 'tg_admin_webhook') {
+    // Webhook مخصّص لأزرار موافقة/رفض من تيليجرام (يستقبله البوت المستقل ويعيد توجيهه هنا)
+    header('Content-Type: application/json; charset=utf-8');
+    $raw = file_get_contents('php://input');
+    $data = json_decode($raw ?: '{}', true);
+    $cb = $data['callback_query'] ?? null;
+    if (!$cb) { echo '{"ok":true}'; exit; }
+    $fromId = (string)($cb['from']['id'] ?? '');
+    $ownerId = owner_id();
+    if ($ownerId && $fromId !== $ownerId) {
+        tg_answer_callback($cb['id'], 'غير مصرح لك.', true);
+        echo '{"ok":true}'; exit;
+    }
+    $payload = $cb['data'] ?? '';
+    $chatId = (string)($cb['message']['chat']['id'] ?? '');
+    $msgId = (string)($cb['message']['message_id'] ?? '');
+    $origText = (string)($cb['message']['text'] ?? '');
+    [$act, $rid] = array_pad(explode(':', $payload, 2), 2, '');
+    $rid = (int)$rid;
+    if ($rid <= 0) { tg_answer_callback($cb['id'], 'طلب غير صالح.', true); echo '{"ok":true}'; exit; }
+
+    if ($act === 'topup_approve') {
+        $st = db()->prepare("SELECT * FROM topup_requests WHERE id=? AND status='pending'");
+        $st->execute([$rid]);
+        $req = $st->fetch();
+        if (!$req) { tg_answer_callback($cb['id'], 'الطلب غير موجود أو تمّت معالجته.', true); echo '{"ok":true}'; exit; }
+        db()->beginTransaction();
+        try {
+            add_balance((int)$req['user_id'], (float)$req['amount'], 'topup', "طلب #$rid");
+            db()->prepare("UPDATE topup_requests SET status='approved' WHERE id=?")->execute([$rid]);
+            grant_xp((int)$req['user_id'], 20);
+            db()->commit();
+        } catch (Throwable $e) { db()->rollBack(); tg_answer_callback($cb['id'], 'خطأ: ' . $e->getMessage(), true); echo '{"ok":true}'; exit; }
+        tg_answer_callback($cb['id'], '✅ تمت الموافقة وإضافة الرصيد');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n✅ <b>تم القبول والإضافة</b>");
+    } elseif ($act === 'topup_reject') {
+        db()->prepare("UPDATE topup_requests SET status='rejected' WHERE id=? AND status='pending'")->execute([$rid]);
+        tg_answer_callback($cb['id'], '❌ تم الرفض');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n❌ <b>تم الرفض</b>");
+    } elseif ($act === 'withdraw_done') {
+        db()->prepare("UPDATE withdraw_requests SET status='completed' WHERE id=? AND status='pending'")->execute([$rid]);
+        tg_answer_callback($cb['id'], '✅ تم تعليمه كمُحوّل');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n✅ <b>تم التحويل</b>");
+    } elseif ($act === 'withdraw_reject') {
+        $st = db()->prepare("SELECT * FROM withdraw_requests WHERE id=? AND status='pending'");
+        $st->execute([$rid]);
+        $req = $st->fetch();
+        if ($req) {
+            db()->prepare("UPDATE users SET balance = balance + ? WHERE id = ?")->execute([$req['amount_usd'], $req['user_id']]);
+            db()->prepare("UPDATE withdraw_requests SET status='rejected' WHERE id=?")->execute([$rid]);
+        }
+        tg_answer_callback($cb['id'], '❌ تم الرفض وإعادة الرصيد');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n❌ <b>تم الرفض وإعادة الرصيد</b>");
+    }
+    echo '{"ok":true}'; exit;
+}
+
 if ($action === 'robots') {
     header('Content-Type: text/plain; charset=utf-8');
     echo "User-agent: *\nAllow: /\nSitemap: " . rtrim(SITE_URL, '/') . "/index.php?action=sitemap\n";
@@ -1782,6 +1988,162 @@ if ($action && str_starts_with($action, 'api_')) {
     }
 
     switch ($action) {
+        case 'api_wallet_topup':
+            csrf_check();
+            $amount = (float)($_POST['amount'] ?? 0);
+            $walletId = (int)($_POST['wallet_id'] ?? 0);
+            $txNumber = trim($_POST['tx_number'] ?? '');
+            $note = mb_substr(trim($_POST['note'] ?? ''), 0, 200);
+            $minAmt = (float)setting('wallet_min_topup', '5');
+            $maxAmt = (float)setting('wallet_max_topup', '500');
+            if ($amount < $minAmt || $amount > $maxAmt) {
+                echo json_encode(['ok' => false, 'msg' => "المبلغ يجب أن يكون بين $minAmt و $maxAmt"]); exit;
+            }
+            $wSt = db()->prepare("SELECT * FROM wallets WHERE id=? AND active=1");
+            $wSt->execute([$walletId]);
+            $wallet = $wSt->fetch();
+            if (!$wallet) { echo json_encode(['ok' => false, 'msg' => 'وسيلة الدفع غير متاحة.']); exit; }
+            if ($txNumber === '' && empty($_FILES['receipt']['name'])) {
+                echo json_encode(['ok' => false, 'msg' => 'أدخل رقم عملية التحويل أو ارفع صورة الإيصال.']); exit;
+            }
+            $receiptRel = null;
+            if (!empty($_FILES['receipt']['name'])) {
+                $res = io_process_image_upload($_FILES['receipt'], 'receipts');
+                if (!$res['ok']) { echo json_encode($res); exit; }
+                $receiptRel = $res['url'];
+            }
+            db()->prepare("INSERT INTO topup_requests (user_id, wallet_id, amount, note, tx_number, receipt_image, status) VALUES (?,?,?,?,?,?,'pending')")
+                ->execute([$u['id'], $walletId, $amount, $note, $txNumber ?: null, $receiptRel]);
+            $reqId = (int)db()->lastInsertId();
+            // إشعار تيليجرام للأدمن مع أزرار موافقة/رفض
+            if (setting('tg_notify_new_topup', '1') === '1') {
+                [$walletLabel] = wallet_type_label($wallet['type']);
+                $siteUrl = rtrim(SITE_URL, '/');
+                $receiptLine = $receiptRel ? "\n📷 الإيصال: $siteUrl/" . ltrim($receiptRel, '/') : '';
+                $txLine = $txNumber !== '' ? "\n🔢 رقم العملية: <code>" . e($txNumber) . "</code>" : '';
+                $noteLine = $note !== '' ? "\n📝 ملاحظة: " . e($note) : '';
+                $msg = "💰 <b>طلب شحن جديد #$reqId</b>\n"
+                    . "👤 المستخدم: " . e($u['name'] ?: $u['email']) . " (#{$u['id']})\n"
+                    . "📧 البريد: " . e($u['email']) . "\n"
+                    . "💵 المبلغ: <b>" . number_format($amount, 2) . "$</b>\n"
+                    . "💳 الوسيلة: " . e($walletLabel) . " — <code>" . e($wallet['address']) . "</code>"
+                    . $txLine . $receiptLine . $noteLine
+                    . "\n\n⏰ " . date('Y-m-d H:i');
+                $kb = [[
+                    ['text' => '✅ موافقة', 'callback_data' => "topup_approve:$reqId"],
+                    ['text' => '❌ رفض', 'callback_data' => "topup_reject:$reqId"],
+                ]];
+                $mid = tg_send_admin($msg, $kb);
+                if ($mid) db()->prepare("UPDATE topup_requests SET tg_message_id=? WHERE id=?")->execute([$mid, $reqId]);
+            }
+            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب الشحن، سيتم تفعيل رصيدك بعد المراجعة.', 'request_id' => $reqId]); exit;
+
+        case 'api_wallet_withdraw':
+            csrf_check();
+            if (setting('wallet_withdraw_enabled', '1') !== '1') {
+                echo json_encode(['ok' => false, 'msg' => 'السحب معطّل حالياً.']); exit;
+            }
+            $amount = (float)($_POST['amount'] ?? 0);
+            $walletType = trim($_POST['wallet_type'] ?? '');
+            $walletAddr = trim($_POST['wallet_address'] ?? '');
+            $minW = (float)setting('wallet_min_withdraw', '10');
+            $bal = user_balance($u['id']);
+            if ($amount < $minW) { echo json_encode(['ok' => false, 'msg' => "الحد الأدنى للسحب $minW$"]); exit; }
+            if ($amount > $bal) { echo json_encode(['ok' => false, 'msg' => 'الرصيد غير كافٍ.']); exit; }
+            if ($walletType === '' || $walletAddr === '') { echo json_encode(['ok' => false, 'msg' => 'حدّد وسيلة وعنوان الاستلام.']); exit; }
+            db()->prepare("UPDATE users SET balance = balance - ? WHERE id = ?")->execute([$amount, $u['id']]);
+            db()->prepare("INSERT INTO withdraw_requests (user_id, amount_points, amount_usd, wallet_type, wallet_address, status) VALUES (?,?,?,?,?,'pending')")
+                ->execute([$u['id'], 0, $amount, $walletType, $walletAddr]);
+            $reqId = (int)db()->lastInsertId();
+            if (setting('tg_notify_new_withdraw', '1') === '1') {
+                $msg = "💸 <b>طلب سحب جديد #$reqId</b>\n"
+                    . "👤 " . e($u['name'] ?: $u['email']) . " (#{$u['id']})\n"
+                    . "💵 المبلغ: <b>" . number_format($amount, 2) . "$</b>\n"
+                    . "💳 الوسيلة: " . e($walletType) . "\n"
+                    . "📮 العنوان: <code>" . e($walletAddr) . "</code>";
+                $kb = [[
+                    ['text' => '✅ تم التحويل', 'callback_data' => "withdraw_done:$reqId"],
+                    ['text' => '❌ رفض', 'callback_data' => "withdraw_reject:$reqId"],
+                ]];
+                tg_send_admin($msg, $kb);
+            }
+            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب السحب.']); exit;
+
+        case 'api_save_user_settings':
+            csrf_check();
+            $fields = [
+                'privacy_hide_balance', 'privacy_profile_visibility',
+                'notify_telegram_orders', 'notify_telegram_wallet',
+                'notify_email_orders', 'notify_email_wallet', 'notify_email_promotions',
+                'ui_theme', 'ui_language', 'ui_accent',
+            ];
+            $set = []; $vals = [];
+            foreach ($fields as $f) {
+                if (isset($_POST[$f])) {
+                    $val = $_POST[$f];
+                    if (in_array($f, ['privacy_hide_balance','notify_telegram_orders','notify_telegram_wallet','notify_email_orders','notify_email_wallet','notify_email_promotions'])) {
+                        $val = $val === '1' || $val === 'on' ? 1 : 0;
+                    } elseif ($f === 'privacy_profile_visibility') {
+                        $val = in_array($val, ['public','private','friends'], true) ? $val : 'public';
+                    } elseif ($f === 'ui_theme') {
+                        $val = in_array($val, ['dark','light','auto'], true) ? $val : 'dark';
+                    } elseif ($f === 'ui_language') {
+                        $val = in_array($val, ['ar','en','tr'], true) ? $val : 'ar';
+                    }
+                    $set[] = "$f = ?"; $vals[] = $val;
+                }
+            }
+            if ($set) {
+                $vals[] = $u['id'];
+                db()->prepare("UPDATE users SET " . implode(',', $set) . " WHERE id = ?")->execute($vals);
+            }
+            echo json_encode(['ok' => true, 'msg' => 'تم حفظ الإعدادات.']); exit;
+
+        case 'api_change_password':
+            csrf_check();
+            $current = $_POST['current_password'] ?? '';
+            $new = $_POST['new_password'] ?? '';
+            if (strlen($new) < 6) { echo json_encode(['ok' => false, 'msg' => 'كلمة المرور الجديدة قصيرة (6+ أحرف).']); exit; }
+            $st = db()->prepare("SELECT password_hash FROM users WHERE id=?");
+            $st->execute([$u['id']]);
+            $hash = $st->fetchColumn();
+            if ($hash && !password_verify($current, $hash)) {
+                echo json_encode(['ok' => false, 'msg' => 'كلمة المرور الحالية غير صحيحة.']); exit;
+            }
+            db()->prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+                ->execute([password_hash($new, PASSWORD_DEFAULT), $u['id']]);
+            echo json_encode(['ok' => true, 'msg' => 'تم تغيير كلمة المرور بنجاح.']); exit;
+
+        case 'api_change_email':
+            csrf_check();
+            $newEmail = filter_var(trim($_POST['new_email'] ?? ''), FILTER_VALIDATE_EMAIL);
+            if (!$newEmail) { echo json_encode(['ok' => false, 'msg' => 'البريد الإلكتروني غير صالح.']); exit; }
+            $st = db()->prepare("SELECT id FROM users WHERE email = ? AND id <> ?");
+            $st->execute([$newEmail, $u['id']]);
+            if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'هذا البريد مستخدم من قبل.']); exit; }
+            db()->prepare("UPDATE users SET email = ? WHERE id = ?")->execute([$newEmail, $u['id']]);
+            echo json_encode(['ok' => true, 'msg' => 'تم تحديث البريد الإلكتروني.']); exit;
+
+        case 'api_toggle_2fa':
+            csrf_check();
+            $enable = ($_POST['enable'] ?? '0') === '1';
+            $st = db()->prepare("SELECT two_factor_secret FROM users WHERE id=?");
+            $st->execute([$u['id']]);
+            $secret = $st->fetchColumn();
+            if ($enable) {
+                if (!$secret) {
+                    $secret = strtoupper(substr(bin2hex(random_bytes(20)), 0, 32));
+                    db()->prepare("UPDATE users SET two_factor_secret = ?, two_factor_enabled = 1 WHERE id = ?")
+                        ->execute([$secret, $u['id']]);
+                } else {
+                    db()->prepare("UPDATE users SET two_factor_enabled = 1 WHERE id = ?")->execute([$u['id']]);
+                }
+                echo json_encode(['ok' => true, 'msg' => 'تم تفعيل التحقق الثنائي.', 'secret' => $secret]); exit;
+            } else {
+                db()->prepare("UPDATE users SET two_factor_enabled = 0 WHERE id = ?")->execute([$u['id']]);
+                echo json_encode(['ok' => true, 'msg' => 'تم إيقاف التحقق الثنائي.']); exit;
+            }
+
         case 'api_report_app':
             $appId = (int)($_POST['app_id'] ?? 0);
             if ($appId <= 0) { echo json_encode(['ok' => false]); exit; }
@@ -2779,6 +3141,123 @@ a{color:inherit;text-decoration:none}
 @keyframes rippleAnim{to{transform:scale(2.5);opacity:0}}
 .user-chip{display:flex;align-items:center;gap:8px;background:#28304a;padding:6px 10px;border-radius:30px}
 .user-chip img{width:26px;height:26px;flex-shrink:0;object-fit:cover;border-radius:50%}
+.topbar-profile{display:flex;flex-direction:column;align-items:center;gap:2px;padding:2px 6px;text-decoration:none;color:var(--text);min-width:60px}
+.tp-avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 0 0 2px rgba(37,99,235,.35),0 4px 12px rgba(6,182,212,.35);position:relative}
+.tp-avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.tp-avatar::after{content:"";position:absolute;bottom:-2px;right:-2px;width:10px;height:10px;border-radius:50%;background:#10b981;box-shadow:0 0 0 2px var(--bg)}
+.tp-name{font-size:10px;font-weight:700;color:var(--muted);line-height:1;text-align:center;max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar-profile:hover .tp-avatar{transform:scale(1.05);transition:transform .2s}
+.topbar-profile:hover .tp-name{color:var(--accent2)}
+/* زر المحفظة الاحترافي */
+.wallet-btn{display:flex;align-items:center;gap:10px;padding:8px 14px;border-radius:16px;background:linear-gradient(135deg,#0f766e,#059669);color:#fff;text-decoration:none;box-shadow:0 8px 20px rgba(16,185,129,.28),inset 0 1px 0 rgba(255,255,255,.15);border:1px solid rgba(16,185,129,.4);transition:transform .2s var(--ease),box-shadow .25s;position:relative;overflow:hidden}
+.wallet-btn::before{content:"";position:absolute;top:0;right:-100%;width:60%;height:100%;background:linear-gradient(120deg,transparent,rgba(255,255,255,.25),transparent);transform:skewX(-20deg);transition:right .8s var(--ease)}
+.wallet-btn:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(16,185,129,.45)}
+.wallet-btn:hover::before{right:200%}
+.wallet-btn .wb-icon{width:32px;height:32px;border-radius:12px;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.wallet-btn .wb-icon .ic{color:#fff;filter:drop-shadow(0 2px 4px rgba(0,0,0,.35))}
+.wallet-btn .wb-info{display:flex;flex-direction:column;line-height:1.1}
+.wallet-btn .wb-balance{font-weight:800;font-size:15px;color:#fff}
+.wallet-btn .wb-balance small{font-size:10px;margin-inline-start:2px;opacity:.85}
+.wallet-btn .wb-label{font-size:10px;color:rgba(255,255,255,.75);font-weight:600}
+@media (max-width:520px){
+  .wallet-btn{padding:6px 10px;gap:6px}
+  .wallet-btn .wb-icon{width:26px;height:26px}
+  .wallet-btn .wb-balance{font-size:13px}
+  .wallet-btn .wb-label{font-size:9px}
+  .topbar-profile{min-width:52px}
+  .tp-avatar{width:32px;height:32px}
+  .tp-name{max-width:56px;font-size:9px}
+}
+/* صفحة المحفظة الاحترافية */
+.wallet-hero{margin:16px 18px;padding:22px;border-radius:24px;background:linear-gradient(140deg,#052e2b 0%,#064e3b 60%,#065f46 100%);border:1px solid rgba(16,185,129,.3);box-shadow:0 20px 50px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.08);position:relative;overflow:hidden}
+.wallet-hero::before{content:"";position:absolute;inset:-40% -20% auto auto;width:320px;height:320px;background:radial-gradient(circle,rgba(16,185,129,.35),transparent 65%);pointer-events:none}
+.wallet-hero .wh-label{font-size:12px;color:rgba(255,255,255,.7);letter-spacing:.5px;position:relative}
+.wallet-hero .wh-balance{font-size:clamp(30px,7vw,42px);font-weight:900;color:#fff;margin:6px 0 12px;position:relative;text-shadow:0 4px 20px rgba(16,185,129,.5)}
+.wallet-hero .wh-balance small{font-size:.5em;color:#6ee7b7;margin-inline-start:8px}
+.wallet-hero .wh-actions{display:flex;gap:10px;flex-wrap:wrap;position:relative}
+.wh-btn{flex:1;min-width:120px;padding:12px 16px;border-radius:14px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#fff;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.2s var(--ease);text-decoration:none;font-size:14px}
+.wh-btn:hover{background:rgba(255,255,255,.15);transform:translateY(-1px)}
+.wh-btn.primary{background:linear-gradient(135deg,#10b981,#059669);border-color:transparent;box-shadow:0 8px 20px rgba(16,185,129,.4)}
+/* خطوات الشحن */
+.topup-steps{display:flex;gap:8px;margin:20px 18px 0}
+.topup-steps .ts-item{flex:1;position:relative;padding:12px 8px;text-align:center;color:var(--muted);border-top:3px solid #1f2937;font-size:13px;font-weight:600;transition:.3s}
+.topup-steps .ts-item.active{color:#10b981;border-top-color:#10b981}
+.topup-steps .ts-item.done{color:#6ee7b7;border-top-color:#059669}
+.topup-steps .ts-item small{display:block;font-size:10px;opacity:.7}
+/* بطاقة QR وشحن */
+.topup-card{margin:16px 18px;padding:22px;border-radius:20px;background:linear-gradient(180deg,rgba(6,78,59,.35),rgba(6,95,70,.15));border:1px solid rgba(16,185,129,.25);box-shadow:0 12px 30px rgba(0,0,0,.3)}
+.topup-card h3{display:flex;align-items:center;gap:8px;color:#10b981;margin-bottom:6px;font-size:16px}
+.topup-card .tc-sub{color:var(--muted);font-size:12.5px;margin-bottom:16px}
+.qr-block{display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px;background:rgba(0,0,0,.25);border-radius:16px;border:1px dashed rgba(16,185,129,.4)}
+.qr-block .qr-badge{width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 4px rgba(16,185,129,.25),0 10px 20px rgba(16,185,129,.35)}
+.qr-block .qr-label{color:#10b981;font-weight:700;font-size:14px}
+.qr-block img.qr-img{width:min(240px,60vw);height:auto;border-radius:14px;border:4px solid #fff;box-shadow:0 12px 30px rgba(0,0,0,.5);cursor:zoom-in}
+.addr-row{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.4);padding:10px 12px;border-radius:12px;border:1px solid rgba(16,185,129,.3);margin-top:12px;width:100%;max-width:400px}
+.addr-row code{flex:1;font-family:'Courier New',monospace;font-size:12.5px;color:#6ee7b7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;text-align:left}
+.addr-row .copy-btn{background:#10b981;color:#fff;border:none;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;display:flex;align-items:center;gap:4px;transition:.2s}
+.addr-row .copy-btn:hover{background:#059669;transform:scale(1.05)}
+.addr-row .copy-btn.copied{background:#22c55e}
+/* اختيار المبلغ */
+.amount-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;margin:14px 0}
+.amount-chip{padding:14px 8px;border-radius:12px;background:rgba(0,0,0,.3);border:2px solid rgba(16,185,129,.25);color:var(--text);font-weight:700;cursor:pointer;transition:.2s;font-size:15px;text-align:center}
+.amount-chip:hover{border-color:#10b981;background:rgba(16,185,129,.15)}
+.amount-chip.selected{border-color:#10b981;background:linear-gradient(135deg,rgba(16,185,129,.25),rgba(6,182,212,.15));box-shadow:0 6px 14px rgba(16,185,129,.3)}
+.amount-input{width:100%;padding:14px;border-radius:12px;background:rgba(0,0,0,.35);border:2px solid rgba(16,185,129,.3);color:#fff;font-size:20px;font-weight:800;text-align:center;font-family:inherit}
+.amount-input:focus{outline:none;border-color:#10b981;box-shadow:0 0 0 4px rgba(16,185,129,.2)}
+/* اختيار وسيلة الدفع */
+.wallet-methods{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin:12px 0}
+.wallet-method{padding:14px;border-radius:14px;background:rgba(0,0,0,.28);border:2px solid rgba(16,185,129,.2);cursor:pointer;transition:.2s;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;color:var(--text)}
+.wallet-method:hover{border-color:#10b981;transform:translateY(-2px)}
+.wallet-method.selected{border-color:#10b981;background:linear-gradient(135deg,rgba(16,185,129,.2),rgba(6,182,212,.1))}
+.wallet-method .wm-icon{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#059669,#0891b2);display:flex;align-items:center;justify-content:center}
+.wallet-method .wm-icon .ic{color:#fff}
+.wallet-method .wm-name{font-size:13px;font-weight:700}
+/* اقسام مربعات النموذج */
+.tc-field{margin:14px 0}
+.tc-field label{display:block;font-size:13px;font-weight:700;color:#6ee7b7;margin-bottom:6px}
+.tc-field input,.tc-field textarea{width:100%;padding:12px 14px;border-radius:12px;background:rgba(0,0,0,.35);border:1px solid rgba(16,185,129,.3);color:#fff;font-family:inherit;font-size:14px}
+.tc-field input:focus,.tc-field textarea:focus{outline:none;border-color:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.2)}
+.receipt-box{border:2px dashed rgba(16,185,129,.4);border-radius:14px;padding:20px;text-align:center;cursor:pointer;background:rgba(0,0,0,.2);transition:.2s;color:var(--muted)}
+.receipt-box:hover{border-color:#10b981;background:rgba(16,185,129,.08);color:#10b981}
+.receipt-box.has-file{border-style:solid;border-color:#10b981;background:rgba(16,185,129,.1);color:#6ee7b7}
+.receipt-box .ic{width:36px;height:36px;margin-bottom:8px}
+/* أزرار الخطوات */
+.step-nav{display:flex;gap:10px;margin-top:20px}
+.step-nav button{flex:1;padding:14px;border-radius:14px;border:none;font-weight:800;font-family:inherit;font-size:15px;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;gap:6px}
+.step-nav .btn-back{background:rgba(255,255,255,.08);color:var(--text);border:1px solid rgba(255,255,255,.15)}
+.step-nav .btn-back:hover{background:rgba(255,255,255,.15)}
+.step-nav .btn-next{background:linear-gradient(135deg,#10b981,#059669);color:#fff;box-shadow:0 10px 24px rgba(16,185,129,.4)}
+.step-nav .btn-next:hover{transform:translateY(-2px);box-shadow:0 14px 30px rgba(16,185,129,.55)}
+.step-nav .btn-next:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+/* شبكة الملخّص */
+.summary-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed rgba(16,185,129,.2);font-size:14px}
+.summary-row:last-child{border-bottom:none}
+.summary-row strong{color:#10b981;font-weight:800}
+/* توست خضراء */
+.wallet-toast{position:fixed;bottom:88px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:12px 22px;border-radius:12px;font-weight:700;box-shadow:0 12px 30px rgba(16,185,129,.4);z-index:9999;opacity:0;transition:opacity .3s,transform .3s;font-size:14px}
+.wallet-toast.show{opacity:1;transform:translateX(-50%) translateY(-8px)}
+/* صفحة الإعدادات الموسعة */
+.settings-tabs{display:flex;flex-wrap:wrap;gap:8px;padding:0 18px 12px;overflow-x:auto}
+.settings-tabs a{padding:10px 16px;border-radius:12px;background:#1c2a48;color:var(--text);text-decoration:none;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;white-space:nowrap;transition:.2s}
+.settings-tabs a:hover{background:#243358}
+.settings-tabs a.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 6px 16px rgba(37,99,235,.35)}
+.settings-panel{margin:0 18px 18px;padding:20px;border-radius:18px;background:var(--card);border:1px solid #28304a}
+.settings-panel h3{display:flex;align-items:center;gap:8px;color:var(--accent2);margin-bottom:6px;font-size:16px}
+.settings-panel .sp-desc{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+.setting-row{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid rgba(255,255,255,.06);gap:12px}
+.setting-row:last-child{border-bottom:none}
+.setting-row .sr-info{flex:1;min-width:0}
+.setting-row .sr-title{font-weight:700;font-size:14px;color:var(--text);margin-bottom:2px}
+.setting-row .sr-desc{color:var(--muted);font-size:12px}
+.setting-row .sr-control{flex-shrink:0}
+/* Toggle switch */
+.toggle-switch{position:relative;display:inline-block;width:48px;height:26px}
+.toggle-switch input{opacity:0;width:0;height:0}
+.toggle-switch .slider{position:absolute;cursor:pointer;inset:0;background:#374151;border-radius:26px;transition:.3s}
+.toggle-switch .slider::before{content:"";position:absolute;height:20px;width:20px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 2px 6px rgba(0,0,0,.35)}
+.toggle-switch input:checked + .slider{background:linear-gradient(135deg,#10b981,#059669)}
+.toggle-switch input:checked + .slider::before{transform:translateX(22px)}
+.setting-select{padding:8px 14px;border-radius:10px;background:#0f1523;border:1px solid #2a3350;color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer}
 .sidebar{position:fixed;top:0;right:-300px;width:280px;height:100%;background:var(--bg2);z-index:60;transition:right .3s;overflow-y:auto;box-shadow:-10px 0 30px rgba(0,0,0,.3)}
 .sidebar.open{right:0}
 .sidebar .sb-head{padding:18px;border-bottom:1px solid #3a1f26;display:flex;justify-content:space-between;align-items:center}
@@ -3351,15 +3830,30 @@ function googleTranslateElementInit(){
 
 <div class="topbar">
   <button class="burger" onclick="toggleSidebar()"><?= icon('menu', 'ic') ?></button>
-  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><?= icon('rocket', 'ic ic-lg') ?><?php endif; ?> <?= e($siteName) ?></a>
-  <div class="grow"></div>
   <?php if ($user): ?>
-    <a href="?page=favorites" class="btn btn-ghost btn-icon-only" title="المفضّلة"><?= icon('heart', 'ic ic-sm') ?></a>
-    <a href="?page=profile" class="user-chip">
-      <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>"><?php else: ?><?= icon('user', 'ic ic-sm') ?><?php endif; ?>
-      <span><?= e($user['name']) ?></span>
+    <a href="?page=profile" class="topbar-profile" title="ملفي الشخصي">
+      <div class="tp-avatar">
+        <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>" alt=""><?php else: ?><?= icon('user', 'ic') ?><?php endif; ?>
+      </div>
+      <span class="tp-name"><?= e(mb_strimwidth($user['name'] ?? $user['username'] ?? '', 0, 14, '…')) ?></span>
     </a>
-    <a href="?action=logout" class="btn btn-ghost btn-icon-only" title="تسجيل الخروج"><?= icon('logout', 'ic ic-sm') ?></a>
+  <?php endif; ?>
+  <?php if ($user): ?>
+    <a href="?page=notifications" class="btn btn-ghost btn-icon-only" title="الإشعارات"><?= icon('bell', 'ic ic-sm') ?></a>
+    <a href="?page=profile&tab=settings" class="btn btn-ghost btn-icon-only" title="الإعدادات"><?= icon('settings', 'ic ic-sm') ?></a>
+  <?php endif; ?>
+  <div class="grow"></div>
+  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><?= icon('rocket', 'ic ic-lg') ?><?php endif; ?> <?= e($siteName) ?></a>
+  <?php if ($user): ?>
+    <a href="?page=wallet" class="wallet-btn" title="محفظتي">
+      <div class="wb-icon"><?= icon('wallet', 'ic') ?></div>
+      <div class="wb-info">
+        <?php if (setting('wallet_show_balance_in_topbar','1') === '1' && !((int)($user['privacy_hide_balance'] ?? 0))): ?>
+        <span class="wb-balance"><?= number_format((float)user_balance($user['id']), 2) ?><small><?= e(setting('wallet_currency_symbol', '$')) ?></small></span>
+        <?php endif; ?>
+        <span class="wb-label">المحفظة</span>
+      </div>
+    </a>
   <?php else: ?>
     <a href="?page=login" class="btn btn-primary"><?= icon('user', 'ic ic-sm') ?>تسجيل الدخول</a>
   <?php endif; ?>
@@ -3370,10 +3864,11 @@ function googleTranslateElementInit(){
   <div class="sb-head"><strong><?= icon('hat', 'ic-sm') ?> <?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()"><?= icon('close', 'ic') ?></button></div>
   <nav>
     <a href="?"><?= icon('home') ?> الرئيسية</a>
+    <?php if ($user): ?><a href="?page=wallet" style="background:linear-gradient(90deg,rgba(16,185,129,.15),transparent);border-right:3px solid #10b981;color:#6ee7b7"><?= icon('wallet') ?> محفظتي · <?= number_format((float)user_balance($user['id']), 2) ?><?= e(setting('wallet_currency_symbol', '$')) ?></a><?php endif; ?>
     <a href="?page=apps&kind=app"><?= icon('android') ?> التطبيقات</a>
-    <a href="?page=apps&kind=game"><?= icon('rocket') ?> الألعاب</a>
     <a href="?page=store"><?= icon('cart') ?> المتجر (منتجات للبيع)</a>
     <?php if ($user): ?><a href="?page=profile"><?= icon('user') ?> ملفي الشخصي</a><?php endif; ?>
+    <?php if ($user): ?><a href="?page=profile&tab=settings"><?= icon('settings') ?> الإعدادات</a><?php endif; ?>
     <a href="?page=favorites"><?= icon('heart') ?> المفضّلة</a>
     <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
     <a href="?page=suggest"><?= icon('megaphone') ?> اقترح منتجاً</a>
@@ -4254,6 +4749,311 @@ case 'suggest':
     <?php
     break;
 
+case 'wallet':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لاستخدام المحفظة.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $walletList = db()->query("SELECT * FROM wallets WHERE active=1 ORDER BY id ASC")->fetchAll();
+    $userBalance = user_balance($user['id']);
+    $currency = setting('wallet_currency_symbol', '$');
+    $quickAmounts = array_filter(array_map('trim', explode(',', setting('wallet_quick_amounts', '5,10,25,50,100,200'))));
+    $minAmt = (float)setting('wallet_min_topup', '5');
+    $maxAmt = (float)setting('wallet_max_topup', '500');
+    $recentTopups = db()->prepare("SELECT * FROM topup_requests WHERE user_id=? ORDER BY id DESC LIMIT 5");
+    $recentTopups->execute([$user['id']]);
+    $recentTopups = $recentTopups->fetchAll();
+    ?>
+    <div class="wallet-hero">
+      <div class="wh-label">رصيدك الحالي</div>
+      <div class="wh-balance"><?= number_format($userBalance, 2) ?><small><?= e($currency) ?></small></div>
+      <div class="wh-actions">
+        <a href="#topup" class="wh-btn primary" onclick="scrollToTopup(event)"><?= icon('plus', 'ic-sm') ?> شحن الرصيد</a>
+        <?php if (setting('wallet_withdraw_enabled','1') === '1'): ?>
+        <a href="#withdraw" class="wh-btn" onclick="openWithdrawModal(event)"><?= icon('send', 'ic-sm') ?> طلب سحب</a>
+        <?php endif; ?>
+        <a href="?page=orders" class="wh-btn"><?= icon('orders', 'ic-sm') ?> طلباتي</a>
+      </div>
+    </div>
+
+    <div id="topup">
+      <div class="topup-steps">
+        <div class="ts-item active" data-step="1"><small>الخطوة 1</small>المبلغ</div>
+        <div class="ts-item" data-step="2"><small>الخطوة 2</small>الدفع</div>
+        <div class="ts-item" data-step="3"><small>الخطوة 3</small>المراجعة</div>
+      </div>
+
+      <!-- الخطوة 1: اختيار المبلغ ووسيلة الدفع -->
+      <div class="topup-card" id="stepAmount">
+        <h3><?= icon('coin', 'ic') ?> اختر المبلغ ووسيلة الدفع</h3>
+        <p class="tc-sub"><?= e(setting('wallet_page_subheadline', 'اختر المبلغ، حوّل الدفعة، وفعّل رصيدك خلال دقائق')) ?></p>
+
+        <div class="tc-field">
+          <label>مبلغ الشحن (الحد الأدنى <?= (int)$minAmt ?><?= e($currency) ?>)</label>
+          <div class="amount-grid" id="amountGrid">
+            <?php foreach ($quickAmounts as $amt): ?>
+              <div class="amount-chip" data-amount="<?= (int)$amt ?>" onclick="pickAmount(this)"><?= (int)$amt ?><?= e($currency) ?></div>
+            <?php endforeach; ?>
+          </div>
+          <input type="number" class="amount-input" id="topupAmount" min="<?= (int)$minAmt ?>" max="<?= (int)$maxAmt ?>" placeholder="أو أدخل مبلغاً مخصّصاً" oninput="onAmountInput()">
+        </div>
+
+        <div class="tc-field">
+          <label>وسيلة الدفع</label>
+          <?php if (!$walletList): ?>
+            <p style="color:var(--danger);font-size:13px">لا توجد وسائل دفع متاحة حالياً. تواصل مع الدعم.</p>
+          <?php else: ?>
+          <div class="wallet-methods">
+            <?php foreach ($walletList as $w):
+                [$label, $ic] = wallet_type_label($w['type']);
+            ?>
+              <div class="wallet-method" data-wallet-id="<?= (int)$w['id'] ?>" data-address="<?= e($w['address']) ?>" data-label="<?= e($label) ?>" onclick="pickWallet(this)">
+                <div class="wm-icon"><?= icon($ic, 'ic') ?></div>
+                <div class="wm-name"><?= e($label) ?></div>
+              </div>
+            <?php endforeach; ?>
+          </div>
+          <?php endif; ?>
+        </div>
+
+        <div class="step-nav">
+          <button type="button" class="btn-next" onclick="goStep2()" disabled id="btnGoStep2"><?= icon('chevron-right', 'ic-sm') ?> متابعة إلى الدفع</button>
+        </div>
+      </div>
+
+      <!-- الخطوة 2: تفاصيل الدفع (QR + عنوان + رفع إيصال) -->
+      <div class="topup-card" id="stepPayment" style="display:none">
+        <h3><?= icon('qr', 'ic') ?> تفاصيل الدفع</h3>
+        <p class="tc-sub">اتبع التعليمات لإتمام الدفع، ثم أرسل إثبات التحويل.</p>
+
+        <div class="qr-block">
+          <div class="qr-badge"><?= icon('qr', 'ic') ?></div>
+          <div class="qr-label">صورة الباركود للدفع</div>
+          <img id="paymentQR" class="qr-img" src="" alt="QR" onclick="openQrPreview()">
+          <div class="addr-row">
+            <code id="walletAddress">—</code>
+            <button type="button" class="copy-btn" onclick="copyWalletAddr(this)"><?= icon('copy', 'ic-sm') ?> نسخ</button>
+          </div>
+          <p style="color:var(--muted);font-size:12px;text-align:center;margin:0">💡 اضغط على الصورة لتكبيرها</p>
+        </div>
+
+        <div class="tc-field" style="margin-top:20px">
+          <label>رقم عملية التحويل (اختياري إن رفعت الإيصال)</label>
+          <input type="text" id="txNumber" placeholder="مثال: TX1234567890">
+        </div>
+
+        <div class="tc-field">
+          <label>صورة الإيصال</label>
+          <div class="receipt-box" id="receiptBox" onclick="document.getElementById('receiptFile').click()">
+            <div class="rb-empty"><?= icon('upload', 'ic') ?><div>اضغط لرفع صورة الإيصال (JPG/PNG/WEBP)</div></div>
+            <div class="rb-preview" style="display:none"><img id="receiptPreview" style="max-height:200px;border-radius:10px"><div id="receiptFileName" style="margin-top:8px;font-size:12px"></div></div>
+          </div>
+          <input type="file" id="receiptFile" accept="image/*" style="display:none" onchange="onReceiptChange(this)">
+        </div>
+
+        <div class="tc-field">
+          <label>ملاحظة (اختياري)</label>
+          <textarea id="topupNote" rows="2" placeholder="أي معلومات إضافية للأدمن..."></textarea>
+        </div>
+
+        <div class="step-nav">
+          <button type="button" class="btn-back" onclick="goStep1()">← رجوع</button>
+          <button type="button" class="btn-next" onclick="goStep3()">مراجعة الطلب ←</button>
+        </div>
+      </div>
+
+      <!-- الخطوة 3: المراجعة وإرسال الطلب -->
+      <div class="topup-card" id="stepReview" style="display:none">
+        <h3><?= icon('check', 'ic') ?> مراجعة الطلب</h3>
+        <p class="tc-sub">تأكد من صحة البيانات ثم أرسل الطلب. سيصلك إشعار عند التفعيل.</p>
+        <div id="reviewSummary"></div>
+        <div class="step-nav">
+          <button type="button" class="btn-back" onclick="goStep2()">← رجوع</button>
+          <button type="button" class="btn-next" onclick="submitTopup()" id="btnSubmitTopup"><?= icon('send', 'ic-sm') ?> إرسال الطلب</button>
+        </div>
+      </div>
+    </div>
+
+    <?php if ($recentTopups): ?>
+    <div class="topup-card" style="margin-top:24px">
+      <h3><?= icon('history', 'ic') ?> آخر طلبات الشحن</h3>
+      <table style="width:100%;font-size:13px;color:var(--text)">
+        <tr style="opacity:.6"><th align="right">#</th><th align="right">المبلغ</th><th align="right">الحالة</th><th align="right">التاريخ</th></tr>
+        <?php foreach ($recentTopups as $t):
+            $badge = $t['status'] === 'approved' ? '#10b981' : ($t['status'] === 'rejected' ? '#ef4444' : '#f59e0b');
+            $statusText = $t['status'] === 'approved' ? 'مقبول' : ($t['status'] === 'rejected' ? 'مرفوض' : 'قيد المراجعة');
+        ?>
+        <tr>
+          <td>#<?= (int)$t['id'] ?></td>
+          <td><strong><?= number_format((float)$t['amount'], 2) ?><?= e($currency) ?></strong></td>
+          <td><span style="background:<?= $badge ?>;color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700"><?= $statusText ?></span></td>
+          <td style="color:var(--muted);font-size:11px"><?= e(substr($t['created_at'], 0, 16)) ?></td>
+        </tr>
+        <?php endforeach; ?>
+      </table>
+    </div>
+    <?php endif; ?>
+
+    <div class="modal-bg" id="qrPreviewModal" style="display:none;background:rgba(0,0,0,.9);position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;cursor:zoom-out" onclick="this.style.display='none'">
+      <img id="qrPreviewImg" style="max-width:90vw;max-height:90vh;border-radius:16px;border:6px solid #fff;box-shadow:0 30px 80px rgba(16,185,129,.5)">
+    </div>
+
+    <div class="modal-bg" id="withdrawModal" style="display:none;background:rgba(0,0,0,.75);position:fixed;inset:0;z-index:9998;align-items:center;justify-content:center">
+      <div style="max-width:420px;width:92%;background:linear-gradient(180deg,#052e2b,#064e3b);border-radius:22px;padding:24px;border:1px solid rgba(16,185,129,.35);box-shadow:0 30px 80px rgba(0,0,0,.6)">
+        <h3 style="color:#10b981;display:flex;align-items:center;gap:8px;margin-bottom:12px"><?= icon('send', 'ic') ?> طلب سحب رصيد</h3>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:14px">رصيدك الحالي: <strong style="color:#6ee7b7"><?= number_format($userBalance, 2) ?><?= e($currency) ?></strong></p>
+        <div class="tc-field"><label>المبلغ</label><input type="number" id="withdrawAmount" min="<?= (int)setting('wallet_min_withdraw','10') ?>" max="<?= (int)$userBalance ?>" placeholder="حد أدنى <?= (int)setting('wallet_min_withdraw','10') ?><?= e($currency) ?>"></div>
+        <div class="tc-field"><label>وسيلة الاستلام</label>
+          <select id="withdrawType" class="setting-select" style="width:100%">
+            <option value="usdt">USDT (TRC20)</option>
+            <option value="sham">الشام كاش</option>
+            <option value="syriatel_cash">سيرياتيل كاش</option>
+            <option value="binance">Binance Pay</option>
+            <option value="payeer">Payeer</option>
+          </select>
+        </div>
+        <div class="tc-field"><label>عنوان/رقم المحفظة</label><input type="text" id="withdrawAddress" placeholder="أدخل عنوان استلام السحب"></div>
+        <div class="step-nav">
+          <button type="button" class="btn-back" onclick="document.getElementById('withdrawModal').style.display='none'">إلغاء</button>
+          <button type="button" class="btn-next" onclick="submitWithdraw()"><?= icon('send', 'ic-sm') ?> إرسال</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    const walletState = { amount: 0, walletId: 0, walletAddress: '', walletLabel: '', receiptFile: null };
+    function pickAmount(el){
+      document.querySelectorAll('.amount-chip').forEach(c => c.classList.remove('selected'));
+      el.classList.add('selected');
+      const amt = parseFloat(el.dataset.amount);
+      walletState.amount = amt;
+      document.getElementById('topupAmount').value = amt;
+      updateContinueBtn();
+    }
+    function onAmountInput(){
+      const v = parseFloat(document.getElementById('topupAmount').value) || 0;
+      walletState.amount = v;
+      document.querySelectorAll('.amount-chip').forEach(c => c.classList.toggle('selected', parseFloat(c.dataset.amount) === v));
+      updateContinueBtn();
+    }
+    function pickWallet(el){
+      document.querySelectorAll('.wallet-method').forEach(c => c.classList.remove('selected'));
+      el.classList.add('selected');
+      walletState.walletId = parseInt(el.dataset.walletId);
+      walletState.walletAddress = el.dataset.address;
+      walletState.walletLabel = el.dataset.label;
+      updateContinueBtn();
+    }
+    function updateContinueBtn(){
+      const b = document.getElementById('btnGoStep2');
+      const minAmt = <?= (int)$minAmt ?>;
+      b.disabled = !(walletState.amount >= minAmt && walletState.walletId > 0);
+    }
+    function updateStepUI(step){
+      document.querySelectorAll('.ts-item').forEach(el => {
+        const n = parseInt(el.dataset.step);
+        el.classList.remove('active','done');
+        if (n === step) el.classList.add('active');
+        else if (n < step) el.classList.add('done');
+      });
+    }
+    function goStep1(){ document.getElementById('stepAmount').style.display='block'; document.getElementById('stepPayment').style.display='none'; document.getElementById('stepReview').style.display='none'; updateStepUI(1); }
+    function goStep2(){
+      if (!walletState.walletAddress) return;
+      document.getElementById('walletAddress').textContent = walletState.walletAddress;
+      // QR generated via free public API (Google Chart-like)
+      const qr = 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=' + encodeURIComponent(walletState.walletAddress);
+      document.getElementById('paymentQR').src = qr;
+      document.getElementById('stepAmount').style.display='none';
+      document.getElementById('stepPayment').style.display='block';
+      document.getElementById('stepReview').style.display='none';
+      updateStepUI(2);
+    }
+    function goStep3(){
+      const tx = document.getElementById('txNumber').value.trim();
+      const rf = walletState.receiptFile;
+      if (!tx && !rf) { toast('أدخل رقم العملية أو ارفع صورة الإيصال'); return; }
+      const summary = document.getElementById('reviewSummary');
+      summary.innerHTML = ''
+        + '<div class="summary-row"><span>المبلغ</span><strong>' + walletState.amount.toFixed(2) + '<?= e($currency) ?></strong></div>'
+        + '<div class="summary-row"><span>وسيلة الدفع</span><strong>' + walletState.walletLabel + '</strong></div>'
+        + '<div class="summary-row"><span>عنوان المحفظة</span><code style="font-size:11px">' + walletState.walletAddress + '</code></div>'
+        + (tx ? '<div class="summary-row"><span>رقم العملية</span><strong>' + tx + '</strong></div>' : '')
+        + (rf ? '<div class="summary-row"><span>الإيصال</span><strong>✓ مرفق</strong></div>' : '');
+      document.getElementById('stepPayment').style.display='none';
+      document.getElementById('stepReview').style.display='block';
+      updateStepUI(3);
+    }
+    function copyWalletAddr(btn){
+      navigator.clipboard.writeText(walletState.walletAddress).then(() => {
+        btn.classList.add('copied');
+        btn.innerHTML = '<?= icon('check', 'ic-sm') ?> تم النسخ';
+        toast('تم نسخ عنوان المحفظة');
+        setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = '<?= icon('copy', 'ic-sm') ?> نسخ'; }, 2000);
+      });
+    }
+    function openQrPreview(){
+      document.getElementById('qrPreviewImg').src = document.getElementById('paymentQR').src;
+      document.getElementById('qrPreviewModal').style.display = 'flex';
+    }
+    function onReceiptChange(input){
+      const box = document.getElementById('receiptBox');
+      if (input.files && input.files[0]) {
+        walletState.receiptFile = input.files[0];
+        const url = URL.createObjectURL(input.files[0]);
+        document.getElementById('receiptPreview').src = url;
+        document.getElementById('receiptFileName').textContent = input.files[0].name;
+        box.querySelector('.rb-empty').style.display = 'none';
+        box.querySelector('.rb-preview').style.display = 'block';
+        box.classList.add('has-file');
+      }
+    }
+    function submitTopup(){
+      const btn = document.getElementById('btnSubmitTopup');
+      btn.disabled = true; btn.innerHTML = '⏳ جاري الإرسال...';
+      const fd = new FormData();
+      fd.append('csrf', CSRF);
+      fd.append('amount', walletState.amount);
+      fd.append('wallet_id', walletState.walletId);
+      fd.append('tx_number', document.getElementById('txNumber').value.trim());
+      fd.append('note', document.getElementById('topupNote').value.trim());
+      if (walletState.receiptFile) fd.append('receipt', walletState.receiptFile);
+      fetch('?action=api_wallet_topup', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => {
+          if (res.ok) {
+            toast('✅ ' + res.msg);
+            setTimeout(() => window.location = '?page=wallet', 1200);
+          } else {
+            toast('❌ ' + res.msg);
+            btn.disabled = false; btn.innerHTML = '<?= icon('send', 'ic-sm') ?> إرسال الطلب';
+          }
+        }).catch(() => { toast('حدث خطأ في الإرسال'); btn.disabled = false; });
+    }
+    function openWithdrawModal(e){ e && e.preventDefault(); document.getElementById('withdrawModal').style.display = 'flex'; }
+    function submitWithdraw(){
+      const amt = parseFloat(document.getElementById('withdrawAmount').value) || 0;
+      const type = document.getElementById('withdrawType').value;
+      const addr = document.getElementById('withdrawAddress').value.trim();
+      const fd = new FormData();
+      fd.append('csrf', CSRF); fd.append('amount', amt); fd.append('wallet_type', type); fd.append('wallet_address', addr);
+      fetch('?action=api_wallet_withdraw', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => {
+          toast((res.ok ? '✅ ' : '❌ ') + res.msg);
+          if (res.ok) setTimeout(() => window.location = '?page=wallet', 1200);
+        });
+    }
+    function scrollToTopup(e){ e.preventDefault(); document.getElementById('topup').scrollIntoView({behavior:'smooth'}); }
+    </script>
+    <?php
+    break;
+
+case 'notifications':
+    ?>
+    <div class="section-title"><?= icon('bell', 'ic') ?> الإشعارات</div>
+    <div class="admin-box" style="text-align:center;padding:40px 20px">
+      <?= icon('bell', 'ic ic-lg') ?>
+      <p style="margin-top:14px;color:var(--muted)">لا توجد إشعارات جديدة حالياً.</p>
+    </div>
+    <?php
+    break;
+
 case 'profile':
     if (!$user) { echo '<div class="empty">سجّل الدخول لعرض ملفك الشخصي.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     $st = db()->prepare("SELECT COUNT(*) c FROM orders WHERE user_id=? AND status='approved'"); $st->execute([$user['id']]); $pApprovedOrders = (int)$st->fetch()['c'];
@@ -4266,6 +5066,13 @@ case 'profile':
     $pAchievements[] = ['icon' => 'android', 'label' => 'مستكشف نشط (5+ تحميلات)', 'on' => $pDownloadCount >= 5];
     $pAchievements[] = ['icon' => 'heart', 'label' => 'لديه مفضّلة', 'on' => $pFavCount >= 1];
     $pAchievements[] = ['icon' => 'star', 'label' => 'مُقيّم نشط', 'on' => $pReviewCount >= 1];
+    $profileTab = $_GET['tab'] ?? 'overview';
+    $userFresh = db()->prepare("SELECT * FROM users WHERE id=?");
+    $userFresh->execute([$user['id']]);
+    $userFresh = $userFresh->fetch() ?: $user;
+    $uXp = (int)($userFresh['xp'] ?? 0);
+    $uLevel = level_from_xp($uXp);
+    $uProgress = xp_progress_percent($uXp);
     ?>
     <div class="section-title"><?= icon('user', 'ic') ?>ملفي الشخصي</div>
     <div class="admin-box" style="text-align:center;padding:28px 16px">
@@ -4276,8 +5083,156 @@ case 'profile':
       </div>
       <h2 style="margin-top:12px"><?= e($user['name'] ?: $user['username']) ?><?php if (is_admin()): ?> <span class="verified-badge" title="حساب موثّق"><?= icon('check', 'ic-sm') ?></span><?php endif; ?></h2>
       <div style="color:var(--muted);font-size:13px">@<?= e($user['username']) ?></div>
+      <div style="margin-top:12px;display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:20px;background:linear-gradient(135deg,rgba(37,99,235,.2),rgba(6,182,212,.15));border:1px solid rgba(6,182,212,.4);font-size:12px;font-weight:700"><?= icon('star', 'ic-sm') ?> المستوى <?= $uLevel ?> · <?= $uXp ?> XP</div>
+      <div style="margin:10px auto 0;max-width:220px;height:6px;background:#28304a;border-radius:6px;overflow:hidden"><div style="width:<?= $uProgress ?>%;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))"></div></div>
       <?php if ($user['bio']): ?><div style="margin-top:8px;font-size:13px;color:var(--muted)"><?= e($user['bio']) ?></div><?php endif; ?>
     </div>
+
+    <div class="settings-tabs">
+      <?php foreach (['overview'=>['user','نظرة عامة'],'edit'=>['edit','تعديل الملف'],'settings'=>['settings','الإعدادات'],'privacy'=>['lock','الخصوصية'],'notifications'=>['bell','الإشعارات'],'security'=>['shield','الأمان'],'appearance'=>['palette','المظهر واللغة'],'danger'=>['x','منطقة الخطر']] as $tk => $tv): ?>
+        <a href="?page=profile&tab=<?= $tk ?>" class="<?= $profileTab === $tk ? 'active' : '' ?>"><?= icon($tv[0], 'ic-sm') ?><?= $tv[1] ?></a>
+      <?php endforeach; ?>
+    </div>
+
+    <?php if ($profileTab === 'privacy'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('lock', 'ic') ?> الخصوصية</h3>
+      <p class="sp-desc">تحكّم بمن يستطيع رؤية ملفك الشخصي وبياناتك.</p>
+      <form id="settingsFormPrivacy">
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">إخفاء رصيدي من الواجهة العلوية</div><div class="sr-desc">لن يظهر الرصيد في الشريط العلوي، وسيبقى ظاهراً فقط داخل صفحة المحفظة.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="privacy_hide_balance" value="1" <?= (int)($userFresh['privacy_hide_balance'] ?? 0) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">من يستطيع رؤية ملفي؟</div><div class="sr-desc">تحكّم بمن يستطيع الوصول لصفحة ملفك.</div></div>
+          <select name="privacy_profile_visibility" class="setting-select">
+            <option value="public" <?= ($userFresh['privacy_profile_visibility'] ?? 'public') === 'public' ? 'selected' : '' ?>>الجميع</option>
+            <option value="friends" <?= ($userFresh['privacy_profile_visibility'] ?? '') === 'friends' ? 'selected' : '' ?>>الأصدقاء فقط</option>
+            <option value="private" <?= ($userFresh['privacy_profile_visibility'] ?? '') === 'private' ? 'selected' : '' ?>>لا أحد (خاص)</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-primary" style="margin-top:14px" onclick="saveSettings('Privacy')"><?= icon('check','ic-sm') ?> حفظ التغييرات</button>
+      </form>
+    </div>
+    <?php elseif ($profileTab === 'notifications'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('bell', 'ic') ?> الإشعارات</h3>
+      <p class="sp-desc">اختر متى ترغب أن نتواصل معك عبر تيليجرام أو البريد الإلكتروني.</p>
+      <form id="settingsFormNotifications">
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">📱 إشعار تيليجرام: تحديثات الطلبات</div><div class="sr-desc">عند قبول/رفض/شحن أي طلب لك.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_telegram_orders" value="1" <?= (int)($userFresh['notify_telegram_orders'] ?? 1) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">💰 إشعار تيليجرام: عمليات المحفظة</div><div class="sr-desc">عند شحن/سحب/تحويل رصيد.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_telegram_wallet" value="1" <?= (int)($userFresh['notify_telegram_wallet'] ?? 1) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">📧 بريد: تحديثات الطلبات</div><div class="sr-desc">استلام تنبيهات الطلبات على بريدك.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_email_orders" value="1" <?= (int)($userFresh['notify_email_orders'] ?? 0) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">📧 بريد: عمليات المحفظة</div><div class="sr-desc">تنبيهات الشحن/السحب على البريد.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_email_wallet" value="1" <?= (int)($userFresh['notify_email_wallet'] ?? 0) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">🎁 بريد: العروض والتحديثات</div><div class="sr-desc">إشعارات دورية بالعروض والتخفيضات.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_email_promotions" value="1" <?= (int)($userFresh['notify_email_promotions'] ?? 0) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <button type="button" class="btn btn-primary" style="margin-top:14px" onclick="saveSettings('Notifications')"><?= icon('check','ic-sm') ?> حفظ التغييرات</button>
+      </form>
+    </div>
+    <?php elseif ($profileTab === 'security'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('shield', 'ic') ?> أمان الحساب</h3>
+      <p class="sp-desc">إدارة كلمة المرور والبريد وطبقات الحماية الإضافية.</p>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">🔑 تغيير كلمة المرور</div><div class="sr-desc">استخدم كلمة مرور قوية (8+ أحرف).</div></div>
+        <button type="button" class="setting-select" onclick="document.getElementById('pwdForm').style.display = document.getElementById('pwdForm').style.display === 'none' ? 'block' : 'none'">تغيير</button>
+      </div>
+      <div id="pwdForm" style="display:none;padding:12px 0">
+        <input type="password" id="currentPassword" placeholder="كلمة المرور الحالية" class="setting-select" style="width:100%;margin-bottom:8px">
+        <input type="password" id="newPassword" placeholder="كلمة المرور الجديدة" class="setting-select" style="width:100%;margin-bottom:8px">
+        <button type="button" class="btn btn-primary" onclick="changePassword()" style="width:100%"><?= icon('key', 'ic-sm') ?> تحديث كلمة المرور</button>
+      </div>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">📧 تغيير البريد الإلكتروني</div><div class="sr-desc">البريد الحالي: <?= e($userFresh['email']) ?></div></div>
+        <button type="button" class="setting-select" onclick="document.getElementById('emailForm').style.display = document.getElementById('emailForm').style.display === 'none' ? 'block' : 'none'">تغيير</button>
+      </div>
+      <div id="emailForm" style="display:none;padding:12px 0">
+        <input type="email" id="newEmail" placeholder="البريد الجديد" class="setting-select" style="width:100%;margin-bottom:8px">
+        <button type="button" class="btn btn-primary" onclick="changeEmail()" style="width:100%"><?= icon('send', 'ic-sm') ?> تحديث البريد</button>
+      </div>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">🔐 التحقق الثنائي (2FA)</div><div class="sr-desc">طبقة حماية إضافية مع تطبيقات مثل Google Authenticator.</div></div>
+        <label class="toggle-switch"><input type="checkbox" id="toggle2fa" <?= (int)($userFresh['two_factor_enabled'] ?? 0) ? 'checked' : '' ?> onchange="toggle2FA(this)"><span class="slider"></span></label>
+      </div>
+      <div id="secret2fa" style="display:<?= (int)($userFresh['two_factor_enabled'] ?? 0) && !empty($userFresh['two_factor_secret']) ? 'block' : 'none' ?>;padding:12px;background:rgba(37,99,235,.1);border-radius:10px;margin-top:10px;text-align:center">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">مفتاحك السري (احفظه في مكان آمن):</div>
+        <code style="font-size:13px;font-weight:700;color:var(--accent2);word-break:break-all"><?= e($userFresh['two_factor_secret'] ?? '') ?></code>
+      </div>
+    </div>
+    <?php elseif ($profileTab === 'appearance'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('palette', 'ic') ?> المظهر واللغة</h3>
+      <p class="sp-desc">اختر الثيم واللغة التي تفضّلها.</p>
+      <form id="settingsFormAppearance">
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">🌓 الثيم</div><div class="sr-desc">اختر بين الوضع الليلي والنهاري.</div></div>
+          <select name="ui_theme" class="setting-select">
+            <option value="dark" <?= ($userFresh['ui_theme'] ?? 'dark') === 'dark' ? 'selected' : '' ?>>🌙 داكن</option>
+            <option value="light" <?= ($userFresh['ui_theme'] ?? '') === 'light' ? 'selected' : '' ?>>☀️ فاتح</option>
+            <option value="auto" <?= ($userFresh['ui_theme'] ?? '') === 'auto' ? 'selected' : '' ?>>🔄 حسب النظام</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">🌐 اللغة</div><div class="sr-desc">لغة عرض الواجهة.</div></div>
+          <select name="ui_language" class="setting-select">
+            <option value="ar" <?= ($userFresh['ui_language'] ?? 'ar') === 'ar' ? 'selected' : '' ?>>🇸🇦 العربية</option>
+            <option value="en" <?= ($userFresh['ui_language'] ?? '') === 'en' ? 'selected' : '' ?>>🇬🇧 English</option>
+            <option value="tr" <?= ($userFresh['ui_language'] ?? '') === 'tr' ? 'selected' : '' ?>>🇹🇷 Türkçe</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">🎨 لون التمييز</div><div class="sr-desc">اختر لون العناصر الرئيسية.</div></div>
+          <select name="ui_accent" class="setting-select">
+            <option value="">افتراضي (أزرق)</option>
+            <option value="#10b981" <?= ($userFresh['ui_accent'] ?? '') === '#10b981' ? 'selected' : '' ?>>🟢 أخضر</option>
+            <option value="#8b5cf6" <?= ($userFresh['ui_accent'] ?? '') === '#8b5cf6' ? 'selected' : '' ?>>🟣 بنفسجي</option>
+            <option value="#f59e0b" <?= ($userFresh['ui_accent'] ?? '') === '#f59e0b' ? 'selected' : '' ?>>🟠 برتقالي</option>
+            <option value="#ef4444" <?= ($userFresh['ui_accent'] ?? '') === '#ef4444' ? 'selected' : '' ?>>🔴 أحمر</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-primary" style="margin-top:14px" onclick="saveSettings('Appearance')"><?= icon('check','ic-sm') ?> حفظ التغييرات</button>
+      </form>
+    </div>
+    <?php elseif ($profileTab === 'danger'): ?>
+    <div class="settings-panel" style="border-color:rgba(239,68,68,.35)">
+      <h3 style="color:var(--danger)"><?= icon('x', 'ic') ?> منطقة الخطر</h3>
+      <p class="sp-desc">إجراءات لا يمكن التراجع عنها بسهولة.</p>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">تعطيل الحساب مؤقتاً (30 يوم)</div><div class="sr-desc">يُعاد تفعيل حسابك تلقائياً عند تسجيل الدخول التالي.</div></div>
+        <button class="btn" style="background:#f59e0b;color:#fff" onclick="if(confirm('تأكيد تعطيل الحساب 30 يوماً؟')) window.location='?action=disable_account'">تعطيل</button>
+      </div>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">حذف حسابي نهائياً</div><div class="sr-desc" style="color:var(--danger)">سيتم حذف كل بياناتك بدون رجعة.</div></div>
+        <button class="btn" style="background:var(--danger);color:#fff" onclick="deleteAccount()">حذف نهائي</button>
+      </div>
+    </div>
+    <?php elseif ($profileTab === 'settings'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('settings', 'ic') ?> الإعدادات العامة</h3>
+      <p class="sp-desc">جميع إعدادات حسابك في مكان واحد. اختر التبويب الفرعي من الأعلى للتحكم بكل قسم.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:8px">
+        <a href="?page=profile&tab=privacy" class="wh-btn" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff"><?= icon('lock','ic-sm') ?> الخصوصية</a>
+        <a href="?page=profile&tab=notifications" class="wh-btn" style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff"><?= icon('bell','ic-sm') ?> الإشعارات</a>
+        <a href="?page=profile&tab=security" class="wh-btn" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff"><?= icon('shield','ic-sm') ?> الأمان</a>
+        <a href="?page=profile&tab=appearance" class="wh-btn" style="background:linear-gradient(135deg,#0891b2,#0e7490);color:#fff"><?= icon('palette','ic-sm') ?> المظهر</a>
+        <a href="?page=wallet" class="wh-btn" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff"><?= icon('wallet','ic-sm') ?> المحفظة</a>
+        <a href="?page=profile&tab=danger" class="wh-btn" style="background:linear-gradient(135deg,#6b7280,#4b5563);color:#fff"><?= icon('x','ic-sm') ?> منطقة الخطر</a>
+      </div>
+    </div>
+    <?php elseif ($profileTab === 'edit'): ?>
     <div class="admin-box">
       <h3 style="margin-bottom:10px"><?= icon('edit', 'ic-sm') ?>تعديل الملف الشخصي</h3>
       <input id="editName" value="<?= e($user['name']) ?>" placeholder="الاسم الظاهر">
@@ -4285,8 +5240,10 @@ case 'profile':
       <input id="editBio" value="<?= e($user['bio']) ?>" placeholder="نبذة عنك">
       <button class="btn btn-primary" style="margin-top:8px;width:100%" onclick="saveProfile()"><?= icon('check', 'ic-sm') ?>حفظ التعديلات</button>
     </div>
+    <?php else: /* overview */ ?>
     <div class="admin-box">
       <div class="profile-grid">
+        <div class="profile-stat"><?= icon('coin', 'ic-sm') ?><div><strong><?= number_format((float)user_balance($user['id']), 2) ?><?= e(setting('wallet_currency_symbol','$')) ?></strong><span>الرصيد</span></div></div>
         <div class="profile-stat"><?= icon('cart', 'ic-sm') ?><div><strong><?= $pApprovedOrders ?></strong><span>طلب مكتمل</span></div></div>
         <div class="profile-stat"><?= icon('android', 'ic-sm') ?><div><strong><?= $pDownloadCount ?></strong><span>تحميل</span></div></div>
         <div class="profile-stat"><?= icon('heart', 'ic-sm') ?><div><strong><?= $pFavCount ?></strong><span>مفضّلة</span></div></div>
@@ -4308,6 +5265,40 @@ case 'profile':
         <?php endforeach; ?>
       </div>
     </div>
+    <?php endif; ?>
+    <script>
+    function saveSettings(kind){
+      const form = document.getElementById('settingsForm' + kind);
+      const fd = new FormData(form);
+      fd.append('csrf', CSRF);
+      // Ensure unchecked boxes send 0
+      form.querySelectorAll('input[type="checkbox"]').forEach(cb => { if (!cb.checked) fd.append(cb.name, '0'); });
+      fetch('?action=api_save_user_settings', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => { toast((res.ok ? '✅ ' : '❌ ') + res.msg); });
+    }
+    function changePassword(){
+      const cur = document.getElementById('currentPassword').value;
+      const nw = document.getElementById('newPassword').value;
+      const fd = new FormData(); fd.append('csrf', CSRF); fd.append('current_password', cur); fd.append('new_password', nw);
+      fetch('?action=api_change_password', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => { toast((res.ok ? '✅ ' : '❌ ') + res.msg); if (res.ok) document.getElementById('pwdForm').style.display='none'; });
+    }
+    function changeEmail(){
+      const em = document.getElementById('newEmail').value;
+      const fd = new FormData(); fd.append('csrf', CSRF); fd.append('new_email', em);
+      fetch('?action=api_change_email', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => { toast((res.ok ? '✅ ' : '❌ ') + res.msg); if (res.ok) setTimeout(() => location.reload(), 800); });
+    }
+    function toggle2FA(cb){
+      const fd = new FormData(); fd.append('csrf', CSRF); fd.append('enable', cb.checked ? '1' : '0');
+      fetch('?action=api_toggle_2fa', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => {
+          toast((res.ok ? '✅ ' : '❌ ') + res.msg);
+          if (res.ok && res.secret) { setTimeout(() => location.reload(), 600); }
+        });
+    }
+    function deleteAccount(){ if (prompt('اكتب "حذف" لتأكيد حذف حسابك نهائياً:') === 'حذف') { window.location = '?action=delete_account&confirm=1'; } }
+    </script>
     <?php
     break;
 
@@ -4344,7 +5335,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'ads'=>['megaphone','📣 إعلانات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'wallet_config'=>['coin','⚙️ المحفظة'],'notifications_config'=>['bell','🔔 إشعارات'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'ads'=>['megaphone','📣 إعلانات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -5109,6 +6100,71 @@ case 'admin':
           </tr>
           <?php endforeach; ?>
         </table>
+      </div>
+
+    <?php elseif ($tab === 'wallet_config'): ?>
+      <div class="admin-box">
+        <h3><?= icon('coin', 'ic') ?> إعدادات نظام المحفظة</h3>
+        <form method="post" action="?action=admin_save_settings">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>الحد الأدنى للشحن<input type="number" name="wallet_min_topup" value="<?= e(setting('wallet_min_topup', '5')) ?>"></label>
+            <label>الحد الأعلى للشحن<input type="number" name="wallet_max_topup" value="<?= e(setting('wallet_max_topup', '500')) ?>"></label>
+            <label>الحد الأدنى للسحب<input type="number" name="wallet_min_withdraw" value="<?= e(setting('wallet_min_withdraw', '10')) ?>"></label>
+            <label>عملة المحفظة<input type="text" name="wallet_currency" value="<?= e(setting('wallet_currency', 'USD')) ?>"></label>
+            <label>رمز العملة<input type="text" name="wallet_currency_symbol" value="<?= e(setting('wallet_currency_symbol', '$')) ?>"></label>
+            <label>مبالغ سريعة (مفصولة بفاصلة)<input type="text" name="wallet_quick_amounts" value="<?= e(setting('wallet_quick_amounts', '5,10,25,50,100,200')) ?>"></label>
+          </div>
+          <div class="formrow">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="wallet_show_balance_in_topbar" value="1" <?= setting('wallet_show_balance_in_topbar','1')==='1'?'checked':'' ?>> إظهار الرصيد في الشريط العلوي</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="wallet_withdraw_enabled" value="1" <?= setting('wallet_withdraw_enabled','1')==='1'?'checked':'' ?>> تفعيل السحب للمستخدمين</label>
+          </div>
+          <label>عنوان صفحة المحفظة<input type="text" name="wallet_page_headline" value="<?= e(setting('wallet_page_headline', 'اشحن محفظتك بأمان')) ?>"></label>
+          <label>نص فرعي لصفحة المحفظة<input type="text" name="wallet_page_subheadline" value="<?= e(setting('wallet_page_subheadline', 'اختر المبلغ، حوّل الدفعة، وفعّل رصيدك خلال دقائق')) ?>"></label>
+          <button class="btn btn-primary" type="submit" style="margin-top:12px"><?= icon('check','ic-sm') ?> حفظ إعدادات المحفظة</button>
+        </form>
+      </div>
+
+    <?php elseif ($tab === 'notifications_config'): ?>
+      <div class="admin-box">
+        <h3><?= icon('bell', 'ic') ?> إعدادات الإشعارات (تيليجرام + بريد)</h3>
+        <form method="post" action="?action=admin_save_settings">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>Bot Token<input type="text" name="bot_token" value="<?= e(setting('bot_token')) ?>" placeholder="من BotFather"></label>
+            <label>Owner ID (رقم الأدمن على تيليجرام)<input type="text" name="owner_id" value="<?= e(setting('owner_id')) ?>"></label>
+            <label>اسم بوت تيليجرام (بدون @)<input type="text" name="tg_notify_bot_username" value="<?= e(setting('tg_notify_bot_username')) ?>"></label>
+          </div>
+          <h4 style="margin-top:16px;color:var(--accent2)">📱 تنبيهات الأدمن</h4>
+          <div class="formrow">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="tg_notify_new_topup" value="1" <?= setting('tg_notify_new_topup','1')==='1'?'checked':'' ?>> طلب شحن جديد</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="tg_notify_new_withdraw" value="1" <?= setting('tg_notify_new_withdraw','1')==='1'?'checked':'' ?>> طلب سحب جديد</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="tg_notify_new_order" value="1" <?= setting('tg_notify_new_order','1')==='1'?'checked':'' ?>> طلب شراء جديد</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="tg_notify_new_user" value="1" <?= setting('tg_notify_new_user','1')==='1'?'checked':'' ?>> تسجيل مستخدم جديد</label>
+          </div>
+          <h4 style="margin-top:16px;color:var(--accent2)">🌐 المظهر واللغة</h4>
+          <div class="formrow">
+            <label>الثيم الافتراضي<select name="ui_default_theme">
+              <option value="dark" <?= setting('ui_default_theme','dark')==='dark'?'selected':'' ?>>داكن</option>
+              <option value="light" <?= setting('ui_default_theme')==='light'?'selected':'' ?>>فاتح</option>
+              <option value="auto" <?= setting('ui_default_theme')==='auto'?'selected':'' ?>>حسب النظام</option>
+            </select></label>
+            <label>اللغة الافتراضية<select name="ui_default_language">
+              <option value="ar" <?= setting('ui_default_language','ar')==='ar'?'selected':'' ?>>العربية</option>
+              <option value="en" <?= setting('ui_default_language')==='en'?'selected':'' ?>>English</option>
+              <option value="tr" <?= setting('ui_default_language')==='tr'?'selected':'' ?>>Türkçe</option>
+            </select></label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="ui_allow_theme_change" value="1" <?= setting('ui_allow_theme_change','1')==='1'?'checked':'' ?>> السماح للمستخدم بتغيير الثيم</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="ui_allow_language_change" value="1" <?= setting('ui_allow_language_change','1')==='1'?'checked':'' ?>> السماح للمستخدم بتغيير اللغة</label>
+          </div>
+          <h4 style="margin-top:16px;color:var(--accent2)">🔐 الأمان</h4>
+          <div class="formrow">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="security_2fa_enabled_globally" value="1" <?= setting('security_2fa_enabled_globally','1')==='1'?'checked':'' ?>> تفعيل ميزة 2FA للمستخدمين</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="security_login_alert_email" value="1" <?= setting('security_login_alert_email','0')==='1'?'checked':'' ?>> تنبيه بريد عند تسجيل دخول جديد</label>
+          </div>
+          <p style="color:var(--muted);font-size:12px;margin-top:10px">Webhook للأزرار: <code style="background:#222;padding:2px 6px;border-radius:4px"><?= e(rtrim(SITE_URL, '/')) ?>/index.php?action=tg_admin_webhook</code></p>
+          <button class="btn btn-primary" type="submit" style="margin-top:12px"><?= icon('check','ic-sm') ?> حفظ الإعدادات</button>
+        </form>
       </div>
 
     <?php elseif ($tab === 'ads'): ?>
