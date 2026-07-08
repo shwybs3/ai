@@ -3323,6 +3323,19 @@ a{color:inherit;text-decoration:none}
 .bottom-nav a.active .ic{transform:translateY(-2px) scale(1.12);filter:drop-shadow(0 4px 8px rgba(255,77,77,.5))}
 .bottom-nav a.active::before{content:"";position:absolute;top:0;left:50%;transform:translateX(-50%);width:30px;height:3px;border-radius:0 0 6px 6px;background:linear-gradient(90deg,var(--accent),var(--accent2))}
 .bottom-nav .bi{font-size:18px;display:block;margin-bottom:2px}
+/* زر الإيداع البارز في الشريط السفلي (يظهر كفقاعة عائمة فوق الشريط) */
+.bottom-nav a.bn-deposit{position:relative;color:#10b981;font-weight:800}
+.bottom-nav a.bn-deposit .bn-deposit-bubble{position:absolute;top:-22px;left:50%;transform:translateX(-50%);width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 10px 24px rgba(16,185,129,.55),inset 0 1px 0 rgba(255,255,255,.25);border:4px solid var(--bg);transition:transform .28s var(--ease),box-shadow .28s;animation:depositPulse 2.6s var(--ease) infinite}
+.bottom-nav a.bn-deposit .bn-deposit-bubble .ic{color:#fff;width:24px;height:24px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.4))}
+.bottom-nav a.bn-deposit span{display:block;margin-top:32px;color:#10b981;font-weight:800;letter-spacing:.3px}
+.bottom-nav a.bn-deposit:hover .bn-deposit-bubble{transform:translateX(-50%) translateY(-3px) scale(1.06);box-shadow:0 14px 30px rgba(16,185,129,.7)}
+.bottom-nav a.bn-deposit.active{color:#10b981}
+.bottom-nav a.bn-deposit.active::before{background:linear-gradient(90deg,#10b981,#059669)}
+.bottom-nav a.bn-deposit.active .bn-deposit-bubble{transform:translateX(-50%) scale(1.08);box-shadow:0 16px 34px rgba(16,185,129,.75)}
+@keyframes depositPulse{
+  0%,100%{box-shadow:0 10px 24px rgba(16,185,129,.55),inset 0 1px 0 rgba(255,255,255,.25),0 0 0 0 rgba(16,185,129,.55)}
+  50%{box-shadow:0 10px 24px rgba(16,185,129,.55),inset 0 1px 0 rgba(255,255,255,.25),0 0 0 12px rgba(16,185,129,0)}
+}
 .container{max-width:1000px;margin:0 auto;padding-bottom:80px}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
 .modal-bg{animation:fadeIn .25s ease}
@@ -6458,7 +6471,10 @@ default:
 <div class="bottom-nav">
   <a href="?" class="<?= $page === 'home' ? 'active' : '' ?>"><?= icon('home', 'ic') ?>الرئيسية</a>
   <a href="?page=apps&kind=app" class="<?= $page === 'apps' && $appsKindNav === 'app' ? 'active' : '' ?>"><?= icon('android', 'ic') ?>تطبيقات</a>
-  <a href="?page=apps&kind=game" class="<?= $page === 'apps' && $appsKindNav === 'game' ? 'active' : '' ?>"><?= icon('rocket', 'ic') ?>ألعاب</a>
+  <a href="?page=wallet" class="bn-deposit <?= $page === 'wallet' ? 'active' : '' ?>" title="إيداع رصيد">
+    <div class="bn-deposit-bubble"><?= icon('wallet', 'ic') ?></div>
+    <span>إيداع</span>
+  </a>
   <a href="?page=store" class="<?= $page === 'store' ? 'active' : '' ?>"><?= icon('cart', 'ic') ?>المتجر</a>
   <a href="?page=favorites" class="<?= $page === 'favorites' ? 'active' : '' ?>"><?= icon('heart', 'ic') ?>المفضّلة</a>
 </div>
