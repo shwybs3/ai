@@ -1148,6 +1148,42 @@ function tg_edit_message(string $chatId, string $messageId, string $newText): vo
     curl_close($ch);
 }
 
+function product_needs_account_id(string $productName, string $categoryName = ''): bool
+{
+    $needle = mb_strtolower($productName . ' ' . $categoryName);
+    $keywords = ['شحن', 'ببجي', 'pubg', 'free fire', 'فري فاير', 'clash', 'كلاش', 'mobile legends', 'موبايل ليجندز', 'شدات', 'جواهر', 'ماس', 'uc', 'gem', 'tiktok', 'تيك توك', 'روبلوكس', 'roblox', 'valorant', 'فالورانت', 'garena', 'yalla ludo', 'يلا لودو', 'jawaker', 'جواكر'];
+    foreach ($keywords as $k) if (mb_strpos($needle, $k) !== false) return true;
+    return false;
+}
+function product_auto_emoji(string $name): string
+{
+    $n = mb_strtolower($name);
+    $map = [
+        'ببجي'=>'🎯', 'pubg'=>'🎯', 'فري فاير'=>'🔥', 'free fire'=>'🔥', 'كلاش'=>'⚔️', 'clash'=>'⚔️',
+        'ماين'=>'🧱', 'minecraft'=>'🧱', 'roblox'=>'🟥', 'روبلوكس'=>'🟥', 'يلا لودو'=>'🎲', 'yalla'=>'🎲', 'jawaker'=>'🃏', 'جواكر'=>'🃏',
+        'valorant'=>'🎮', 'فالورانت'=>'🎮', 'mobile legends'=>'⚔️', 'موبايل ليجندز'=>'⚔️',
+        'netflix'=>'🎬', 'نتفليكس'=>'🎬', 'شاهد'=>'📺', 'spotify'=>'🎵', 'سبوتيفاي'=>'🎵',
+        'youtube'=>'▶️', 'يوتيوب'=>'▶️', 'disney'=>'🏰', 'ديزني'=>'🏰',
+        'itunes'=>'🍎', 'آيتونز'=>'🍎', 'apple'=>'🍎', 'آبل'=>'🍎', 'icloud'=>'☁️', 'آيكلود'=>'☁️',
+        'google play'=>'▶️', 'جوجل بلاي'=>'▶️', 'steam'=>'🎮', 'ستيم'=>'🎮',
+        'playstation'=>'🎮', 'بلاي'=>'🎮', 'xbox'=>'🎮', 'إكس بوكس'=>'🎮',
+        'amazon'=>'📦', 'أمازون'=>'📦', 'walmart'=>'🛒', 'ebay'=>'🏷️',
+        'canva'=>'🎨', 'كانفا'=>'🎨', 'photoshop'=>'🖼️', 'فوتوشوب'=>'🖼️',
+        'chatgpt'=>'🤖', 'openai'=>'🤖', 'notion'=>'📝', 'grammarly'=>'✍️',
+        'vpn'=>'🛡️', 'kaspersky'=>'🛡️', 'nord'=>'🛡️', 'كاسبرسكي'=>'🛡️',
+        'discord'=>'💬', 'ديسكورد'=>'💬', 'telegram'=>'📱', 'تيليجرام'=>'📱', 'tiktok'=>'🎵', 'تيك توك'=>'🎵',
+        'instagram'=>'📷', 'انستقرام'=>'📷', 'twitter'=>'🐦', 'تويتر'=>'🐦', 'twitch'=>'🎥',
+        'stc'=>'📶', 'زين'=>'📶', 'موبايلي'=>'📶', 'اتصالات'=>'📶', 'du'=>'📶', 'ooredoo'=>'📶',
+        'سيرياتيل'=>'📶', 'mtn'=>'📶',
+        'visa'=>'💳', 'فيزا'=>'💳', 'master'=>'💳', 'ماستر'=>'💳',
+        'usdt'=>'💰', 'bitcoin'=>'₿', 'crypto'=>'💰', 'شام'=>'💵',
+        'شحن'=>'⚡', 'بطاقة'=>'💳', 'اشتراك'=>'⭐', 'كوينز'=>'🪙', 'جواهر'=>'💎', 'ماس'=>'💎',
+        'ذهب'=>'🥇', 'gold'=>'🥇', 'فضة'=>'🥈', 'brozne'=>'🥉',
+    ];
+    foreach ($map as $k => $emoji) if (mb_strpos($n, $k) !== false) return $emoji;
+    return '🛒';
+}
+
 function admob_cfg(): array {
     $test = setting('admob_test_mode', '1') === '1';
     return [
@@ -1879,6 +1915,20 @@ if ($action === 'tg_admin_webhook') {
         db()->prepare("UPDATE withdraw_requests SET status='completed' WHERE id=? AND status='pending'")->execute([$rid]);
         tg_answer_callback($cb['id'], '✅ تم تعليمه كمُحوّل');
         tg_edit_message($chatId, $msgId, $origText . "\n\n✅ <b>تم التحويل</b>");
+    } elseif ($act === 'order_done') {
+        db()->prepare("UPDATE orders SET status='completed' WHERE id=? AND status IN ('processing','pending')")->execute([$rid]);
+        tg_answer_callback($cb['id'], '✅ تم تعليم الطلب كمكتمل');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n✅ <b>تم التنفيذ</b>");
+    } elseif ($act === 'order_refund') {
+        $st = db()->prepare("SELECT * FROM orders WHERE id=? AND status IN ('processing','pending')");
+        $st->execute([$rid]);
+        $ord = $st->fetch();
+        if ($ord) {
+            db()->prepare("UPDATE users SET balance = balance + ? WHERE id = ?")->execute([$ord['price'], $ord['user_id']]);
+            db()->prepare("UPDATE orders SET status='refunded' WHERE id=?")->execute([$rid]);
+        }
+        tg_answer_callback($cb['id'], '↩️ تم استرداد المبلغ');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n↩️ <b>تم استرداد المبلغ للمستخدم</b>");
     } elseif ($act === 'withdraw_reject') {
         $st = db()->prepare("SELECT * FROM withdraw_requests WHERE id=? AND status='pending'");
         $st->execute([$rid]);
@@ -2222,15 +2272,21 @@ if ($action && str_starts_with($action, 'api_')) {
             csrf_check();
             $pid = (int)($_POST['product_id'] ?? 0);
             $accountId = trim($_POST['account_id'] ?? '');
-            $receipt = trim($_POST['receipt_image'] ?? '');
-            $txNote = trim($_POST['tx_note'] ?? '');
             $couponCode = trim($_POST['coupon_code'] ?? '');
             $st = db()->prepare("SELECT * FROM products WHERE id=? AND status='active'");
             $st->execute([$pid]);
             $p = $st->fetch();
             if (!$p) { echo json_encode(['ok' => false, 'msg' => 'المنتج غير متوفر.']); exit; }
-            if ($accountId === '') { echo json_encode(['ok' => false, 'msg' => 'يجب إدخال الآيدي الخاص بك.']); exit; }
-            if ($receipt === '') { echo json_encode(['ok' => false, 'msg' => 'صورة الإيصال إجبارية لإتمام الطلب.']); exit; }
+
+            // Detect if product needs an account ID (games/apps recharge)
+            $catName = '';
+            if (!empty($p['category_id'])) {
+                $catSt = db()->prepare("SELECT name FROM categories WHERE id=?");
+                $catSt->execute([$p['category_id']]);
+                $catName = (string)$catSt->fetchColumn();
+            }
+            $needsId = product_needs_account_id($p['name'], $catName);
+            if ($needsId && $accountId === '') { echo json_encode(['ok' => false, 'msg' => 'يجب إدخال آيدي حسابك في اللعبة/التطبيق.']); exit; }
 
             $finalPrice = (float)$p['price'];
             $coupon = null;
@@ -2244,10 +2300,46 @@ if ($action && str_starts_with($action, 'api_')) {
                 $finalPrice = round($finalPrice * (1 - $coupon['discount_percent'] / 100), 2);
             }
 
-            db()->prepare("INSERT INTO orders (user_id, product_id, price, account_id, receipt_image, tx_note, coupon_code) VALUES (?,?,?,?,?,?,?)")
-                ->execute([$u['id'], $pid, $finalPrice, $accountId, $receipt, $txNote, $couponCode ?: null]);
-            if ($coupon) db()->prepare("UPDATE coupons SET used_count = used_count + 1 WHERE id = ?")->execute([$coupon['id']]);
-            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب الشراء، بانتظار موافقة الإدارة.']);
+            // === الدفع من الرصيد مباشرة (لا حاجة لإيصال أو تحويل) ===
+            $balance = user_balance($u['id']);
+            if ($balance < $finalPrice) {
+                $missing = number_format($finalPrice - $balance, 2);
+                echo json_encode(['ok' => false, 'msg' => "رصيدك غير كافٍ، ينقصك $missing" . setting('wallet_currency_symbol','$') . "، اشحن محفظتك أولاً."]);
+                exit;
+            }
+
+            db()->beginTransaction();
+            try {
+                db()->prepare("UPDATE users SET balance = balance - ? WHERE id = ?")->execute([$finalPrice, $u['id']]);
+                db()->prepare("INSERT INTO orders (user_id, product_id, price, account_id, coupon_code, status) VALUES (?,?,?,?,?, 'processing')")
+                    ->execute([$u['id'], $pid, $finalPrice, $accountId, $couponCode ?: null]);
+                $orderId = (int)db()->lastInsertId();
+                db()->prepare("INSERT INTO earn_logs (user_id, amount, source, description) VALUES (?,?,?,?)")
+                    ->execute([$u['id'], -(int)round($finalPrice * 100), 'purchase', "طلب #$orderId — {$p['name']}"]);
+                if ($coupon) db()->prepare("UPDATE coupons SET used_count = used_count + 1 WHERE id = ?")->execute([$coupon['id']]);
+                grant_xp($u['id'], 15);
+                db()->commit();
+            } catch (Throwable $e) {
+                db()->rollBack();
+                echo json_encode(['ok' => false, 'msg' => 'تعذّر إتمام الطلب، حاول مرة أخرى.']); exit;
+            }
+
+            // إشعار تيليجرام للأدمن
+            if (setting('tg_notify_new_order', '1') === '1') {
+                $msg = "🛒 <b>طلب شراء جديد #$orderId</b>\n"
+                    . "👤 " . e($u['name'] ?: $u['email']) . " (#{$u['id']})\n"
+                    . "📦 المنتج: " . e($p['name']) . "\n"
+                    . "💵 السعر: <b>" . number_format($finalPrice, 2) . "$</b>\n"
+                    . ($accountId !== '' ? "🆔 آيدي الحساب: <code>" . e($accountId) . "</code>\n" : '')
+                    . ($couponCode !== '' ? "🎟️ كود خصم: <code>" . e($couponCode) . "</code>\n" : '')
+                    . "💰 خُصم من رصيد المستخدم مباشرة";
+                $kb = [[
+                    ['text' => '✅ تم التنفيذ', 'callback_data' => "order_done:$orderId"],
+                    ['text' => '↩️ استرداد الرصيد', 'callback_data' => "order_refund:$orderId"],
+                ]];
+                tg_send_admin($msg, $kb);
+            }
+            echo json_encode(['ok' => true, 'msg' => "✅ تم الشراء بنجاح! طلب #$orderId قيد التنفيذ. رصيدك الجديد: " . number_format($balance - $finalPrice, 2) . setting('wallet_currency_symbol','$')]);
             exit;
 
         case 'api_upload_receipt':
@@ -3378,6 +3470,12 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .admin-tabs a{display:inline-flex;align-items:center;gap:6px}
 .card .icon-wrap{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:#101a2e;display:flex;align-items:center;justify-content:center;margin-bottom:8px;color:var(--accent2)}
 .card .icon-wrap.emoji-icon{font-size:20px;line-height:1}
+/* Product icon tile — bright & professional (auto-emoji when no image) */
+.card .product-icon-tile{position:relative;width:100%;height:96px;border-radius:12px;margin-bottom:8px;background:linear-gradient(135deg,rgba(16,185,129,.18) 0%,rgba(6,182,212,.15) 60%,rgba(37,99,235,.12) 100%);border:1px solid rgba(16,185,129,.25);display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+.card .product-icon-tile::before{content:"";position:absolute;inset:-30% -30% auto auto;width:180px;height:180px;background:radial-gradient(circle,rgba(16,185,129,.28),transparent 65%);pointer-events:none}
+.card .product-icon-tile::after{content:"";position:absolute;bottom:-20px;left:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(6,182,212,.22),transparent 60%);pointer-events:none}
+.card .product-icon-tile .pit-emoji{position:relative;font-size:46px;line-height:1;filter:drop-shadow(0 6px 14px rgba(0,0,0,.35))}
+.card:hover .product-icon-tile .pit-emoji{transform:scale(1.08) rotate(-4deg);transition:transform .3s var(--ease)}
 .wish-btn{position:absolute;top:10px;left:10px;z-index:2;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.4);border:1px solid #2a3350;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer;transition:.2s}
 .wish-btn .ic{fill:none;stroke:currentColor}
 .wish-btn.active{color:var(--accent2)}
@@ -3466,6 +3564,43 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .balance-pill{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#1c2840,#2e161d);border:1px solid #2a3350;border-radius:30px;padding:10px 16px;margin-bottom:16px;font-size:14px;color:var(--muted)}
 .balance-pill strong{color:var(--accent2)}
 .buy-modal label{display:block;font-size:13px;color:var(--muted);margin-bottom:10px}
+/* Buy Modal Pro — احترافي جداً */
+.buy-modal-pro{max-width:460px;width:94%;padding:0;overflow:hidden;background:linear-gradient(180deg,#0d1a2f 0%,#131f38 100%);border:1px solid rgba(37,99,235,.35);border-radius:22px;box-shadow:0 30px 80px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.05);position:relative;max-height:92vh;overflow-y:auto}
+.buy-close{position:absolute;top:12px;left:12px;width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.1);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:10;transition:.2s}
+.buy-close:hover{background:rgba(239,68,68,.85);transform:rotate(90deg)}
+.buy-hero{padding:28px 20px 20px;text-align:center;background:linear-gradient(180deg,rgba(37,99,235,.15),transparent);position:relative}
+.buy-hero::before{content:"";position:absolute;top:-40px;left:50%;transform:translateX(-50%);width:200px;height:200px;background:radial-gradient(circle,rgba(6,182,212,.25),transparent 60%);pointer-events:none}
+.buy-hero-icon{width:76px;height:76px;margin:0 auto 14px;border-radius:22px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(37,99,235,.45),inset 0 1px 0 rgba(255,255,255,.2);position:relative;overflow:hidden}
+.buy-hero-icon img{width:100%;height:100%;object-fit:cover;border-radius:22px}
+.buy-hero-icon .ic{color:#fff;width:38px;height:38px}
+.buy-hero h2{font-size:19px;font-weight:800;color:#fff;margin:0 0 6px;position:relative}
+.buy-hero-desc{color:var(--muted);font-size:13px;line-height:1.6;position:relative;margin:0;max-width:340px;margin:0 auto}
+.buy-price-card{margin:16px 18px;padding:14px 16px;border-radius:14px;background:rgba(0,0,0,.35);border:1px solid rgba(37,99,235,.25)}
+.bpc-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:14px;color:var(--muted)}
+.bpc-row strong{color:var(--text);font-weight:800}
+.bpc-total{display:flex;justify-content:space-between;align-items:center;padding:10px 0 4px;border-top:1px dashed rgba(37,99,235,.3);margin-top:6px;font-size:16px}
+.bpc-total span{color:var(--muted);font-weight:600}
+.bpc-total strong{color:var(--accent2);font-size:22px;font-weight:900;text-shadow:0 4px 12px rgba(6,182,212,.35)}
+.buy-balance-info{margin:0 18px 14px;padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(6,182,212,.08));border:1px solid rgba(16,185,129,.3)}
+.bbi-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13.5px}
+.bbi-label{display:flex;align-items:center;gap:6px;color:var(--muted);font-weight:600}
+.bbi-value{font-weight:800;color:#6ee7b7;font-size:15px}
+.buy-field-label{display:flex !important;align-items:center;gap:6px;color:var(--accent2) !important;font-weight:700 !important;font-size:14px !important;margin:0 18px 8px !important}
+.buy-input{width:calc(100% - 36px);margin:0 18px 6px;padding:14px 16px;background:rgba(0,0,0,.35);border:1px solid rgba(6,182,212,.35);border-radius:12px;color:#fff;font-family:inherit;font-size:15px;font-weight:700;transition:.2s}
+.buy-input:focus{outline:none;border-color:var(--accent2);box-shadow:0 0 0 3px rgba(6,182,212,.2);background:rgba(0,0,0,.5)}
+.buy-hint{margin:0 18px 12px;font-size:12px;color:var(--muted);line-height:1.5}
+#buyModal .buy-extra{margin:0 18px 12px;background:rgba(0,0,0,.3);border:1px solid rgba(6,182,212,.25)}
+.buy-insufficient{margin:0 18px 12px;padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,rgba(239,68,68,.15),rgba(239,68,68,.05));border:1px solid rgba(239,68,68,.35);display:flex;gap:12px;align-items:flex-start;color:#fecaca}
+.buy-insufficient .ic{color:#ef4444;flex-shrink:0;margin-top:2px}
+.buy-insufficient strong{display:block;color:#fca5a5;font-size:14px;margin-bottom:4px}
+.buy-insufficient p{font-size:12.5px;color:#fecaca;margin:0 0 6px}
+.buy-insufficient span{color:#fef08a;font-weight:800}
+.buy-actions{display:flex;gap:10px;padding:16px 18px 20px;background:rgba(0,0,0,.25)}
+.btn-buy-confirm{flex:2;padding:15px;border:none;border-radius:14px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-weight:800;font-family:inherit;font-size:14.5px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 10px 24px rgba(16,185,129,.4);transition:.25s var(--ease);text-shadow:0 1px 2px rgba(0,0,0,.25)}
+.btn-buy-confirm:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 14px 30px rgba(16,185,129,.55)}
+.btn-buy-confirm:disabled{background:linear-gradient(135deg,#6b7280,#4b5563);cursor:not-allowed;box-shadow:none;opacity:.7}
+.btn-buy-cancel{flex:1;padding:15px;border:1px solid rgba(255,255,255,.2);border-radius:14px;background:rgba(255,255,255,.05);color:var(--text);font-weight:700;font-family:inherit;font-size:14px;cursor:pointer;transition:.2s}
+.btn-buy-cancel:hover{background:rgba(255,255,255,.12)}
 .buy-extra{background:#101a2e;border:1px solid #2a3350;border-radius:10px;margin-bottom:10px;overflow:hidden}
 .buy-extra summary{cursor:pointer;padding:10px 12px;font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;list-style:none}
 .buy-extra summary::-webkit-details-marker{display:none}
@@ -3738,7 +3873,7 @@ function googleTranslateElementInit(){
 </script>
 <?php endif; ?>
 </head>
-<body>
+<body data-user-balance="<?= $user ? number_format((float)user_balance($user['id']), 2, '.', '') : '0' ?>">
 <?php if (setting('auto_translate_enabled', '1') === '1' && $page !== 'admin'): ?>
 <div id="google_translate_element"></div>
 <script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" async></script>
@@ -3842,7 +3977,6 @@ function googleTranslateElementInit(){
 <?php else: ?>
 
 <div class="topbar">
-  <button class="burger" onclick="toggleSidebar()"><?= icon('menu', 'ic') ?></button>
   <?php if ($user): ?>
     <a href="?page=profile" class="topbar-profile" title="ملفي الشخصي">
       <div class="tp-avatar">
@@ -3851,6 +3985,7 @@ function googleTranslateElementInit(){
       <span class="tp-name"><?= e(mb_strimwidth($user['name'] ?? $user['username'] ?? '', 0, 14, '…')) ?></span>
     </a>
   <?php endif; ?>
+  <button class="burger" onclick="toggleSidebar()"><?= icon('menu', 'ic') ?></button>
   <?php if ($user): ?>
     <a href="?page=notifications" class="btn btn-ghost btn-icon-only" title="الإشعارات"><?= icon('bell', 'ic ic-sm') ?></a>
     <a href="?page=profile&tab=settings" class="btn btn-ghost btn-icon-only" title="الإعدادات"><?= icon('settings', 'ic ic-sm') ?></a>
@@ -3903,67 +4038,58 @@ function googleTranslateElementInit(){
 </div>
 
 <div class="modal-bg" id="buyModal" style="display:none">
-  <div class="modal buy-modal">
-    <h2><?= icon('cart', 'ic') ?>تأكيد طلب الشراء</h2>
-    <div class="balance-pill"><?= icon('cart', 'ic-sm') ?>السعر: <strong id="buyFinalPrice">0$</strong></div>
+  <div class="modal buy-modal buy-modal-pro">
+    <button type="button" class="buy-close" onclick="closeBuyModal()"><?= icon('x', 'ic-sm') ?></button>
+    <div class="buy-hero">
+      <div class="buy-hero-icon" id="buyProductIcon"><?= icon('cart', 'ic') ?></div>
+      <h2 id="buyProductName">تأكيد الطلب</h2>
+      <p class="buy-hero-desc" id="buyProductDesc"></p>
+    </div>
 
-    <label>الآيدي <span style="color:var(--danger)">*</span>
-      <input type="text" id="buyAccountId" placeholder="أدخل الآيدي / الحساب الخاص بالطلب" required>
-    </label>
+    <div class="buy-price-card">
+      <div class="bpc-row"><span>سعر المنتج</span><strong id="buyOriginalPrice">0$</strong></div>
+      <div class="bpc-row" id="buyDiscountRow" style="display:none"><span>الخصم</span><strong style="color:#10b981" id="buyDiscount">-0$</strong></div>
+      <div class="bpc-total"><span>الإجمالي</span><strong id="buyFinalPrice">0$</strong></div>
+    </div>
 
-    <label>صورة الإيصال <span style="color:var(--danger)">*</span>
-      <div class="upload-box" id="buyReceiptBox">
-        <div class="upload-box-empty">
-          <?= icon('upload', 'ic') ?>
-          <div class="upload-box-text"><strong>اضغط لاختيار صورة</strong> أو اسحبها هنا</div>
-          <div class="upload-box-hint">JPG, PNG, WEBP — حتى 5MB</div>
-        </div>
-        <div class="upload-box-preview" style="display:none">
-          <img id="buyReceiptPreview">
-          <div class="upload-box-preview-info"><span id="buyReceiptName"></span></div>
-          <button type="button" class="upload-box-remove" onclick="clearReceiptFile(event)"><?= icon('x', 'ic-sm') ?></button>
-        </div>
-        <input type="file" id="buyReceiptFile" accept="image/*" required>
+    <div class="buy-balance-info" id="buyBalanceInfo">
+      <div class="bbi-row">
+        <div class="bbi-label"><?= icon('wallet', 'ic-sm') ?> رصيدي الحالي</div>
+        <div class="bbi-value" id="buyMyBalance"><?= $user ? number_format((float)user_balance($user['id']), 2) : '0.00' ?><?= e(setting('wallet_currency_symbol','$')) ?></div>
       </div>
-    </label>
-
-    <?php if ($activeWallets): ?>
-    <details class="buy-extra">
-      <summary><?= icon('bank', 'ic-sm') ?>طرق الشحن المتاحة</summary>
-      <div class="topup-hint">
-        <?php foreach ($activeWallets as $w): ?>
-          <div class="topup-method">
-            <div class="topup-method-head">
-              <?php [$wTypeLbl, $wTypeIcon] = wallet_type_label($w['type']); ?>
-              <strong><?= icon($wTypeIcon, 'ic-sm') ?><?= e($w['label']) ?> (<?= e($wTypeLbl) ?>)</strong>
-            </div>
-            <div class="topup-method-addr">
-              <code><?= e($w['address']) ?></code>
-              <button type="button" class="btn-copy" onclick="copyAddr(this)" data-addr="<?= e($w['address']) ?>"><?= icon('copy', 'ic-sm') ?></button>
-            </div>
-          </div>
-        <?php endforeach; ?>
+      <div class="bbi-row" id="buyAfterRow">
+        <div class="bbi-label">الرصيد بعد الشراء</div>
+        <div class="bbi-value" id="buyAfterBalance">—</div>
       </div>
-    </details>
-    <?php endif; ?>
+    </div>
+
+    <div id="buyIdField" style="display:none">
+      <label class="buy-field-label" id="buyIdLabel"><?= icon('user','ic-sm') ?> <span>آيدي حسابك في اللعبة/التطبيق</span> <span style="color:var(--danger)">*</span></label>
+      <input type="text" id="buyAccountId" class="buy-input" placeholder="مثال: 5123456789">
+      <p class="buy-hint" id="buyIdHint">أدخل الآيدي الظاهر في التطبيق أو اللعبة لضمان وصول الشحن للحساب الصحيح.</p>
+    </div>
 
     <details class="buy-extra">
-      <summary><?= icon('coins', 'ic-sm') ?>رقم عملية / كود خصم (اختياري)</summary>
-      <label>رقم العملية
-        <input type="text" id="buyTxNote" placeholder="رقم العملية / المرجع إن وجد">
-      </label>
-      <label>كود الخصم
-        <div class="upload-row">
-          <input type="text" id="buyCouponCode" placeholder="أدخل كود الخصم إن وجد">
-          <button type="button" class="btn btn-ghost" onclick="applyCoupon()">تطبيق</button>
-        </div>
-        <div id="buyCouponMsg" style="font-size:13px;margin-top:4px"></div>
-      </label>
+      <summary><?= icon('coins', 'ic-sm') ?> كود خصم (اختياري)</summary>
+      <div class="upload-row" style="margin-top:8px">
+        <input type="text" id="buyCouponCode" placeholder="أدخل كود الخصم">
+        <button type="button" class="btn btn-ghost" onclick="applyCoupon()">تطبيق</button>
+      </div>
+      <div id="buyCouponMsg" style="font-size:12px;margin-top:6px"></div>
     </details>
 
-    <div style="display:flex;gap:10px;margin-top:14px">
-      <button type="button" class="btn btn-primary" style="flex:1" id="buySubmitBtn" onclick="submitBuyRequest()"><?= icon('check', 'ic-sm') ?>تأكيد الطلب</button>
-      <button type="button" class="btn btn-ghost" style="flex:1" onclick="closeBuyModal()">إلغاء</button>
+    <div id="buyInsufficient" class="buy-insufficient" style="display:none">
+      <?= icon('shield', 'ic-sm') ?>
+      <div>
+        <strong>رصيدك غير كافٍ لإتمام هذا الطلب</strong>
+        <p>ينقصك <span id="buyMissingAmt">0$</span> — اشحن محفظتك أولاً ثم عُد لإتمام الشراء.</p>
+        <a href="?page=wallet" class="btn btn-primary" style="margin-top:6px"><?= icon('plus','ic-sm') ?> شحن الرصيد الآن</a>
+      </div>
+    </div>
+
+    <div class="buy-actions">
+      <button type="button" class="btn-buy-confirm" id="buySubmitBtn" onclick="submitBuyRequest()"><?= icon('check', 'ic-sm') ?> ادفع من الرصيد</button>
+      <button type="button" class="btn-buy-cancel" onclick="closeBuyModal()">إلغاء</button>
     </div>
   </div>
 </div>
@@ -3997,9 +4123,9 @@ function render_product_card(array $p): void
         <?php if ($p['image']): ?>
           <img class="pimg" loading="lazy" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
         <?php elseif (!empty($p['icon'])): ?>
-          <div class="icon-wrap emoji-icon"><?= e($p['icon']) ?></div>
+          <div class="product-icon-tile"><span class="pit-emoji"><?= e($p['icon']) ?></span></div>
         <?php else: ?>
-          <div class="icon-wrap"><?= icon('cart', 'ic ic-xl') ?></div>
+          <div class="product-icon-tile"><span class="pit-emoji"><?= e(product_auto_emoji($p['name'] ?? '')) ?></span></div>
         <?php endif; ?>
         <h3><?= e($p['name']) ?></h3>
       </a>
@@ -4008,7 +4134,8 @@ function render_product_card(array $p): void
         <span class="price"><?= e($p['price']) ?>$</span>
         <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
       </div>
-      <button class="btn btn-primary buy" onclick="buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>)"><?= icon('cart', 'ic ic-sm') ?><?= e(setting('buy_button_text', 'طلب شراء')) ?></button>
+      <?php $__needsId = product_needs_account_id($p['name'] ?? '', ''); ?>
+      <button class="btn btn-primary buy" onclick='buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>, <?= json_encode(['name'=>$p['name'],'desc'=>mb_substr((string)($p['description']??''),0,120),'image'=>$p['image']??'','icon'=>$p['icon']??'','needsId'=>$__needsId,'idLabel'=>$__needsId ? 'آيدي حسابك في '.$p['name'] : ''], JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'><?= icon('cart', 'ic ic-sm') ?><?= e(setting('buy_button_text', 'طلب شراء')) ?></button>
     </div>
     <?php
 }
@@ -4268,7 +4395,8 @@ case 'product':
         <h1><?= e($p['name']) ?></h1>
         <div class="pd-price"><span class="price"><?= e($p['price']) ?>$</span><?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?></div>
         <?php if ($p['description']): ?><p class="pd-desc"><?= nl2br(e($p['description'])) ?></p><?php endif; ?>
-        <button class="btn btn-primary buy" style="width:100%" onclick="buyProduct(<?= (int)$p['id'] ?>)"><?= icon('cart', 'ic-sm') ?>طلب شراء</button>
+        <?php $__needsId2 = product_needs_account_id($p['name'] ?? '', ''); ?>
+        <button class="btn btn-primary buy" style="width:100%" onclick='buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>, <?= json_encode(['name'=>$p['name'],'desc'=>mb_substr((string)($p['description']??''),0,120),'image'=>$p['image']??'','icon'=>$p['icon']??'','needsId'=>$__needsId2,'idLabel'=>$__needsId2 ? 'آيدي حسابك في '.$p['name'] : ''], JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'><?= icon('cart', 'ic-sm') ?>طلب شراء</button>
       </div>
     </div>
     <?php
@@ -6676,40 +6804,85 @@ async function handleBannerBulkFiles(files){
 }
 let buyProductId = null;
 let buyProductPrice = 0;
+let buyProductFinal = 0;
 let buyAppliedCoupon = null;
-function buyProduct(id, price){
+let buyMyBalanceVal = 0;
+const CURRENCY = <?= json_encode(setting('wallet_currency_symbol','$')) ?>;
+function buyProduct(id, price, opts){
   if (!LOGGED_IN) return requireLogin();
+  opts = opts || {};
   buyProductId = id;
-  buyProductPrice = price || 0;
+  buyProductPrice = parseFloat(price) || 0;
+  buyProductFinal = buyProductPrice;
   buyAppliedCoupon = null;
-  document.getElementById('buyAccountId').value = '';
-  document.getElementById('buyTxNote').value = '';
-  document.getElementById('buyReceiptFile').value = '';
+  buyMyBalanceVal = parseFloat(document.body.dataset.userBalance || 0);
+  document.getElementById('buyProductName').textContent = opts.name || 'تأكيد الطلب';
+  document.getElementById('buyProductDesc').textContent = opts.desc || '';
+  const iconEl = document.getElementById('buyProductIcon');
+  if (opts.image) iconEl.innerHTML = '<img src="' + opts.image + '" alt="">';
+  else if (opts.icon) iconEl.innerHTML = '<span style="font-size:32px">' + opts.icon + '</span>';
+  else iconEl.innerHTML = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M3 4h2l2.2 11h10.6L20 7H6.3"/></svg>';
+  document.getElementById('buyOriginalPrice').textContent = buyProductPrice.toFixed(2) + CURRENCY;
+  document.getElementById('buyFinalPrice').textContent = buyProductPrice.toFixed(2) + CURRENCY;
+  document.getElementById('buyDiscountRow').style.display = 'none';
+  document.getElementById('buyMyBalance').textContent = buyMyBalanceVal.toFixed(2) + CURRENCY;
   document.getElementById('buyCouponCode').value = '';
   document.getElementById('buyCouponMsg').textContent = '';
-  document.getElementById('buyFinalPrice').textContent = buyProductPrice + '$';
-  resetReceiptBox();
+  // Show ID field only for game/app charge products
+  const needsId = !!(opts.needsId);
+  document.getElementById('buyIdField').style.display = needsId ? 'block' : 'none';
+  document.getElementById('buyAccountId').value = '';
+  if (needsId) {
+    document.getElementById('buyIdLabel').querySelector('span').textContent = opts.idLabel || 'آيدي حسابك في اللعبة/التطبيق';
+    document.getElementById('buyIdHint').textContent = opts.idHint || 'أدخل الآيدي الظاهر داخل التطبيق أو اللعبة لضمان وصول الشحن للحساب الصحيح.';
+  }
+  updateBuyBalanceView();
   document.getElementById('buyModal').style.display = 'flex';
+}
+function updateBuyBalanceView(){
+  const after = buyMyBalanceVal - buyProductFinal;
+  const afterEl = document.getElementById('buyAfterBalance');
+  afterEl.textContent = after.toFixed(2) + CURRENCY;
+  afterEl.style.color = after < 0 ? '#ef4444' : '#10b981';
+  const btn = document.getElementById('buySubmitBtn');
+  const insuff = document.getElementById('buyInsufficient');
+  if (after < 0) {
+    insuff.style.display = 'flex';
+    document.getElementById('buyMissingAmt').textContent = Math.abs(after).toFixed(2) + CURRENCY;
+    btn.disabled = true;
+    btn.innerHTML = '<svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5M12 16v.5"/><circle cx="12" cy="12" r="10"/></svg> رصيدك غير كافٍ';
+  } else {
+    insuff.style.display = 'none';
+    btn.disabled = false;
+    btn.innerHTML = '<svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5 9.5 17 19 7"/></svg> ادفع من الرصيد (' + buyProductFinal.toFixed(2) + CURRENCY + ')';
+  }
 }
 async function applyCoupon(){
   const code = document.getElementById('buyCouponCode').value.trim();
   const msgEl = document.getElementById('buyCouponMsg');
-  if (!code) { msgEl.textContent = ''; buyAppliedCoupon = null; document.getElementById('buyFinalPrice').textContent = buyProductPrice + '$'; return; }
+  if (!code) { msgEl.textContent = ''; buyAppliedCoupon = null; buyProductFinal = buyProductPrice; document.getElementById('buyDiscountRow').style.display='none'; document.getElementById('buyFinalPrice').textContent = buyProductPrice.toFixed(2) + CURRENCY; updateBuyBalanceView(); return; }
   const d = new FormData();
   d.append('code', code);
   d.append('product_id', buyProductId);
   const res = await post('api_validate_coupon', d);
   if (res.ok) {
     buyAppliedCoupon = code;
-    msgEl.style.color = '#2ecc71';
-    msgEl.textContent = 'تم تطبيق خصم ' + res.discount_percent + '%';
-    document.getElementById('buyFinalPrice').textContent = res.new_price + '$';
+    buyProductFinal = parseFloat(res.new_price);
+    const discount = buyProductPrice - buyProductFinal;
+    msgEl.style.color = '#10b981';
+    msgEl.textContent = '✓ تم تطبيق خصم ' + res.discount_percent + '%';
+    document.getElementById('buyDiscountRow').style.display = 'flex';
+    document.getElementById('buyDiscount').textContent = '-' + discount.toFixed(2) + CURRENCY;
+    document.getElementById('buyFinalPrice').textContent = buyProductFinal.toFixed(2) + CURRENCY;
   } else {
     buyAppliedCoupon = null;
-    msgEl.style.color = '#e74c3c';
+    buyProductFinal = buyProductPrice;
+    msgEl.style.color = '#ef4444';
     msgEl.textContent = res.msg || 'كود غير صالح';
-    document.getElementById('buyFinalPrice').textContent = buyProductPrice + '$';
+    document.getElementById('buyDiscountRow').style.display = 'none';
+    document.getElementById('buyFinalPrice').textContent = buyProductPrice.toFixed(2) + CURRENCY;
   }
+  updateBuyBalanceView();
 }
 function toggleWishlist(id, btn){
   if (!LOGGED_IN) return requireLogin();
@@ -6819,27 +6992,26 @@ function showReceiptFile(f){
 })();
 async function submitBuyRequest(){
   if (!buyProductId) return;
+  const needsIdField = document.getElementById('buyIdField').style.display !== 'none';
   const accountId = document.getElementById('buyAccountId').value.trim();
-  const file = document.getElementById('buyReceiptFile').files[0];
-  const txNote = document.getElementById('buyTxNote').value.trim();
-  if (!accountId) return toast('يجب إدخال الآيدي.');
-  if (!file) return toast('صورة الإيصال إجبارية.');
+  if (needsIdField && !accountId) return toast('يجب إدخال الآيدي.');
+  if (buyMyBalanceVal < buyProductFinal) return toast('رصيدك غير كافٍ.');
   const btn = document.getElementById('buySubmitBtn');
-  btn.disabled = true;
-  const up = new FormData();
-  up.append('file', file);
-  const upRes = await post('api_upload_receipt', up);
-  if (!upRes.ok) { btn.disabled = false; return toast(upRes.msg || 'فشل رفع الإيصال.'); }
+  btn.disabled = true; btn.innerHTML = '⏳ جاري تنفيذ الطلب...';
   const d = new FormData();
   d.append('product_id', buyProductId);
   d.append('account_id', accountId);
-  d.append('receipt_image', upRes.url);
-  d.append('tx_note', txNote);
+  d.append('pay_from_balance', '1');
   if (buyAppliedCoupon) d.append('coupon_code', buyAppliedCoupon);
   const res = await post('api_buy_product', d);
-  btn.disabled = false;
   toast(res.msg);
-  if (res.ok) closeBuyModal();
+  if (res.ok) {
+    closeBuyModal();
+    setTimeout(() => location.reload(), 1000);
+  } else {
+    btn.disabled = false;
+    updateBuyBalanceView();
+  }
 }
 function loadCaptcha(){
   fetch('?action=api_new_captcha').then(r => r.json()).then(res => {
