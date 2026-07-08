@@ -18,6 +18,9 @@ header('X-Content-Type-Options: nosniff');
 header('X-Frame-Options: SAMEORIGIN');
 header('Referrer-Policy: strict-origin-when-cross-origin');
 
+// تسريع: ضغط GZIP للاستجابة إن لم يكن مفعّلاً سيرفرياً (يوفّر ~70% من حجم HTML)
+if (!ob_start('ob_gzhandler')) ob_start();
+
 if (!file_exists(__DIR__ . '/config.php')) {
     die('يرجى إنشاء config.php من config.sample.php أولاً.');
 }
@@ -34,10 +37,19 @@ function db(): PDO
     try {
         if (DB_DRIVER === 'sqlite') {
             $pdo = new PDO('sqlite:' . __DIR__ . '/database.sqlite');
+            // تسريع SQLite: WAL journal (قراءة متزامنة) + synchronous NORMAL + cache 20MB
+            $pdo->exec("PRAGMA journal_mode = WAL");
+            $pdo->exec("PRAGMA synchronous = NORMAL");
+            $pdo->exec("PRAGMA cache_size = -20000");
+            $pdo->exec("PRAGMA temp_store = MEMORY");
+            $pdo->exec("PRAGMA mmap_size = 268435456");
         } else {
             $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
             $pdo = new PDO($dsn, DB_USER, DB_PASS, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_EMULATE_PREPARES => false,
+                PDO::ATTR_PERSISTENT => true, // اتصالات دائمة (استعادة سريعة عبر الطلبات)
+                PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4",
             ]);
         }
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
@@ -394,6 +406,40 @@ function migrate(): void
     add_column_if_missing($pdo, 'topup_requests', 'receipt_image', 'VARCHAR(500) NULL');
     add_column_if_missing($pdo, 'topup_requests', 'tg_message_id', 'VARCHAR(60) NULL');
 
+    // ==== المرحلة 2: نظام Packages (باقات كل منتج) + تحسينات المنتجات ====
+    $pdo->exec("CREATE TABLE IF NOT EXISTS packages (
+        id $id,
+        product_id INT NOT NULL,
+        name VARCHAR(190) NOT NULL,
+        icon VARCHAR(20) NULL,
+        image VARCHAR(500) NULL,
+        price DECIMAL(12,2) NOT NULL DEFAULT 0,
+        old_price DECIMAL(12,2) NULL,
+        quantity INT NOT NULL DEFAULT 0,
+        currency VARCHAR(10) NULL,
+        tag VARCHAR(40) NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        active TINYINT NOT NULL DEFAULT 1,
+        allow_custom_amount TINYINT NOT NULL DEFAULT 0,
+        min_amount DECIMAL(12,2) NULL,
+        max_amount DECIMAL(12,2) NULL,
+        created_at $ts
+    )$engine");
+    add_column_if_missing($pdo, 'products', 'has_packages', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'products', 'slug', 'VARCHAR(120) NULL');
+    add_column_if_missing($pdo, 'products', 'seo_title', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'products', 'seo_keywords', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'orders', 'package_id', 'INT NULL');
+    add_column_if_missing($pdo, 'orders', 'package_name', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'orders', 'custom_amount', 'DECIMAL(12,2) NULL');
+    add_column_if_missing($pdo, 'categories', 'slug', 'VARCHAR(120) NULL');
+    add_column_if_missing($pdo, 'categories', 'kind', "VARCHAR(30) NOT NULL DEFAULT 'general'");
+    add_column_if_missing($pdo, 'categories', 'icon_svg', 'TEXT NULL');
+    add_column_if_missing($pdo, 'categories', 'description', 'TEXT NULL');
+    add_column_if_missing($pdo, 'categories', 'seo_title', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'categories', 'seo_description', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'categories', 'visible_on_home', 'INT NOT NULL DEFAULT 1');
+
     // فهارس على الأعمدة الأكثر استخداماً في الاستعلامات لتسريع تحميل الصفحات وتقليل تجمّد الموقع
     $indexes = [
         'idx_users_email' => ['users', 'email'],
@@ -441,12 +487,12 @@ function migrate(): void
 
     // seed default settings
     $defaults = [
-        'site_name' => 'zanxpk',
-        'site_description' => 'منصة zanxpk لتحميل أفضل التطبيقات والألعاب والتسوّق الإلكتروني',
-        'site_keywords' => 'متجر,تطبيقات,ألعاب,تحميل,zanxpk',
+        'site_name' => 'شحن ألعاب',
+        'site_description' => 'شحن ألعاب وتطبيقات واشتراكات عبر الشام كاش وسيرياتيل كاش وUSDT — ببجي، فري فاير، كلاش، نتفليكس، سبوتيفاي، ستيم وأكثر',
+        'site_keywords' => 'شحن ألعاب,شام كاش,سيرياتيل كاش,ببجي,فري فاير,كلاش,نتفليكس,سبوتيفاي,ستيم,بطاقات هدايا,USDT,شحن تطبيقات',
         'logo_url' => '',
-        'banner_title' => 'مرحباً بك في zanxpk',
-        'banner_subtitle' => 'حمّل أفضل التطبيقات والألعاب وتسوّق منتجاتك المفضّلة',
+        'banner_title' => 'شحن ألعاب وتطبيقات عبر الشام كاش',
+        'banner_subtitle' => 'ببجي، فري فاير، كلاش، نتفليكس، سبوتيفاي، ستيم — دفع محلي وسريع بالشام كاش وسيرياتيل كاش وUSDT',
         'banner_bg_image' => '',
         'footer_text' => '',
         'buy_button_text' => 'طلب شراء',
@@ -499,7 +545,7 @@ function migrate(): void
         'telegram_bot_username' => '',
         'banner_interval' => '4000',
         'banner_height' => '160',
-        'home_sections_order' => 'search,apk_promo,carousel,ticker,live_ticker,latest_apps,cat_chips',
+        'home_sections_order' => 'search,carousel,home_categories,apk_promo,ticker,live_ticker,latest_apps,cat_chips',
         'home_sections_hidden' => 'hero',
         'banner_carousel_enabled' => '1',
         'news_ticker_enabled' => '1',
@@ -645,6 +691,26 @@ function migrate(): void
             ->execute();
     }
 
+    // ترحيل لمرة واحدة: إضافة قسم الأقسام الرئيسية للرئيسية على المواقع القائمة
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='home_categories_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_values(array_filter(array_map('trim', explode(',', $order))));
+        if (!in_array('home_categories', $orderParts, true)) {
+            $pos = array_search('carousel', $orderParts, true);
+            if ($pos !== false) array_splice($orderParts, $pos + 1, 0, ['home_categories']);
+            else array_unshift($orderParts, 'home_categories');
+            $newOrder = implode(',', $orderParts);
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+                : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v=?")
+                ->execute([$newOrder, $newOrder]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_categories_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('home_categories_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
     // ترحيل لمرة واحدة: ضمان ظهور شريط البنرات الدوّار (carousel) فوق قسم "أحدث التطبيقات" دوماً،
     // وإضافة مفاتيح تفعيل/تعطيل دائمة للبنرات والشريط الإخباري.
     if ((string)$pdo->query("SELECT v FROM settings WHERE k='banner_top_fix_migrated'")->fetchColumn() === '') {
@@ -732,6 +798,23 @@ function migrate(): void
         if ($ids) {
             $pdo->prepare("UPDATE wallets SET active=0 WHERE id IN (" . implode(',', array_fill(0, count($ids), '?')) . ")")
                 ->execute($ids);
+        }
+    }
+
+    // بذور الأقسام الاحترافية (تظهر في الرئيسية بأيقونات مميّزة)
+    $catCount = (int)$pdo->query("SELECT COUNT(*) c FROM categories")->fetch()['c'];
+    if ($catCount === 0) {
+        $seedCats = [
+            ['games', 'game', 'الألعاب', '🎮', 'شحن أرصدة وجواهر جميع الألعاب الشهيرة', 'شحن ألعاب الجوال (ببجي، فري فاير، كلاش) عبر الشام كاش', 'شحن ألعاب, ببجي, فري فاير, كلاش أوف كلانس, شام كاش'],
+            ['apps', 'app', 'التطبيقات', '📱', 'شحن أرصدة تطبيقات التواصل والترفيه', 'شحن تطبيقات وخدمات رقمية عبر الشام كاش', 'تطبيقات, شحن تطبيقات, شام كاش'],
+            ['subscriptions', 'subscription', 'الاشتراكات', '⭐', 'اشتراكات نتفليكس وسبوتيفاي ويوتيوب وأكثر', 'اشتراكات نتفليكس وسبوتيفاي ويوتيوب — دفع بالشام كاش', 'اشتراكات, نتفليكس, سبوتيفاي, يوتيوب بريميوم, شام كاش'],
+            ['gift_cards', 'gift', 'بطاقات الهدايا', '🎁', 'بطاقات ستيم، آيتونز، جوجل بلاي، أمازون، بلايستيشن', 'بطاقات هدايا رقمية بأفضل الأسعار عبر الشام كاش', 'بطاقات هدايا, ستيم, آيتونز, جوجل بلاي, أمازون, بلايستيشن'],
+            ['payments', 'payment', 'المدفوعات والمحافظ', '💳', 'شحن USDT وPayPal وأرصدة الاتصالات', 'شحن USDT وPayPal ومحافظ رقمية عبر الشام كاش', 'مدفوعات, USDT, باي بال, محافظ, شام كاش'],
+            ['charging', 'charging', 'شحن الرصيد', '📶', 'شحن رصيد سيرياتيل، MTN، STC، زين، اتصالات', 'شحن رصيد شبكات الاتصالات — سيرياتيل، MTN، STC، زين', 'شحن رصيد, سيرياتيل, MTN, STC, زين, اتصالات'],
+        ];
+        $ins = $pdo->prepare("INSERT INTO categories (name, slug, kind, icon_svg, description, seo_title, seo_description, sort_order, visible_on_home) VALUES (?,?,?,?,?,?,?, ?, 1)");
+        foreach ($seedCats as $idx => [$slug, $kind, $name, $emoji, $desc, $seoT, $seoK]) {
+            $ins->execute([$name, $slug, $kind, $emoji, $desc, $seoT, $seoK, $idx]);
         }
     }
 
@@ -908,7 +991,7 @@ function migrate(): void
  * الآن تُنفَّذ مرة واحدة فقط عند أول تشغيل (أو بعد رفع نسخة جديدة من الملف)، ثم تُتخطى تلقائياً
  * عبر ملف علامة بسيط لا يحتاج أي استعلام لقاعدة البيانات في الحالة الطبيعية.
  */
-define('SCHEMA_MIGRATION_VERSION', '4');
+define('SCHEMA_MIGRATION_VERSION', '5');
 $__migrationFlag = __DIR__ . '/uploads/.schema_v' . SCHEMA_MIGRATION_VERSION . '.lock';
 if (!is_file($__migrationFlag)) {
     migrate();
@@ -1872,26 +1955,50 @@ if ($action === 'accept_policy') {
     echo 'ok'; exit;
 }
 
-if ($action === 'tg_admin_webhook') {
-    // Webhook مخصّص لأزرار موافقة/رفض من تيليجرام (يستقبله البوت المستقل ويعيد توجيهه هنا)
+if ($action === 'tg_set_webhook') {
+    // تعيين webhook تلقائي - للأدمن فقط
+    if (!is_admin()) { http_response_code(403); die('غير مصرح'); }
+    header('Content-Type: application/json; charset=utf-8');
+    $token = bot_token();
+    if (!$token) { echo json_encode(['ok' => false, 'msg' => 'BOT_TOKEN غير مُعرَّف.']); exit; }
+    $webhookUrl = rtrim(SITE_URL, '/') . '/index.php?action=tg_webhook';
+    $ch = curl_init("https://api.telegram.org/bot$token/setWebhook");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query(['url' => $webhookUrl, 'allowed_updates' => json_encode(['callback_query', 'message'])]),
+        CURLOPT_TIMEOUT => 8,
+    ]);
+    $resp = curl_exec($ch);
+    curl_close($ch);
+    echo $resp ?: json_encode(['ok' => false, 'msg' => 'فشل الاتصال بتيليجرام']);
+    exit;
+}
+
+if ($action === 'tg_admin_webhook' || $action === 'tg_webhook') {
+    // Webhook تيليجرام مباشر (يُعيَّن مسار هذا الرابط في BotFather أو setWebhook).
+    // يعالج أزرار الموافقة/الرفض للطلبات + كل الرسائل مباشرة بدون بوت خارجي.
     header('Content-Type: application/json; charset=utf-8');
     $raw = file_get_contents('php://input');
     $data = json_decode($raw ?: '{}', true);
+    // سجل مبسّط للفحص
+    @file_put_contents(__DIR__ . '/uploads/tg_webhook.log', date('c') . " " . substr($raw ?? '', 0, 1000) . "\n", FILE_APPEND);
     $cb = $data['callback_query'] ?? null;
     if (!$cb) { echo '{"ok":true}'; exit; }
     $fromId = (string)($cb['from']['id'] ?? '');
-    $ownerId = owner_id();
-    if ($ownerId && $fromId !== $ownerId) {
-        tg_answer_callback($cb['id'], 'غير مصرح لك.', true);
+    $ownerId = (string)owner_id();
+    // مقارنة رقمية (البعض يخزّن OWNER_ID كنص، وتيليجرام يرسل كرقم)
+    if ($ownerId !== '' && (int)$fromId !== (int)$ownerId) {
+        tg_answer_callback((string)$cb['id'], 'غير مصرح لك.', true);
         echo '{"ok":true}'; exit;
     }
-    $payload = $cb['data'] ?? '';
+    $payload = (string)($cb['data'] ?? '');
     $chatId = (string)($cb['message']['chat']['id'] ?? '');
     $msgId = (string)($cb['message']['message_id'] ?? '');
     $origText = (string)($cb['message']['text'] ?? '');
     [$act, $rid] = array_pad(explode(':', $payload, 2), 2, '');
     $rid = (int)$rid;
-    if ($rid <= 0) { tg_answer_callback($cb['id'], 'طلب غير صالح.', true); echo '{"ok":true}'; exit; }
+    if ($rid <= 0) { tg_answer_callback((string)$cb['id'], 'طلب غير صالح.', true); echo '{"ok":true}'; exit; }
 
     if ($act === 'topup_approve') {
         $st = db()->prepare("SELECT * FROM topup_requests WHERE id=? AND status='pending'");
@@ -2193,6 +2300,52 @@ if ($action && str_starts_with($action, 'api_')) {
                 db()->prepare("UPDATE users SET two_factor_enabled = 0 WHERE id = ?")->execute([$u['id']]);
                 echo json_encode(['ok' => true, 'msg' => 'تم إيقاف التحقق الثنائي.']); exit;
             }
+
+        case 'api_buy_package':
+            csrf_check();
+            $pkgId = (int)($_POST['package_id'] ?? 0);
+            $accountId = trim($_POST['account_id'] ?? '');
+            $customAmount = (float)($_POST['custom_amount'] ?? 0);
+            $pkgSt = db()->prepare("SELECT pk.*, p.name AS product_name, p.category_id FROM packages pk JOIN products p ON p.id = pk.product_id WHERE pk.id = ? AND pk.active = 1");
+            $pkgSt->execute([$pkgId]);
+            $pkg = $pkgSt->fetch();
+            if (!$pkg) { echo json_encode(['ok' => false, 'msg' => 'الباقة غير متوفرة.']); exit; }
+            $price = (float)$pkg['price'];
+            if ((int)$pkg['allow_custom_amount']) {
+                if ($customAmount < (float)$pkg['min_amount'] || $customAmount > (float)$pkg['max_amount']) {
+                    echo json_encode(['ok' => false, 'msg' => 'المبلغ المخصّص خارج النطاق المسموح.']); exit;
+                }
+                $price = $customAmount;
+            }
+            if ($accountId === '') { echo json_encode(['ok' => false, 'msg' => 'يجب إدخال آيدي حسابك في اللعبة/التطبيق.']); exit; }
+            $balance = user_balance($u['id']);
+            if ($balance < $price) {
+                echo json_encode(['ok' => false, 'msg' => 'رصيدك غير كافٍ. ينقصك ' . number_format($price - $balance, 2) . setting('wallet_currency_symbol','$')]); exit;
+            }
+            db()->beginTransaction();
+            try {
+                db()->prepare("UPDATE users SET balance = balance - ? WHERE id = ?")->execute([$price, $u['id']]);
+                db()->prepare("INSERT INTO orders (user_id, product_id, package_id, package_name, price, account_id, custom_amount, status) VALUES (?,?,?,?,?,?,?, 'processing')")
+                    ->execute([$u['id'], (int)$pkg['product_id'], $pkgId, $pkg['name'], $price, $accountId, (int)$pkg['allow_custom_amount'] ? $customAmount : null]);
+                $orderId = (int)db()->lastInsertId();
+                grant_xp($u['id'], 15);
+                db()->commit();
+            } catch (Throwable $e) {
+                db()->rollBack();
+                echo json_encode(['ok' => false, 'msg' => 'تعذّر إتمام الطلب.']); exit;
+            }
+            if (setting('tg_notify_new_order', '1') === '1') {
+                $msg = "🛒 <b>طلب باقة جديد #$orderId</b>\n"
+                    . "👤 " . e($u['name'] ?: $u['email']) . " (#{$u['id']})\n"
+                    . "🎮 المنتج: " . e($pkg['product_name']) . "\n"
+                    . "📦 الباقة: <b>" . e($pkg['name']) . "</b>\n"
+                    . "💵 السعر: " . number_format($price, 2) . "$\n"
+                    . "🆔 آيدي الحساب: <code>" . e($accountId) . "</code>";
+                $kb = [[['text' => '✅ تم التنفيذ', 'callback_data' => "order_done:$orderId"], ['text' => '↩️ استرداد', 'callback_data' => "order_refund:$orderId"]]];
+                tg_send_admin($msg, $kb);
+            }
+            echo json_encode(['ok' => true, 'msg' => "✅ تم الطلب #$orderId — رصيدك الجديد: " . number_format($balance - $price, 2) . setting('wallet_currency_symbol','$'), 'order_id' => $orderId]);
+            exit;
 
         case 'api_report_app':
             $appId = (int)($_POST['app_id'] ?? 0);
@@ -2757,6 +2910,49 @@ if ($action && str_starts_with($action, 'admin_')) {
     csrf_check();
 
     switch ($action) {
+        case 'admin_save_category':
+            $slug = preg_replace('/[^a-z0-9_-]/i', '-', trim($_POST['slug'] ?? '')) ?: preg_replace('/\s+/', '-', trim($_POST['name'] ?? ''));
+            db()->prepare("INSERT INTO categories (name, slug, kind, icon_svg, description, seo_title, seo_description, sort_order, visible_on_home) VALUES (?,?,?,?,?,?,?,?,?)")
+                ->execute([
+                    trim($_POST['name'] ?? ''),
+                    $slug,
+                    $_POST['kind'] ?? 'general',
+                    trim($_POST['icon_svg'] ?? '📦'),
+                    trim($_POST['description'] ?? ''),
+                    trim($_POST['seo_title'] ?? ''),
+                    trim($_POST['seo_description'] ?? ''),
+                    (int)($_POST['sort_order'] ?? 0),
+                    isset($_POST['visible_on_home']) ? 1 : 0,
+                ]);
+            flash('تم إضافة القسم', 'success');
+            redirect('?page=admin&tab=categories');
+        case 'admin_delete_category':
+            $cid = (int)($_GET['id'] ?? 0);
+            if ($cid > 0) db()->prepare("DELETE FROM categories WHERE id=?")->execute([$cid]);
+            redirect('?page=admin&tab=categories');
+        case 'admin_save_package':
+            db()->prepare("INSERT INTO packages (product_id, name, icon, price, old_price, quantity, currency, tag, sort_order, active, allow_custom_amount, min_amount, max_amount) VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?)")
+                ->execute([
+                    (int)($_POST['product_id'] ?? 0),
+                    trim($_POST['name'] ?? ''),
+                    trim($_POST['icon'] ?? '💎'),
+                    (float)($_POST['price'] ?? 0),
+                    $_POST['old_price'] !== '' ? (float)$_POST['old_price'] : null,
+                    (int)($_POST['quantity'] ?? 0),
+                    trim($_POST['currency'] ?? ''),
+                    trim($_POST['tag'] ?? ''),
+                    (int)($_POST['sort_order'] ?? 0),
+                    isset($_POST['allow_custom_amount']) ? 1 : 0,
+                    $_POST['min_amount'] !== '' ? (float)$_POST['min_amount'] : null,
+                    $_POST['max_amount'] !== '' ? (float)$_POST['max_amount'] : null,
+                ]);
+            db()->prepare("UPDATE products SET has_packages = 1 WHERE id = ?")->execute([(int)($_POST['product_id'] ?? 0)]);
+            flash('تم إضافة الباقة', 'success');
+            redirect('?page=admin&tab=packages');
+        case 'admin_delete_package':
+            $pkgid = (int)($_GET['id'] ?? 0);
+            if ($pkgid > 0) db()->prepare("DELETE FROM packages WHERE id=?")->execute([$pkgid]);
+            redirect('?page=admin&tab=packages');
         case 'admin_save_product':
             $id = (int)($_POST['id'] ?? 0);
             $name = trim($_POST['name'] ?? '');
@@ -3564,6 +3760,72 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .balance-pill{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#1c2840,#2e161d);border:1px solid #2a3350;border-radius:30px;padding:10px 16px;margin-bottom:16px;font-size:14px;color:var(--muted)}
 .balance-pill strong{color:var(--accent2)}
 .buy-modal label{display:block;font-size:13px;color:var(--muted);margin-bottom:10px}
+/* ============ Policy modal professional ============ */
+.policy-modal-pro{position:fixed;inset:0;background:rgba(0,0,0,.85);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px}
+.policy-box-pro{max-width:460px;width:100%;background:linear-gradient(180deg,#052e2b,#064e3b);border:1px solid rgba(16,185,129,.35);border-radius:24px;padding:0;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(16,185,129,.2)}
+.policy-hero{padding:32px 24px 20px;text-align:center;background:linear-gradient(180deg,rgba(16,185,129,.18),transparent);position:relative}
+.policy-hero-icon{width:80px;height:80px;margin:0 auto 16px;border-radius:24px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 14px 36px rgba(16,185,129,.5),inset 0 1px 0 rgba(255,255,255,.2);animation:policyPulse 2.5s ease-in-out infinite}
+.policy-hero-icon .ic{color:#fff;width:40px;height:40px}
+@keyframes policyPulse{0%,100%{box-shadow:0 14px 36px rgba(16,185,129,.5),inset 0 1px 0 rgba(255,255,255,.2),0 0 0 0 rgba(16,185,129,.5)}50%{box-shadow:0 14px 36px rgba(16,185,129,.5),inset 0 1px 0 rgba(255,255,255,.2),0 0 0 12px rgba(16,185,129,0)}}
+.policy-hero h2{font-size:22px;font-weight:900;color:#fff;margin:0 0 8px}
+.policy-hero p{font-size:13.5px;color:#a7f3d0;margin:0;line-height:1.6}
+.policy-checks{padding:16px 24px;display:flex;flex-direction:column;gap:12px}
+.policy-check{display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border-radius:12px;background:rgba(0,0,0,.28);border:1px solid rgba(16,185,129,.2);transition:.2s}
+.policy-check:hover{background:rgba(16,185,129,.1)}
+.policy-check input{opacity:0;width:0;height:0;position:absolute}
+.pc-box{flex-shrink:0;width:22px;height:22px;border:2px solid rgba(16,185,129,.4);border-radius:6px;transition:.2s;position:relative;background:rgba(0,0,0,.3)}
+.policy-check input:checked ~ .pc-box{background:linear-gradient(135deg,#10b981,#059669);border-color:#10b981}
+.policy-check input:checked ~ .pc-box::after{content:"✓";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;font-size:14px}
+.pc-text{font-size:13px;color:var(--text);flex:1}
+.pc-text a{color:#6ee7b7;text-decoration:underline;font-weight:700}
+.policy-actions{padding:16px 24px 24px;display:flex;flex-direction:column;gap:10px}
+.btn-policy-accept{padding:14px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:14px;font-weight:800;font-family:inherit;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;box-shadow:0 12px 28px rgba(16,185,129,.4);transition:.25s}
+.btn-policy-accept:hover{transform:translateY(-2px);box-shadow:0 16px 34px rgba(16,185,129,.55)}
+.btn-policy-reject{padding:12px;text-align:center;color:var(--muted);font-size:12.5px;text-decoration:none;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);transition:.2s}
+.btn-policy-reject:hover{background:rgba(255,255,255,.1);color:var(--text)}
+/* ============ Home Categories (SGC style, professional emerald) ============ */
+.home-cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;padding:0 18px 6px}
+.home-cat-card{position:relative;display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:18px;background:linear-gradient(140deg,rgba(6,78,59,.5) 0%,rgba(6,95,70,.28) 60%,rgba(0,0,0,.55) 100%);border:1px solid rgba(16,185,129,.35);text-decoration:none;color:var(--text);box-shadow:0 12px 30px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.05);overflow:hidden;transition:transform .3s var(--ease),box-shadow .3s,border-color .3s}
+.home-cat-card::before{content:"";position:absolute;inset:-40% -20% auto auto;width:220px;height:220px;background:radial-gradient(circle,rgba(16,185,129,.3),transparent 65%);pointer-events:none;transition:transform .5s var(--ease)}
+.home-cat-card:hover{transform:translateY(-4px);box-shadow:0 20px 44px rgba(16,185,129,.35);border-color:#10b981}
+.home-cat-card:hover::before{transform:scale(1.15)}
+.hcc-icon{width:54px;height:54px;flex-shrink:0;border-radius:16px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 8px 18px rgba(16,185,129,.4),inset 0 1px 0 rgba(255,255,255,.25);position:relative}
+.hcc-emoji{font-size:28px;filter:drop-shadow(0 3px 6px rgba(0,0,0,.35))}
+.hcc-body{flex:1;min-width:0;position:relative}
+.hcc-body strong{display:block;font-size:15px;font-weight:800;color:#fff;line-height:1.3}
+.hcc-body small{display:block;font-size:11px;color:#a7f3d0;margin-top:2px;line-height:1.4}
+.hcc-arrow{width:20px;height:20px;color:#10b981;flex-shrink:0;transition:transform .3s var(--ease)}
+[dir="rtl"] .hcc-arrow{transform:scaleX(-1)}
+.home-cat-card:hover .hcc-arrow{transform:translateX(-4px) scaleX(-1)}
+/* ============ Category page hero ============ */
+.cat-hero{margin:16px 18px 18px;padding:26px 22px;border-radius:22px;background:linear-gradient(140deg,#052e2b 0%,#064e3b 60%,#065f46 100%);border:1px solid rgba(16,185,129,.35);box-shadow:0 20px 50px rgba(0,0,0,.4);position:relative;overflow:hidden;text-align:center}
+.cat-hero::before{content:"";position:absolute;inset:-30% -20% auto auto;width:280px;height:280px;background:radial-gradient(circle,rgba(16,185,129,.35),transparent 65%);pointer-events:none}
+.cat-hero-icon{width:78px;height:78px;margin:0 auto 12px;border-radius:22px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 30px rgba(16,185,129,.45);position:relative}
+.cat-hero-icon span{font-size:40px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.4))}
+.cat-hero h1{position:relative;font-size:24px;font-weight:900;color:#fff;margin:0 0 6px}
+.cat-hero p{position:relative;color:#a7f3d0;font-size:13.5px;margin:0;line-height:1.6}
+/* ============ Product detail Pro (with packages) ============ */
+.product-detail-pro{padding:0 0 20px}
+.pdp-hero{display:flex;align-items:center;gap:14px;padding:16px 18px;background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(6,182,212,.08));border-bottom:1px solid rgba(16,185,129,.25)}
+.pdp-img{width:96px;height:96px;border-radius:20px;object-fit:cover;box-shadow:0 12px 24px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.1);flex-shrink:0}
+.pdp-emoji{display:flex;align-items:center;justify-content:center;font-size:56px;background:linear-gradient(135deg,#10b981,#059669)}
+.pdp-title h1{font-size:20px;font-weight:900;color:#fff;margin:0 0 4px;line-height:1.3}
+.pdp-title p{font-size:13px;color:var(--muted);margin:0;line-height:1.5}
+.pdp-section-title{margin:22px 18px 12px;font-size:15px;font-weight:800;color:var(--accent2);display:flex;align-items:center;gap:6px}
+.pdp-info{padding:16px 18px}
+/* ============ Packages grid ============ */
+.packages-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;padding:0 18px}
+.pkg-card{position:relative;padding:16px 12px;border-radius:16px;background:linear-gradient(180deg,rgba(6,78,59,.3),rgba(0,0,0,.35));border:2px solid rgba(16,185,129,.25);cursor:pointer;transition:transform .25s var(--ease),border-color .3s,box-shadow .3s;text-align:center;color:var(--text);display:flex;flex-direction:column;align-items:center;gap:6px;overflow:hidden}
+.pkg-card::after{content:"";position:absolute;inset:-40% -20% auto auto;width:150px;height:150px;background:radial-gradient(circle,rgba(16,185,129,.2),transparent 60%);pointer-events:none;transition:.4s}
+.pkg-card:hover{transform:translateY(-3px);border-color:#10b981;box-shadow:0 14px 30px rgba(16,185,129,.35)}
+.pkg-card:hover::after{transform:scale(1.3)}
+.pkg-tag{position:absolute;top:8px;right:8px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:8px;box-shadow:0 4px 10px rgba(245,158,11,.4);z-index:1}
+.pkg-emoji{font-size:32px;line-height:1;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35));margin-bottom:2px}
+.pkg-name{font-size:13px;font-weight:700;color:#fff;line-height:1.3}
+.pkg-qty{font-size:11px;color:#6ee7b7;font-weight:600}
+.pkg-price-wrap{margin-top:6px;display:flex;flex-direction:column;align-items:center;gap:2px}
+.pkg-old{font-size:11px;color:var(--muted);text-decoration:line-through}
+.pkg-price{font-size:18px;font-weight:900;color:#10b981;text-shadow:0 4px 10px rgba(16,185,129,.4)}
 /* Buy Modal Pro — احترافي جداً */
 .buy-modal-pro{max-width:460px;width:94%;padding:0;overflow:hidden;background:linear-gradient(180deg,#0d1a2f 0%,#131f38 100%);border:1px solid rgba(37,99,235,.35);border-radius:22px;box-shadow:0 30px 80px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.05);position:relative;max-height:92vh;overflow-y:auto}
 .buy-close{position:absolute;top:12px;left:12px;width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.1);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:10;transition:.2s}
@@ -4195,7 +4457,33 @@ case 'home':
     ?>
     <?php
     $tileCats = array_filter($categories, fn($c) => !empty($c['image']));
+    $homeCatsVisible = array_filter($categories, fn($c) => !empty($c['visible_on_home'] ?? 1));
     $homeSections = [
+        'home_categories' => function () use ($homeCatsVisible) {
+            if (!$homeCatsVisible) return;
+            ?>
+            <div class="section-title" style="margin:22px 18px 12px;display:flex;align-items:center;gap:8px;font-size:17px;font-weight:800">
+              <span style="width:4px;height:20px;background:linear-gradient(180deg,#10b981,#059669);border-radius:4px"></span>
+              الأقسام الرئيسية
+            </div>
+            <div class="home-cats">
+              <?php foreach ($homeCatsVisible as $c):
+                  $emoji = $c['icon_svg'] ?: '📦';
+                  $slug = $c['slug'] ?: $c['id'];
+                  $link = '?page=category&slug=' . urlencode($slug);
+              ?>
+                <a href="<?= e($link) ?>" class="home-cat-card">
+                  <div class="hcc-icon"><span class="hcc-emoji"><?= e($emoji) ?></span></div>
+                  <div class="hcc-body">
+                    <strong><?= e($c['name']) ?></strong>
+                    <?php if (!empty($c['description'])): ?><small><?= e(mb_strimwidth($c['description'], 0, 60, '…')) ?></small><?php endif; ?>
+                  </div>
+                  <svg class="hcc-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 6l-6 6 6 6"/></svg>
+                </a>
+              <?php endforeach; ?>
+            </div>
+            <?php
+        },
         'hero' => function () {
             $bannerBg = setting('banner_bg_image'); ?>
             <div class="banner<?= $bannerBg ? ' has-bg' : '' ?>"<?= $bannerBg ? ' style="background-image:url(\'' . e($bannerBg) . '\')"' : '' ?>>
@@ -4372,33 +4660,166 @@ case 'home':
     <?php
     break;
 
+case 'category':
+    $catSlug = $_GET['slug'] ?? '';
+    if ($catSlug === '') { echo '<div class="empty">القسم غير محدد</div>'; break; }
+    $cSt = db()->prepare("SELECT * FROM categories WHERE slug=? OR id=?");
+    $cSt->execute([$catSlug, (int)$catSlug]);
+    $cat = $cSt->fetch();
+    if (!$cat) { echo '<div class="empty">القسم غير موجود</div>'; break; }
+    $pStmt = db()->prepare("SELECT * FROM products WHERE category_id=? AND status='active' ORDER BY id DESC");
+    $pStmt->execute([$cat['id']]);
+    $catProducts = $pStmt->fetchAll();
+    $wishlistSet = [];
+    if ($user) {
+        $st = db()->prepare("SELECT product_id FROM wishlist WHERE user_id=?");
+        $st->execute([$user['id']]);
+        foreach ($st->fetchAll() as $w) $wishlistSet[$w['product_id']] = true;
+    }
+    ?>
+    <div class="cat-hero">
+      <div class="cat-hero-icon"><span><?= e($cat['icon_svg'] ?: '📦') ?></span></div>
+      <h1><?= e($cat['name']) ?></h1>
+      <?php if (!empty($cat['description'])): ?><p><?= e($cat['description']) ?></p><?php endif; ?>
+      <div style="margin-top:12px;font-size:13px;color:#6ee7b7"><?= count($catProducts) ?> منتج متاح</div>
+    </div>
+    <?php if (!$catProducts): ?>
+      <div class="empty" style="margin:24px 18px">لا توجد منتجات في هذا القسم بعد.</div>
+    <?php else: ?>
+      <div class="grid" style="padding:16px 18px 30px">
+        <?php foreach ($catProducts as $p) render_product_card($p); ?>
+      </div>
+    <?php endif; ?>
+    <?php
+    break;
+
 case 'product':
     if (!$seoProduct) {
         echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>المنتج غير موجود أو غير متاح.<br><a href="?" class="btn btn-primary" style="margin-top:14px;display:inline-block">عودة للرئيسية</a></div>';
         break;
     }
     $p = $seoProduct;
+    $pkgSt = db()->prepare("SELECT * FROM packages WHERE product_id=? AND active=1 ORDER BY sort_order, price");
+    $pkgSt->execute([$p['id']]);
+    $packages = $pkgSt->fetchAll();
+    $hasPackages = count($packages) > 0;
+    $__needsId2 = product_needs_account_id($p['name'] ?? '', '');
     ?>
     <div class="breadcrumb" style="padding:14px 18px;font-size:13px;color:var(--muted)">
       <a href="?">الرئيسية</a> / <span><?= e($p['name']) ?></span>
     </div>
-    <div class="product-detail">
-      <?php if ($p['image']): ?>
-        <img class="pd-img" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
-      <?php elseif (!empty($p['icon'])): ?>
-        <div class="pd-img icon-wrap" style="display:flex;align-items:center;justify-content:center;font-size:64px"><?= e($p['icon']) ?></div>
+    <div class="product-detail-pro">
+      <div class="pdp-hero">
+        <?php if ($p['image']): ?>
+          <img class="pdp-img" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+        <?php else: ?>
+          <div class="pdp-img pdp-emoji"><?= e($p['icon'] ?: product_auto_emoji($p['name'] ?? '')) ?></div>
+        <?php endif; ?>
+        <div class="pdp-title">
+          <h1><?= e($p['name']) ?></h1>
+          <?php if ($p['description']): ?><p><?= e(mb_strimwidth($p['description'], 0, 140, '…')) ?></p><?php endif; ?>
+        </div>
+      </div>
+
+      <?php if ($hasPackages): ?>
+        <div class="pdp-section-title"><?= icon('star', 'ic-sm') ?> اختر الباقة المناسبة</div>
+        <div class="packages-grid">
+          <?php foreach ($packages as $pk):
+              $isCustom = (int)$pk['allow_custom_amount'];
+              $pkPrice = (float)$pk['price'];
+              $pkOldPrice = (float)($pk['old_price'] ?? 0);
+              $pkEmoji = $pk['icon'] ?: '💎';
+          ?>
+            <button type="button" class="pkg-card" onclick='pickPackage(<?= (int)$pk['id'] ?>, <?= json_encode(['name'=>$pk['name'],'price'=>$pkPrice,'productName'=>$p['name'],'productImage'=>$p['image'],'productIcon'=>$p['icon'] ?: product_auto_emoji($p['name']),'needsId'=>$__needsId2,'custom'=>(bool)$isCustom,'minAmt'=>(float)$pk['min_amount'],'maxAmt'=>(float)$pk['max_amount'],'emoji'=>$pkEmoji], JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
+              <?php if ($pk['tag']): ?><span class="pkg-tag"><?= e($pk['tag']) ?></span><?php endif; ?>
+              <div class="pkg-emoji"><?= e($pkEmoji) ?></div>
+              <div class="pkg-name"><?= e($pk['name']) ?></div>
+              <?php if ($pk['quantity']): ?><div class="pkg-qty"><?= (int)$pk['quantity'] ?> <?= e($pk['currency'] ?: '') ?></div><?php endif; ?>
+              <div class="pkg-price-wrap">
+                <?php if ($pkOldPrice > 0 && $pkOldPrice > $pkPrice): ?><span class="pkg-old"><?= number_format($pkOldPrice, 2) ?>$</span><?php endif; ?>
+                <span class="pkg-price"><?php if ($isCustom): ?>مخصّص<?php else: ?><?= number_format($pkPrice, 2) ?>$<?php endif; ?></span>
+              </div>
+            </button>
+          <?php endforeach; ?>
+        </div>
       <?php else: ?>
-        <div class="pd-img icon-wrap" style="display:flex;align-items:center;justify-content:center"><?= icon('cart', 'ic ic-xl') ?></div>
+        <div class="pdp-info">
+          <?php if ($p['tag']): ?><span class="tag" style="position:static;display:inline-block;margin-bottom:8px"><?= e($p['tag']) ?></span><?php endif; ?>
+          <div class="pd-price"><span class="price"><?= e($p['price']) ?>$</span><?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?></div>
+          <?php if ($p['description']): ?><p class="pd-desc"><?= nl2br(e($p['description'])) ?></p><?php endif; ?>
+          <button class="btn btn-primary buy" style="width:100%" onclick='buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>, <?= json_encode(['name'=>$p['name'],'desc'=>mb_substr((string)($p['description']??''),0,120),'image'=>$p['image']??'','icon'=>$p['icon']??'','needsId'=>$__needsId2,'idLabel'=>$__needsId2 ? 'آيدي حسابك في '.$p['name'] : ''], JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'><?= icon('cart', 'ic-sm') ?>طلب شراء</button>
+        </div>
       <?php endif; ?>
-      <div class="pd-info">
-        <?php if ($p['tag']): ?><span class="tag" style="position:static;display:inline-block;margin-bottom:8px"><?= e($p['tag']) ?></span><?php endif; ?>
-        <h1><?= e($p['name']) ?></h1>
-        <div class="pd-price"><span class="price"><?= e($p['price']) ?>$</span><?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?></div>
-        <?php if ($p['description']): ?><p class="pd-desc"><?= nl2br(e($p['description'])) ?></p><?php endif; ?>
-        <?php $__needsId2 = product_needs_account_id($p['name'] ?? '', ''); ?>
-        <button class="btn btn-primary buy" style="width:100%" onclick='buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>, <?= json_encode(['name'=>$p['name'],'desc'=>mb_substr((string)($p['description']??''),0,120),'image'=>$p['image']??'','icon'=>$p['icon']??'','needsId'=>$__needsId2,'idLabel'=>$__needsId2 ? 'آيدي حسابك في '.$p['name'] : ''], JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'><?= icon('cart', 'ic-sm') ?>طلب شراء</button>
+    </div>
+
+    <!-- نافذة الباقة المنبثقة -->
+    <div class="modal-bg" id="pkgModal" style="display:none">
+      <div class="modal buy-modal buy-modal-pro">
+        <button type="button" class="buy-close" onclick="document.getElementById('pkgModal').style.display='none'"><?= icon('x', 'ic-sm') ?></button>
+        <div class="buy-hero">
+          <div class="buy-hero-icon" id="pkgIconEl"><span style="font-size:34px">💎</span></div>
+          <h2 id="pkgTitleEl">اختر الباقة</h2>
+          <p class="buy-hero-desc" id="pkgDescEl"></p>
+        </div>
+        <div class="buy-price-card">
+          <div class="bpc-total"><span>السعر</span><strong id="pkgPriceEl">0$</strong></div>
+        </div>
+        <div id="pkgCustomWrap" style="display:none;margin:0 18px 12px">
+          <label class="buy-field-label">💰 <span>حدّد المبلغ (نطاق مسموح: <span id="pkgMinMax">—</span>)</span></label>
+          <input type="number" class="buy-input" id="pkgCustomAmount" placeholder="أدخل المبلغ المطلوب">
+        </div>
+        <div id="pkgIdWrap" style="display:none">
+          <label class="buy-field-label"><?= icon('user','ic-sm') ?> <span id="pkgIdLbl">آيدي حسابك</span> *</label>
+          <input type="text" id="pkgAccountId" class="buy-input" placeholder="مثال: 5123456789">
+          <p class="buy-hint">أدخل الآيدي الظاهر في التطبيق/اللعبة لضمان وصول الشحن للحساب الصحيح.</p>
+        </div>
+        <div class="buy-balance-info">
+          <div class="bbi-row"><div class="bbi-label"><?= icon('wallet','ic-sm') ?> رصيدي</div><div class="bbi-value"><?= $user ? number_format((float)user_balance($user['id']), 2) : '0.00' ?><?= e(setting('wallet_currency_symbol','$')) ?></div></div>
+        </div>
+        <div class="buy-actions">
+          <button type="button" class="btn-buy-confirm" onclick="confirmPackage()"><?= icon('check','ic-sm') ?> تأكيد الشراء</button>
+          <button type="button" class="btn-buy-cancel" onclick="document.getElementById('pkgModal').style.display='none'">إلغاء</button>
+        </div>
       </div>
     </div>
+    <script>
+    let __pkgState = null;
+    function pickPackage(id, meta){
+      if (!LOGGED_IN) return requireLogin();
+      __pkgState = Object.assign({id: id}, meta);
+      document.getElementById('pkgTitleEl').textContent = meta.productName + ' — ' + meta.name;
+      document.getElementById('pkgDescEl').textContent = meta.custom ? 'اختر مبلغاً مخصّصاً' : (meta.name + ' — سعر ثابت');
+      document.getElementById('pkgIconEl').innerHTML = '<span style="font-size:34px">' + meta.emoji + '</span>';
+      document.getElementById('pkgPriceEl').textContent = (meta.custom ? 'مخصّص' : meta.price.toFixed(2) + '<?= e(setting('wallet_currency_symbol','$')) ?>');
+      document.getElementById('pkgCustomWrap').style.display = meta.custom ? 'block' : 'none';
+      if (meta.custom) {
+        document.getElementById('pkgMinMax').textContent = meta.minAmt + ' — ' + meta.maxAmt;
+        document.getElementById('pkgCustomAmount').value = '';
+      }
+      document.getElementById('pkgIdWrap').style.display = meta.needsId ? 'block' : 'none';
+      document.getElementById('pkgIdLbl').textContent = 'آيدي حسابك في ' + meta.productName;
+      document.getElementById('pkgAccountId').value = '';
+      document.getElementById('pkgModal').style.display = 'flex';
+    }
+    async function confirmPackage(){
+      if (!__pkgState) return;
+      const accId = document.getElementById('pkgAccountId').value.trim();
+      const customAmt = parseFloat(document.getElementById('pkgCustomAmount').value) || 0;
+      if (__pkgState.needsId && !accId) return toast('يجب إدخال الآيدي.');
+      if (__pkgState.custom && !customAmt) return toast('يجب إدخال المبلغ المخصّص.');
+      const fd = new FormData();
+      fd.append('csrf', CSRF);
+      fd.append('package_id', __pkgState.id);
+      fd.append('account_id', accId);
+      fd.append('custom_amount', customAmt);
+      const res = await post('api_buy_package', fd);
+      toast(res.msg);
+      if (res.ok) {
+        document.getElementById('pkgModal').style.display = 'none';
+        setTimeout(() => location.reload(), 1000);
+      }
+    }
+    </script>
     <?php
     $pReviews = db()->prepare("SELECT r.*, u.name uname FROM reviews r JOIN users u ON u.id=r.user_id WHERE r.product_id=? ORDER BY r.id DESC");
     $pReviews->execute([(int)$p['id']]);
@@ -5476,7 +5897,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'wallet_config'=>['coin','⚙️ المحفظة'],'notifications_config'=>['bell','🔔 إشعارات'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'ads'=>['megaphone','📣 إعلانات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'categories'=>['pages','📂 الأقسام'],'packages'=>['star','🎁 الباقات'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'wallet_config'=>['coin','⚙️ المحفظة'],'notifications_config'=>['bell','🔔 إشعارات'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'ads'=>['megaphone','📣 إعلانات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
@@ -6243,6 +6664,104 @@ case 'admin':
         </table>
       </div>
 
+    <?php elseif ($tab === 'categories'): ?>
+      <div class="admin-box">
+        <h3><?= icon('pages', 'ic') ?> إدارة الأقسام (تظهر في الرئيسية)</h3>
+        <p style="color:var(--muted);font-size:12px">كل قسم يظهر كبطاقة في الرئيسية، ينقر المستخدم فيدخل لصفحة تعرض منتجات القسم فقط. الإيموجي هو أيقونة القسم.</p>
+        <form method="post" action="?action=admin_save_category" style="margin-bottom:14px">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>اسم القسم<input type="text" name="name" required placeholder="مثال: الألعاب"></label>
+            <label>Slug (رابط لطيف)<input type="text" name="slug" placeholder="games"></label>
+            <label>الأيقونة (إيموجي)<input type="text" name="icon_svg" placeholder="🎮" maxlength="4"></label>
+            <label>النوع<select name="kind">
+              <option value="general">عام</option>
+              <option value="game">ألعاب</option>
+              <option value="app">تطبيقات</option>
+              <option value="subscription">اشتراكات</option>
+              <option value="gift">بطاقات هدايا</option>
+              <option value="payment">مدفوعات</option>
+              <option value="charging">شحن رصيد</option>
+            </select></label>
+          </div>
+          <label>الوصف<input type="text" name="description" placeholder="وصف مختصر يظهر تحت اسم القسم"></label>
+          <div class="formrow">
+            <label>SEO Title<input type="text" name="seo_title" placeholder="عنوان SEO"></label>
+            <label>SEO Description<input type="text" name="seo_description" placeholder="وصف لمحركات البحث"></label>
+            <label>الترتيب<input type="number" name="sort_order" value="0"></label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="visible_on_home" value="1" checked> يظهر في الرئيسية</label>
+          </div>
+          <button class="btn btn-primary" type="submit"><?= icon('plus','ic-sm') ?> إضافة قسم</button>
+        </form>
+        <?php $adminCats = db()->query("SELECT * FROM categories ORDER BY sort_order, id")->fetchAll(); ?>
+        <table>
+          <tr><th>الأيقونة</th><th>الاسم</th><th>Slug</th><th>النوع</th><th>ترتيب</th><th>في الرئيسية</th><th>حذف</th></tr>
+          <?php foreach ($adminCats as $c): ?>
+          <tr>
+            <td style="font-size:24px"><?= e($c['icon_svg'] ?: '📦') ?></td>
+            <td><strong><?= e($c['name']) ?></strong></td>
+            <td><code><?= e($c['slug']) ?></code></td>
+            <td><?= e($c['kind']) ?></td>
+            <td><?= (int)$c['sort_order'] ?></td>
+            <td><?= (int)$c['visible_on_home'] ? '✅' : '❌' ?></td>
+            <td><a href="?action=admin_delete_category&id=<?= (int)$c['id'] ?>&csrf=<?= csrf_token() ?>" onclick="return confirm('حذف؟')" style="color:var(--danger)">🗑️</a></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'packages'): ?>
+      <div class="admin-box">
+        <h3><?= icon('star', 'ic') ?> إدارة الباقات (لكل منتج)</h3>
+        <p style="color:var(--muted);font-size:12px">مثال: لعبة فري فاير — أضف باقات: 100 جوهرة/1$، 500 جوهرة/4$، 2000 جوهرة/15$... المستخدم يختار الباقة ويشتريها بالرصيد مباشرة.</p>
+        <form method="post" action="?action=admin_save_package" style="margin-bottom:14px">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>المنتج<select name="product_id" required>
+              <?php $adminProds = db()->query("SELECT id, name FROM products WHERE status='active' ORDER BY name")->fetchAll(); ?>
+              <?php foreach ($adminProds as $ap): ?>
+                <option value="<?= (int)$ap['id'] ?>"><?= e($ap['name']) ?></option>
+              <?php endforeach; ?>
+            </select></label>
+            <label>اسم الباقة<input type="text" name="name" required placeholder="مثال: 500 جوهرة"></label>
+            <label>الأيقونة<input type="text" name="icon" placeholder="💎" maxlength="4"></label>
+          </div>
+          <div class="formrow">
+            <label>السعر<input type="number" step="0.01" name="price" required></label>
+            <label>السعر القديم (اختياري)<input type="number" step="0.01" name="old_price"></label>
+            <label>الكمية<input type="number" name="quantity" placeholder="500"></label>
+            <label>الوحدة<input type="text" name="currency" placeholder="جوهرة"></label>
+            <label>وسم (Tag)<input type="text" name="tag" placeholder="الأكثر مبيعاً"></label>
+            <label>ترتيب<input type="number" name="sort_order" value="0"></label>
+          </div>
+          <div class="formrow">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="allow_custom_amount" value="1"> السماح بمبلغ مخصّص</label>
+            <label>الحد الأدنى<input type="number" step="0.01" name="min_amount"></label>
+            <label>الحد الأقصى<input type="number" step="0.01" name="max_amount"></label>
+          </div>
+          <button class="btn btn-primary" type="submit"><?= icon('plus','ic-sm') ?> إضافة باقة</button>
+        </form>
+        <?php $adminPkgs = db()->query("SELECT pk.*, p.name AS product_name FROM packages pk JOIN products p ON p.id=pk.product_id ORDER BY p.name, pk.sort_order, pk.price")->fetchAll(); ?>
+        <?php if ($adminPkgs): ?>
+        <table>
+          <tr><th>المنتج</th><th>الباقة</th><th>الأيقونة</th><th>السعر</th><th>الكمية</th><th>وسم</th><th>حذف</th></tr>
+          <?php foreach ($adminPkgs as $pk): ?>
+          <tr>
+            <td><?= e($pk['product_name']) ?></td>
+            <td><strong><?= e($pk['name']) ?></strong></td>
+            <td style="font-size:20px"><?= e($pk['icon'] ?: '💎') ?></td>
+            <td><?= (int)$pk['allow_custom_amount'] ? 'مخصّص' : number_format((float)$pk['price'], 2).'$' ?></td>
+            <td><?= (int)$pk['quantity'] ?> <?= e($pk['currency']) ?></td>
+            <td><?= e($pk['tag']) ?></td>
+            <td><a href="?action=admin_delete_package&id=<?= (int)$pk['id'] ?>&csrf=<?= csrf_token() ?>" onclick="return confirm('حذف؟')" style="color:var(--danger)">🗑️</a></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php else: ?>
+          <p style="color:var(--muted);font-size:13px">لا توجد باقات بعد. ابدأ بإضافة باقات لأحد منتجاتك.</p>
+        <?php endif; ?>
+      </div>
+
     <?php elseif ($tab === 'wallet_config'): ?>
       <div class="admin-box">
         <h3><?= icon('coin', 'ic') ?> إعدادات نظام المحفظة</h3>
@@ -6612,11 +7131,34 @@ default:
 <footer><?= setting('footer_text') ? e(setting('footer_text')) : '© ' . date('Y') . ' ' . e($siteName) . ' — جميع الحقوق محفوظة' ?></footer>
 
 <?php if (!isset($_COOKIE['policy_accepted']) || $_COOKIE['policy_accepted'] !== setting('policy_version', '1')): ?>
-<div class="policy-modal" id="policyModal">
-  <div class="policy-box">
-    <h2><?= icon('shield', 'ic') ?>أهلاً بك</h2>
-    <p style="margin:12px 0;color:var(--muted)">باستخدامك للموقع أنت توافق على <a href="?page=privacy" style="color:var(--accent2)">سياسة الخصوصية</a> و<a href="?page=terms" style="color:var(--accent2)">شروط الاستخدام</a>.</p>
-    <button class="btn btn-primary" style="width:100%" onclick="acceptPolicy()">موافق وأستمر</button>
+<div class="policy-modal policy-modal-pro" id="policyModal">
+  <div class="policy-box policy-box-pro">
+    <div class="policy-hero">
+      <div class="policy-hero-icon"><?= icon('shield', 'ic ic-lg') ?></div>
+      <h2>أهلاً بك في <?= e($siteName) ?></h2>
+      <p>لتوفير أفضل تجربة لك، نستخدم كوكيز لحفظ جلستك وتفضيلاتك. قبل المتابعة، يرجى الموافقة على الشروط.</p>
+    </div>
+    <div class="policy-checks">
+      <label class="policy-check">
+        <input type="checkbox" id="pcTerms" checked>
+        <span class="pc-box"></span>
+        <span class="pc-text">أوافق على <a href="?page=terms" target="_blank">شروط الاستخدام</a></span>
+      </label>
+      <label class="policy-check">
+        <input type="checkbox" id="pcPrivacy" checked>
+        <span class="pc-box"></span>
+        <span class="pc-text">أوافق على <a href="?page=privacy" target="_blank">سياسة الخصوصية</a></span>
+      </label>
+      <label class="policy-check">
+        <input type="checkbox" id="pcAge" checked>
+        <span class="pc-box"></span>
+        <span class="pc-text">أُقرّ بأنني بلغت 13 عاماً أو أكثر</span>
+      </label>
+    </div>
+    <div class="policy-actions">
+      <button class="btn-policy-accept" onclick="acceptPolicy()"><?= icon('check','ic-sm') ?> موافق ومتابعة</button>
+      <a href="?page=privacy" class="btn-policy-reject">قراءة السياسة كاملة</a>
+    </div>
   </div>
 </div>
 <?php endif; ?>
