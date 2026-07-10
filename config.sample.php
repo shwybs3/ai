@@ -27,13 +27,19 @@ define('OWNER_ID', '');
 define('MONEYTAG_SCRIPT', ''); // كود/سكربت الإعلانات الخاص بك
 
 // ===== Google AdMob (للتطبيق APK) =====
-define('ADMOB_APP_ID', '');        // ca-app-pub-xxxx~xxxx
-define('ADMOB_REWARDED_ID', '');   // وحدة الإعلان المكافأ (شاهد 30 ثانية)
-define('ADMOB_INTERSTitial_ID', ''); // إعلان بيني (كابتشا 5 ثوانٍ)
+// ملاحظة: هذه القيم يمكن ضبطها أيضاً من لوحة الإدارة » تبويب «إعلانات».
+// مُعرّفات AdMob ليست أسراراً (تُضمَّن في التطبيق العميل علناً).
+define('ADMOB_APP_ID', 'ca-app-pub-5506877998492189~9990105460');        // معرّف تطبيق AdMob
+define('ADMOB_REWARDED_ID', 'ca-app-pub-5506877998492189/9929596951');   // إعلان مكافأ بيني (شاهد 30 ثانية)
+define('ADMOB_INTERSTITIAL_ID', ''); // إعلان بيني قياسي للكابتشا (أنشئ وحدة منفصلة في AdMob)
 
 // ===== OpenRouter AI =====
 // المفتاح يمكن ضبطه أيضاً من لوحة الإدارة، وهذه قيمة افتراضية اختيارية
 define('OPENROUTER_KEY', '');
+
+// ===== Google AdSense =====
+// يمكن ضبط المعرّف أيضاً من لوحة الإدارة ← الإعدادات ← adsense_client_id
+define('ADSENSE_CLIENT_ID', 'ca-pub-5506877998492189');
 
 // ===== عام =====
 define('SITE_URL', ''); // رابط الموقع بدون / في النهاية

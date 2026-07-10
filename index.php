@@ -1,22 +1,31 @@
 <?php
 /**
- * Yassota Store — منصة متجر إلكتروني + نظام أرباح ومحفظة + لوحة إدارة
+ * zanxpk — متجر تطبيقات وألعاب أندرويد + متجر منتجات رقمية + لوحة إدارة
  * ملف واحد يحتوي كل شيء: PHP + HTML + CSS + JS
  */
 
 error_reporting(E_ALL & ~E_DEPRECATED & ~E_NOTICE);
-session_set_cookie_params(60 * 60 * 24 * 7); // أسبوع
+session_set_cookie_params([
+    'lifetime' => 60 * 60 * 24 * 7, // أسبوع
+    'path' => '/',
+    'secure' => !empty($_SERVER['HTTPS']),
+    'httponly' => true,
+    'samesite' => 'Lax',
+]);
 session_start();
+
+header('X-Content-Type-Options: nosniff');
+header('X-Frame-Options: SAMEORIGIN');
+header('Referrer-Policy: strict-origin-when-cross-origin');
+
+// تسريع: ضغط GZIP للاستجابة إن لم يكن مفعّلاً سيرفرياً (يوفّر ~70% من حجم HTML)
+if (!ob_start('ob_gzhandler')) ob_start();
 
 if (!file_exists(__DIR__ . '/config.php')) {
     die('يرجى إنشاء config.php من config.sample.php أولاً.');
 }
 require __DIR__ . '/config.php';
-
-// ثوابت اختيارية قد لا تكون موجودة في config.php القديم
-foreach ([
-    'ADMOB_APP_ID', 'ADMOB_REWARDED_ID', 'ADMOB_INTERSTitial_ID', 'OPENROUTER_KEY',
-] as $opt) { if (!defined($opt)) define($opt, ''); }
+require __DIR__ . '/image_optimizer.php';
 
 /* ======================================================================
    1) DB CONNECTION + AUTO SCHEMA
@@ -28,10 +37,19 @@ function db(): PDO
     try {
         if (DB_DRIVER === 'sqlite') {
             $pdo = new PDO('sqlite:' . __DIR__ . '/database.sqlite');
+            // تسريع SQLite: WAL journal (قراءة متزامنة) + synchronous NORMAL + cache 20MB
+            $pdo->exec("PRAGMA journal_mode = WAL");
+            $pdo->exec("PRAGMA synchronous = NORMAL");
+            $pdo->exec("PRAGMA cache_size = -20000");
+            $pdo->exec("PRAGMA temp_store = MEMORY");
+            $pdo->exec("PRAGMA mmap_size = 268435456");
         } else {
             $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
             $pdo = new PDO($dsn, DB_USER, DB_PASS, [
                 PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_EMULATE_PREPARES => false,
+                PDO::ATTR_PERSISTENT => true, // اتصالات دائمة (استعادة سريعة عبر الطلبات)
+                PDO::MYSQL_ATTR_INIT_COMMAND => "SET NAMES utf8mb4",
             ]);
         }
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
@@ -39,6 +57,18 @@ function db(): PDO
         die('فشل الاتصال بقاعدة البيانات: ' . htmlspecialchars($e->getMessage()));
     }
     return $pdo;
+}
+
+function add_column_if_missing(PDO $pdo, string $table, string $col, string $def): void
+{
+    try {
+        $colSql = DB_DRIVER === 'sqlite' ? "PRAGMA table_info($table)" : "SHOW COLUMNS FROM $table";
+        $cols = [];
+        foreach ($pdo->query($colSql)->fetchAll() as $row) {
+            $cols[] = DB_DRIVER === 'sqlite' ? $row['name'] : $row['Field'];
+        }
+        if (!in_array($col, $cols, true)) $pdo->exec("ALTER TABLE $table ADD COLUMN $col $def");
+    } catch (Throwable $e) {}
 }
 
 function migrate(): void
@@ -52,6 +82,8 @@ function migrate(): void
     "CREATE TABLE IF NOT EXISTS users (
         id $id,
         google_id VARCHAR(64) NULL,
+        username VARCHAR(60) NULL UNIQUE,
+        password_hash VARCHAR(255) NULL,
         email VARCHAR(190) NOT NULL UNIQUE,
         name VARCHAR(190) NULL,
         avatar VARCHAR(500) NULL,
@@ -151,7 +183,17 @@ function migrate(): void
     )$engine",
     "CREATE TABLE IF NOT EXISTS pages (
         slug VARCHAR(40) PRIMARY KEY,
-        content TEXT NULL
+        content TEXT NULL,
+        meta_title VARCHAR(190) NULL,
+        meta_description VARCHAR(255) NULL
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS tickers (
+        id $id,
+        text VARCHAR(255) NOT NULL,
+        link VARCHAR(500) NULL,
+        active TINYINT NOT NULL DEFAULT 1,
+        sort_order INT NOT NULL DEFAULT 0,
+        created_at $ts
     )$engine",
     "CREATE TABLE IF NOT EXISTS telegram_users (
         chat_id VARCHAR(40) PRIMARY KEY,
@@ -165,55 +207,312 @@ function migrate(): void
         day VARCHAR(10) NOT NULL,
         count INT NOT NULL DEFAULT 0
     )$engine",
-    "CREATE TABLE IF NOT EXISTS wheel_spins (
+    "CREATE TABLE IF NOT EXISTS activity_log (
         id $id,
-        user_id INT NOT NULL,
-        prize INT NOT NULL,
-        cost INT NOT NULL,
+        admin_id INT NOT NULL,
+        admin_name VARCHAR(120) NOT NULL,
+        field VARCHAR(60) NOT NULL,
+        filename VARCHAR(255) NOT NULL,
+        url VARCHAR(500) NOT NULL,
         created_at $ts
     )$engine",
-    "CREATE TABLE IF NOT EXISTS ad_watch_logs (
+    "CREATE TABLE IF NOT EXISTS bot_broadcast_queue (
         id $id,
-        user_id INT NOT NULL,
-        day VARCHAR(10) NOT NULL,
-        count INT NOT NULL DEFAULT 0
+        product_id INT NOT NULL,
+        sent TINYINT NOT NULL DEFAULT 0,
+        created_at $ts
     )$engine",
-    "CREATE TABLE IF NOT EXISTS chat_groups (
+    "CREATE TABLE IF NOT EXISTS apps (
         id $id,
         name VARCHAR(190) NOT NULL,
-        icon VARCHAR(20) NULL,
-        link VARCHAR(500) NOT NULL,
-        members VARCHAR(40) NULL,
+        slug VARCHAR(190) NULL,
+        kind VARCHAR(10) NOT NULL DEFAULT 'app',
+        package_name VARCHAR(190) NULL,
+        version VARCHAR(40) NULL,
+        size_label VARCHAR(40) NULL,
+        min_android VARCHAR(20) NULL,
+        category VARCHAR(80) NULL,
+        developer_name VARCHAR(190) NULL,
+        developer_website VARCHAR(300) NULL,
+        privacy_policy_url VARCHAR(300) NULL,
+        icon VARCHAR(500) NULL,
+        banner_image VARCHAR(500) NULL,
+        screenshots TEXT NULL,
+        video_url VARCHAR(500) NULL,
+        short_description VARCHAR(300) NULL,
+        description TEXT NULL,
+        changelog TEXT NULL,
+        permissions TEXT NULL,
+        download_url VARCHAR(500) NOT NULL DEFAULT '',
+        seo_title VARCHAR(190) NULL,
+        seo_description VARCHAR(255) NULL,
+        seo_keywords VARCHAR(255) NULL,
+        rating_avg DECIMAL(3,2) NOT NULL DEFAULT 0,
+        views INT NOT NULL DEFAULT 0,
+        downloads INT NOT NULL DEFAULT 0,
+        likes_count INT NOT NULL DEFAULT 0,
+        dislikes_count INT NOT NULL DEFAULT 0,
+        status VARCHAR(20) NOT NULL DEFAULT 'published',
+        publisher_id INT NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS wishlist (
+        id $id,
+        user_id INT NOT NULL,
+        product_id INT NOT NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS user_downloads (
+        id $id,
+        user_id INT NOT NULL,
+        app_id INT NOT NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS coupons (
+        id $id,
+        code VARCHAR(40) NOT NULL,
+        discount_percent DECIMAL(5,2) NOT NULL DEFAULT 0,
+        max_uses INT NOT NULL DEFAULT 0,
+        used_count INT NOT NULL DEFAULT 0,
+        active TINYINT NOT NULL DEFAULT 1,
+        expires_at VARCHAR(20) NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS app_reports (
+        id $id,
+        app_id INT NOT NULL,
+        user_id INT NULL,
+        message VARCHAR(500) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'open',
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS reviews (
+        id $id,
+        product_id INT NOT NULL,
+        user_id INT NOT NULL,
+        rating INT NOT NULL,
+        comment TEXT NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS openrouter_keys (
+        id $id,
+        label VARCHAR(120) NULL,
+        api_key VARCHAR(255) NOT NULL,
+        active TINYINT NOT NULL DEFAULT 1,
         sort_order INT NOT NULL DEFAULT 0,
-        active TINYINT NOT NULL DEFAULT 1
+        last_error VARCHAR(255) NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS login_attempts (
+        id $id,
+        identity VARCHAR(190) NOT NULL,
+        ip VARCHAR(64) NOT NULL,
+        success TINYINT NOT NULL DEFAULT 0,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS blocked_ips (
+        id $id,
+        ip VARCHAR(64) NOT NULL UNIQUE,
+        reason VARCHAR(255) NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS bot_scripts (
+        id $id,
+        name VARCHAR(190) NOT NULL,
+        description TEXT NULL,
+        category VARCHAR(40) NOT NULL DEFAULT 'bot',
+        icon VARCHAR(20) NULL,
+        file_path VARCHAR(500) NULL,
+        version VARCHAR(40) NULL,
+        is_template TINYINT NOT NULL DEFAULT 0,
+        downloads INT NOT NULL DEFAULT 0,
+        status VARCHAR(20) NOT NULL DEFAULT 'active',
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS app_imports (
+        id $id,
+        source VARCHAR(30) NOT NULL DEFAULT 'telegram',
+        channel_id VARCHAR(40) NULL,
+        message_id VARCHAR(40) NULL,
+        app_id INT NULL,
+        app_name VARCHAR(190) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'ok',
+        note VARCHAR(255) NULL,
+        created_at $ts
     )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
 
-    // أعمدة إضافية (الإحالة + قياس البنر) بشكل آمن لو لم تكن موجودة
-    $addCol = function (string $table, string $col, string $def) use ($pdo) {
-        try { $pdo->exec("ALTER TABLE $table ADD COLUMN $col $def"); } catch (Throwable $e) { /* موجود مسبقاً */ }
-    };
-    $addCol('users', 'ref_code', "VARCHAR(20) NULL");
-    $addCol('users', 'referred_by', "INT NULL");
-    $addCol('banners', 'title', "VARCHAR(190) NULL");
-    $addCol('banners', 'size_label', "VARCHAR(60) NULL");
-
-    // توليد رموز إحالة لمن لا يملكها
-    foreach ($pdo->query("SELECT id FROM users WHERE ref_code IS NULL OR ref_code=''")->fetchAll() as $row) {
-        $pdo->prepare("UPDATE users SET ref_code=? WHERE id=?")
-            ->execute([substr(strtoupper(bin2hex(random_bytes(4))), 0, 7), $row['id']]);
+    // أعمدة username/password_hash قد تكون مفقودة على تنصيب قديم — نضيفها بأمان
+    $existingCols = [];
+    try {
+        $colSql = DB_DRIVER === 'sqlite' ? "PRAGMA table_info(users)" : "SHOW COLUMNS FROM users";
+        foreach ($pdo->query($colSql)->fetchAll() as $row) {
+            $existingCols[] = DB_DRIVER === 'sqlite' ? $row['name'] : $row['Field'];
+        }
+    } catch (Throwable $e) {}
+    foreach (['username' => 'VARCHAR(60) NULL', 'password_hash' => 'VARCHAR(255) NULL'] as $col => $def) {
+        if (!in_array($col, $existingCols, true)) {
+            try { $pdo->exec("ALTER TABLE users ADD COLUMN $col $def"); } catch (Throwable $e) {}
+        }
     }
+
+    add_column_if_missing($pdo, 'products', 'meta_description', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'pages', 'meta_title', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'pages', 'meta_description', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'orders', 'account_id', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'orders', 'receipt_image', 'VARCHAR(500) NULL');
+    add_column_if_missing($pdo, 'orders', 'tx_note', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'categories', 'image', 'VARCHAR(500) NULL');
+    add_column_if_missing($pdo, 'categories', 'color', 'VARCHAR(20) NULL');
+    add_column_if_missing($pdo, 'users', 'telegram_id', 'VARCHAR(40) NULL');
+    add_column_if_missing($pdo, 'products', 'source', "VARCHAR(20) NULL");
+    add_column_if_missing($pdo, 'products', 'external_id', 'VARCHAR(60) NULL');
+    add_column_if_missing($pdo, 'users', 'referral_code', 'VARCHAR(20) NULL');
+    add_column_if_missing($pdo, 'users', 'referred_by', 'INT NULL');
+    add_column_if_missing($pdo, 'users', 'last_bonus_date', 'VARCHAR(10) NULL');
+    add_column_if_missing($pdo, 'orders', 'coupon_code', 'VARCHAR(40) NULL');
+    add_column_if_missing($pdo, 'users', 'bio', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'users', 'bonus_bio_claimed', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'bonus_profile_claimed', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'last_spin_date', 'VARCHAR(10) NULL');
+    add_column_if_missing($pdo, 'users', 'signup_fingerprint', 'VARCHAR(64) NULL');
+    add_column_if_missing($pdo, 'users', 'referral_bonus_given', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'email_verified', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'email_verify_token', 'VARCHAR(64) NULL');
+    add_column_if_missing($pdo, 'apps', 'likes_count', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'apps', 'dislikes_count', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'apps', 'source', "VARCHAR(20) NULL");
+
+    // ==== المرحلة 1: نظام المحفظة والرصيد + المستويات + إعدادات المستخدم الموسعة ====
+    add_column_if_missing($pdo, 'users', 'balance', 'DECIMAL(12,2) NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'level', 'INT NOT NULL DEFAULT 1');
+    add_column_if_missing($pdo, 'users', 'xp', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'disabled_until', 'VARCHAR(30) NULL');
+    add_column_if_missing($pdo, 'users', 'two_factor_secret', 'VARCHAR(64) NULL');
+    add_column_if_missing($pdo, 'users', 'two_factor_enabled', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'privacy_hide_balance', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'privacy_profile_visibility', "VARCHAR(20) NOT NULL DEFAULT 'public'");
+    add_column_if_missing($pdo, 'users', 'notify_telegram_orders', 'INT NOT NULL DEFAULT 1');
+    add_column_if_missing($pdo, 'users', 'notify_telegram_wallet', 'INT NOT NULL DEFAULT 1');
+    add_column_if_missing($pdo, 'users', 'notify_email_orders', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'notify_email_wallet', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'notify_email_promotions', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'users', 'ui_theme', "VARCHAR(20) NOT NULL DEFAULT 'dark'");
+    add_column_if_missing($pdo, 'users', 'ui_language', "VARCHAR(6) NOT NULL DEFAULT 'ar'");
+    add_column_if_missing($pdo, 'users', 'ui_accent', "VARCHAR(20) NULL");
+    add_column_if_missing($pdo, 'topup_requests', 'tx_number', 'VARCHAR(120) NULL');
+    add_column_if_missing($pdo, 'topup_requests', 'receipt_image', 'VARCHAR(500) NULL');
+    add_column_if_missing($pdo, 'topup_requests', 'tg_message_id', 'VARCHAR(60) NULL');
+
+    // ==== المرحلة 2: نظام Packages (باقات كل منتج) + تحسينات المنتجات ====
+    $pdo->exec("CREATE TABLE IF NOT EXISTS packages (
+        id $id,
+        product_id INT NOT NULL,
+        name VARCHAR(190) NOT NULL,
+        icon VARCHAR(20) NULL,
+        image VARCHAR(500) NULL,
+        price DECIMAL(12,2) NOT NULL DEFAULT 0,
+        old_price DECIMAL(12,2) NULL,
+        quantity INT NOT NULL DEFAULT 0,
+        currency VARCHAR(10) NULL,
+        tag VARCHAR(40) NULL,
+        sort_order INT NOT NULL DEFAULT 0,
+        active TINYINT NOT NULL DEFAULT 1,
+        allow_custom_amount TINYINT NOT NULL DEFAULT 0,
+        min_amount DECIMAL(12,2) NULL,
+        max_amount DECIMAL(12,2) NULL,
+        created_at $ts
+    )$engine");
+    add_column_if_missing($pdo, 'products', 'has_packages', 'INT NOT NULL DEFAULT 0');
+    add_column_if_missing($pdo, 'products', 'slug', 'VARCHAR(120) NULL');
+    add_column_if_missing($pdo, 'products', 'seo_title', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'products', 'seo_keywords', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'orders', 'package_id', 'INT NULL');
+    add_column_if_missing($pdo, 'orders', 'package_name', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'orders', 'custom_amount', 'DECIMAL(12,2) NULL');
+    add_column_if_missing($pdo, 'categories', 'slug', 'VARCHAR(120) NULL');
+    add_column_if_missing($pdo, 'categories', 'kind', "VARCHAR(30) NOT NULL DEFAULT 'general'");
+    add_column_if_missing($pdo, 'categories', 'icon_svg', 'TEXT NULL');
+    add_column_if_missing($pdo, 'categories', 'description', 'TEXT NULL');
+    add_column_if_missing($pdo, 'categories', 'seo_title', 'VARCHAR(190) NULL');
+    add_column_if_missing($pdo, 'categories', 'seo_description', 'VARCHAR(255) NULL');
+    add_column_if_missing($pdo, 'categories', 'visible_on_home', 'INT NOT NULL DEFAULT 1');
+
+    // فهارس على الأعمدة الأكثر استخداماً في الاستعلامات لتسريع تحميل الصفحات وتقليل تجمّد الموقع
+    $indexes = [
+        'idx_users_email' => ['users', 'email'],
+        'idx_users_username' => ['users', 'username'],
+        'idx_users_referred_by' => ['users', 'referred_by'],
+        'idx_products_category' => ['products', 'category_id'],
+        'idx_products_status' => ['products', 'status'],
+        'idx_orders_user' => ['orders', 'user_id'],
+        'idx_orders_product' => ['orders', 'product_id'],
+        'idx_orders_status' => ['orders', 'status'],
+        'idx_topups_user' => ['topup_requests', 'user_id'],
+        'idx_topups_status' => ['topup_requests', 'status'],
+        'idx_withdraws_user' => ['withdraw_requests', 'user_id'],
+        'idx_withdraws_status' => ['withdraw_requests', 'status'],
+        'idx_wallets_type_active' => ['wallets', 'type, active'],
+        'idx_earnlogs_user' => ['earn_logs', 'user_id'],
+        'idx_reviews_product' => ['reviews', 'product_id'],
+        'idx_userdownloads_user' => ['user_downloads', 'user_id'],
+        'idx_userdownloads_app' => ['user_downloads', 'app_id'],
+        'idx_app_reports_app' => ['app_reports', 'app_id'],
+        'idx_login_attempts_identity' => ['login_attempts', 'identity'],
+        'idx_login_attempts_ip' => ['login_attempts', 'ip'],
+        'idx_login_attempts_created' => ['login_attempts', 'created_at'],
+        'idx_bot_scripts_status' => ['bot_scripts', 'status'],
+    ];
+    foreach ($indexes as $name => [$table, $cols]) {
+        try {
+            if (DB_DRIVER === 'sqlite') {
+                $pdo->exec("CREATE INDEX IF NOT EXISTS $name ON $table ($cols)");
+            } else {
+                $exists = $pdo->query("SHOW INDEX FROM $table WHERE Key_name = '$name'")->fetch();
+                if (!$exists) $pdo->exec("CREATE INDEX $name ON $table ($cols)");
+            }
+        } catch (Throwable $e) {}
+    }
+
+    $pdo->exec("CREATE TABLE IF NOT EXISTS product_suggestions (
+        id " . (DB_DRIVER === 'sqlite' ? 'INTEGER PRIMARY KEY AUTOINCREMENT' : 'INT AUTO_INCREMENT PRIMARY KEY') . ",
+        user_id INT NOT NULL,
+        title VARCHAR(190) NOT NULL,
+        details VARCHAR(500) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'pending',
+        created_at " . (DB_DRIVER === 'sqlite' ? "TEXT DEFAULT (datetime('now'))" : "DATETIME DEFAULT CURRENT_TIMESTAMP") . "
+    )");
 
     // seed default settings
     $defaults = [
-        'site_name' => 'Yassota Store',
-        'site_description' => 'منصة Yassota للتسوق وكسب العملات الرقمية مجاناً',
-        'site_keywords' => 'متجر,تسوق,أرباح,عملات,Yassota',
+        'site_name' => 'شحن ألعاب',
+        'site_description' => 'شحن ألعاب وتطبيقات واشتراكات عبر الشام كاش وسيرياتيل كاش وUSDT — ببجي، فري فاير، كلاش، نتفليكس، سبوتيفاي، ستيم وأكثر',
+        'site_keywords' => 'شحن ألعاب,شام كاش,سيرياتيل كاش,ببجي,فري فاير,كلاش,نتفليكس,سبوتيفاي,ستيم,بطاقات هدايا,USDT,شحن تطبيقات',
         'logo_url' => '',
-        'banner_title' => 'مرحباً بك في Yassota',
-        'banner_subtitle' => 'تسوّق، اربح نقاط، واسحبها أموالاً حقيقية',
+        'banner_title' => 'شحن ألعاب وتطبيقات عبر الشام كاش',
+        'banner_subtitle' => 'ببجي، فري فاير، كلاش، نتفليكس، سبوتيفاي، ستيم — دفع محلي وسريع بالشام كاش وسيرياتيل كاش وUSDT',
+        'banner_bg_image' => '',
+        'footer_text' => '',
+        'buy_button_text' => 'طلب شراء',
+        'empty_products_text' => 'لا توجد منتجات حالياً، تابعنا قريباً',
+        'theme_accent_color' => '#2563eb',
+        'theme_accent2_color' => '#06b6d4',
+        'moneytag_script' => '',
+        'moneytag_sw_enabled' => '0',
+        'moneytag_sw_content' => '',
+        'turnstile_site_key' => '',
+        'turnstile_secret_key' => '',
+        'app_download_wait_seconds' => '5',
+        'thankyou_retry_seconds' => '4',
+        'thankyou_ads_html' => '',
+        'adsense_client_id' => 'ca-pub-5506877998492189',
+        'ads_txt_content' => 'google.com, ca-pub-5506877998492189, DIRECT, f08c47fec0942fa0',
+        'satofill_markup_percent' => '15',
+        'satofill_api_base' => 'https://satofill.com/api',
+        'referral_bonus_points' => '100',
+        'daily_bonus_points' => '20',
         'points_rate' => '0.001',      // 1 نقطة = كم دولار
         'min_withdraw_usd' => '25',
         'captcha_reward' => '10',
@@ -222,62 +521,598 @@ function migrate(): void
         'profit_split_admin' => '95',
         'profit_split_user' => '5',
         'policy_version' => '1',
-        // عجلة الحظ
-        'wheel_cost' => '20',          // تكلفة الدورة بالعملات
-        'wheel_prizes' => '0,5,10,20,50,100,200,500', // جوائز العجلة (تفصلها فاصلة)
-        // الإحالة
-        'referral_reward' => '100',     // مكافأة دعوة صديق
-        // مكافأة مشاهدة إعلان 30 ثانية
-        'ad_watch_reward' => '50',
-        'ad_watch_seconds' => '30',
-        'ad_watch_max_per_day' => '20',
-        // إعلان الكابتشا الإجباري (ثوانٍ)
-        'captcha_ad_seconds' => '5',
-        // شريط الأخبار (كل سطر خبر)
-        'news_ticker' => "🎉 مرحباً بك في منصة Yassota — اربح العملات مجاناً\n💰 اسحب أرباحك عبر USDT والشام كاش\n🔥 عجلة الحظ متاحة الآن — جرّب حظك!",
-        // OpenRouter
-        'openrouter_key' => '',
-        'openrouter_model' => 'openai/gpt-4o-mini',
-        // قياسات البنرات (نص إرشادي للأدمن)
-        'banner_size_hint' => '1200×400 بكسل (نسبة 3:1) — صيغة JPG/PNG/WebP',
+        'bio_bonus_points' => '100',
+        'profile_complete_bonus_points' => '350',
+        'spin_reward_min' => '5',
+        'spin_reward_max' => '200',
+        'spin_max_per_day' => '1',
+        'live_ticker_enabled' => '1',
+        'referral_max_count' => '5',
+        'referral_referred_cut_points' => '50',
+        'welcome_bonus_points' => '200',
+        'ad_enabled' => '1',
+        'ad_zone_id' => '11185011',
+        'auto_translate_enabled' => '1',
+        'support_telegram' => '@layos_he',
+        'telegram_channel_url' => '',
+        'app_notify_enabled' => '1',
+        'google_site_verification' => '',
+        'openrouter_api_key' => '',
+        'openrouter_model' => 'meta-llama/llama-3.3-70b-instruct:free',
+        'openrouter_image_model' => '',
+        'product_image_height' => '96',
+        'cat_tile_size' => '108',
+        'telegram_bot_username' => '',
+        'banner_interval' => '4000',
+        'banner_height' => '160',
+        'home_sections_order' => 'search,carousel,home_categories,apk_promo,ticker,live_ticker,latest_apps,cat_chips',
+        'home_sections_hidden' => 'hero',
+        'banner_carousel_enabled' => '1',
+        'news_ticker_enabled' => '1',
+        'telegram_import_enabled' => '0',
+        'telegram_import_channel_id' => '',
+        'telegram_import_auto_publish' => '0',
+        'apk_download_url' => '',
+        'apk_banner_image' => '',
+        'apk_logo_image' => '',
+        'apk_promo_title' => 'حمّل تطبيقنا الآن',
+        'apk_promo_subtitle' => 'تجربة أسرع وأسهل، تحميل مباشر بدون متصفح',
+        'ad_header_code' => '',
+        'ad_footer_code' => '',
+        'mail_enabled' => '0',
+        'smtp_host' => '',
+        'smtp_port' => '587',
+        'smtp_user' => '',
+        'smtp_pass' => '',
+        'smtp_secure' => 'tls',
+        'mail_from_email' => '',
+        'mail_from_name' => '',
+        'email_verify_required' => '0',
+        'google_review_url' => '',
+        'admob_app_id' => 'ca-app-pub-5506877998492189~9990105460',
+        'admob_rewarded_id' => 'ca-app-pub-5506877998492189/9929596951',
+        'admob_interstitial_id' => '',
+        'admob_test_mode' => '1',
+        // ===== إعدادات المحفظة والشحن =====
+        'wallet_min_topup' => '5',
+        'wallet_max_topup' => '500',
+        'wallet_quick_amounts' => '5,10,25,50,100,200',
+        'wallet_currency' => 'USD',
+        'wallet_currency_symbol' => '$',
+        'wallet_show_balance_in_topbar' => '1',
+        'wallet_page_headline' => 'اشحن محفظتك بأمان',
+        'wallet_page_subheadline' => 'اختر المبلغ، حوّل الدفعة، وفعّل رصيدك خلال دقائق',
+        'wallet_min_withdraw' => '10',
+        'wallet_withdraw_enabled' => '1',
+        // ===== إشعارات تيليجرام =====
+        'tg_notify_new_topup' => '1',
+        'tg_notify_new_withdraw' => '1',
+        'tg_notify_new_order' => '1',
+        'tg_notify_new_user' => '1',
+        'tg_notify_bot_username' => '',
+        // ===== الأمان (2FA) =====
+        'security_2fa_enabled_globally' => '1',
+        'security_login_alert_email' => '0',
+        // ===== المظهر =====
+        'ui_default_theme' => 'dark',
+        'ui_default_language' => 'ar',
+        'ui_allow_theme_change' => '1',
+        'ui_allow_language_change' => '1',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
 
-    foreach (['privacy' => 'سياسة الخصوصية الخاصة بمنصة Yassota...', 'terms' => 'شروط الاستخدام الخاصة بمنصة Yassota...'] as $slug => $content) {
+    // ترحيل لمرة واحدة: إخفاء صندوق البنر الأحمر الكبير (hero) فوق شريط البحث على المواقع التي تعمل مسبقاً،
+    // لأن شريط البنرات الدوّار (carousel) أصبح يغطي نفس الغرض تلقائياً بـ 3 بنرات افتراضية دون الحاجة لصندوق ثابت.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='hero_hidden_migrated'")->fetchColumn() === '') {
+        $hidden = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_hidden'")->fetchColumn();
+        $hiddenParts = array_filter(array_map('trim', explode(',', $hidden)));
+        if (!in_array('hero', $hiddenParts, true)) {
+            $hiddenParts[] = 'hero';
+            $stmt->execute(['home_sections_hidden', implode(',', $hiddenParts), '__force__']);
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('home_sections_hidden', ?) ON CONFLICT(k) DO UPDATE SET v = ?"
+                : "INSERT INTO settings (k, v) VALUES ('home_sections_hidden', ?) ON DUPLICATE KEY UPDATE v = ?")
+                ->execute([implode(',', $hiddenParts), implode(',', $hiddenParts)]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('hero_hidden_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('hero_hidden_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: تحويل الرئيسية لتعرض فقط أحدث التطبيقات والألعاب (latest_apps)
+    // ونقل قسم منتجات البيع (products) إلى صفحة "المتجر" المستقلة في القائمة الجانبية.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='home_apps_first_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_filter(array_map('trim', explode(',', $order)));
+        $orderParts = array_values(array_diff($orderParts, ['products']));
+        if (!in_array('latest_apps', $orderParts, true)) {
+            $pos = array_search('cat_chips', $orderParts, true);
+            if ($pos !== false) array_splice($orderParts, $pos + 1, 0, ['latest_apps']);
+            else $orderParts[] = 'latest_apps';
+        }
+        $newOrder = implode(',', $orderParts);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v = ?"
+            : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v = ?")
+            ->execute([$newOrder, $newOrder]);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_apps_first_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('home_apps_first_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: إضافة قسم بنر تحميل التطبيق (apk_promo) للرئيسية على المواقع التي تعمل مسبقاً.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='apk_promo_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_filter(array_map('trim', explode(',', $order)));
+        if (!in_array('apk_promo', $orderParts, true)) {
+            $pos = array_search('search', $orderParts, true);
+            if ($pos !== false) array_splice($orderParts, $pos + 1, 0, ['apk_promo']);
+            else array_unshift($orderParts, 'apk_promo');
+        }
+        $newOrder = implode(',', $orderParts);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v = ?"
+            : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v = ?")
+            ->execute([$newOrder, $newOrder]);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('apk_promo_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('apk_promo_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة (قديم، أصبح ملغياً): كان يفرض موديل gpt-4o المدفوع، وهذا ما كان يسبب رسائل
+    // "رصيد غير كافٍ" لمستخدمي المفاتيح المجانية. تم إلغاؤه بالترحيل التالي.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='ai_model_default_migrated'")->fetchColumn() === '') {
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('ai_model_default_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('ai_model_default_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: إصلاح مشكلة "رصيد غير كافٍ" — الترحيل السابق كان يفرض موديل openai/gpt-4o المدفوع
+    // على كل المواقع، وهو موديل لا تعمل معه المفاتيح المجانية لـ OpenRouter. نعيد الموديل الافتراضي
+    // إلى موديل مجاني يعمل فعلياً مع مفاتيح OpenRouter المجانية، ونفعّل أيضاً نظام التبديل التلقائي
+    // بين عدة موديلات مجانية عند فشل الموديل المختار (انظر openrouter_chat).
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='ai_free_model_fix_migrated'")->fetchColumn() === '') {
+        $curModel = (string)$pdo->query("SELECT v FROM settings WHERE k='openrouter_model'")->fetchColumn();
+        if ($curModel === '' || $curModel === 'openai/gpt-4o') {
+            $freeModel = 'meta-llama/llama-3.3-70b-instruct:free';
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('openrouter_model', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+                : "INSERT INTO settings (k, v) VALUES ('openrouter_model', ?) ON DUPLICATE KEY UPDATE v=?")
+                ->execute([$freeModel, $freeModel]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('ai_free_model_fix_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('ai_free_model_fix_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: إضافة قسم الأقسام الرئيسية للرئيسية على المواقع القائمة
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='home_categories_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_values(array_filter(array_map('trim', explode(',', $order))));
+        if (!in_array('home_categories', $orderParts, true)) {
+            $pos = array_search('carousel', $orderParts, true);
+            if ($pos !== false) array_splice($orderParts, $pos + 1, 0, ['home_categories']);
+            else array_unshift($orderParts, 'home_categories');
+            $newOrder = implode(',', $orderParts);
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+                : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v=?")
+                ->execute([$newOrder, $newOrder]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('home_categories_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('home_categories_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: ضمان ظهور شريط البنرات الدوّار (carousel) فوق قسم "أحدث التطبيقات" دوماً،
+    // وإضافة مفاتيح تفعيل/تعطيل دائمة للبنرات والشريط الإخباري.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='banner_top_fix_migrated'")->fetchColumn() === '') {
+        $order = (string)$pdo->query("SELECT v FROM settings WHERE k='home_sections_order'")->fetchColumn();
+        $orderParts = array_values(array_filter(array_map('trim', explode(',', $order))));
+        $carouselPos = array_search('carousel', $orderParts, true);
+        $appsPos = array_search('latest_apps', $orderParts, true);
+        if ($carouselPos !== false && $appsPos !== false && $carouselPos > $appsPos) {
+            array_splice($orderParts, $carouselPos, 1);
+            $appsPos = array_search('latest_apps', $orderParts, true);
+            array_splice($orderParts, $appsPos, 0, ['carousel']);
+            $newOrder = implode(',', $orderParts);
+            $pdo->prepare(DB_DRIVER === 'sqlite'
+                ? "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+                : "INSERT INTO settings (k, v) VALUES ('home_sections_order', ?) ON DUPLICATE KEY UPDATE v=?")
+                ->execute([$newOrder, $newOrder]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('banner_top_fix_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('banner_top_fix_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    $siteNameForSeed = setting('site_name', 'Yassota');
+    $pagesSeed = [
+        'privacy' => "نحن في {$siteNameForSeed} نحترم خصوصيتك ونلتزم بحماية بياناتك الشخصية. توضّح هذه السياسة كيفية جمع واستخدام وحماية معلوماتك عند استخدام الموقع.\n\nالمعلومات التي نجمعها: عند التسجيل نجمع الاسم، البريد الإلكتروني، واسم المستخدم. عند استخدام تسجيل الدخول عبر جوجل أو تيليجرام نستلم فقط البيانات الأساسية للملف العام (الاسم والبريد/الصورة). كما نسجّل بيانات تقنية تلقائية مثل عنوان IP ونوع المتصفح لأغراض الأمان ومنع الاحتيال.\n\nاستخدام البيانات: نستخدم بياناتك لتفعيل حسابك، معالجة الطلبات والتحميلات، التواصل معك بخصوص الدعم الفني، وتحسين تجربة الاستخدام. لا نبيع بياناتك الشخصية لأي طرف ثالث.\n\nملفات تعريف الارتباط (Cookies): يستخدم الموقع ملفات تعريف الارتباط لحفظ جلسة تسجيل الدخول وتفضيلات اللغة، وقد تستخدمها شبكات الإعلانات الخارجية (مثل Google Translate وشبكات الإعلانات المعروضة) لأغراض تحسين المحتوى المعروض.\n\nالإعلانات وأطراف ثالثة: قد يعرض الموقع إعلانات من شبكات إعلانية خارجية، وقد تستخدم هذه الشبكات تقنياتها الخاصة لجمع بيانات غير شخصية لتحسين الإعلانات المعروضة. كما تُستخدم خدمة الذكاء الاصطناعي (OpenRouter) لتوليد محتوى وصفي للتطبيقات دون إرسال أي بيانات شخصية للمستخدمين إليها.\n\nملفات APK ومحتوى التطبيقات: روابط التحميل المتوفرة على الموقع يقدّمها أو يرفعها ناشرو المحتوى، ونوصي دوماً بفحص أي ملف قبل تثبيته. الموقع غير مسؤول عن محتوى التطبيقات الخارجية بعد تحميلها.\n\nحقوقك: يمكنك طلب تعديل أو حذف بياناتك أو حسابك بالتواصل معنا عبر صفحة الدعم الفني.\n\nالتعديلات: قد نقوم بتحديث سياسة الخصوصية من وقت لآخر، وسيتم نشر أي تعديل على هذه الصفحة.",
+        'terms' => "باستخدامك لموقع {$siteNameForSeed} فإنك توافق على الالتزام بشروط الاستخدام التالية. يرجى قراءتها بعناية قبل استخدام الموقع.\n\n1) طبيعة الخدمة: يقدّم الموقع روابط تحميل لتطبيقات وألعاب أندرويد ومنتجات رقمية، بعضها معدّل (مهكّر/مود) لأغراض تجريبية وتعليمية. استخدامك لهذه التطبيقات يقع على مسؤوليتك الخاصة بالكامل.\n\n2) لا ضمانات: يُقدَّم المحتوى \"كما هو\" دون أي ضمان صريح أو ضمني بشأن خلوّه من الأخطاء أو ملاءمته لغرض معيّن. لا نضمن استمرار عمل أي رابط تحميل أو توافقه مع جميع الأجهزة.\n\n3) حقوق الملكية الفكرية: جميع العلامات التجارية وأسماء التطبيقات المذكورة في الموقع مملوكة لأصحابها الأصليين، ولا يمثّل عرضها أي ارتباط أو تأييد رسمي من تلك الشركات للموقع.\n\n4) سلوك المستخدم: يُمنع استخدام الموقع لأي غرض غير قانوني، أو محاولة اختراقه، أو نشر محتوى مخالف عبر التعليقات أو الحسابات.\n\n5) الحسابات: أنت مسؤول عن سرية بيانات حسابك وكل نشاط يتم من خلاله. نحتفظ بحق تعليق أو حذف أي حساب يخالف هذه الشروط.\n\n6) الإعلانات والروابط الخارجية: قد يحتوي الموقع على إعلانات أو روابط لمواقع خارجية، ولسنا مسؤولين عن محتوى أو سياسات تلك المواقع.\n\n7) حدود المسؤولية: لا يتحمل {$siteNameForSeed} أي مسؤولية عن أضرار مباشرة أو غير مباشرة تنتج عن استخدام التطبيقات أو الملفات المحمّلة من الموقع.\n\n8) التعديلات: نحتفظ بحق تعديل هذه الشروط في أي وقت، ويُعتبر استمرارك باستخدام الموقع موافقة على التعديلات.\n\n9) التواصل: لأي استفسار قانوني يمكنك التواصل معنا عبر صفحة الدعم الفني.",
+        'about' => "{$siteNameForSeed} هو متجر عربي شامل لتطبيقات وألعاب أندرويد، يقدّم نسخاً أصلية ومعدّلة (مهكّرة) لأشهر التطبيقات والألعاب مع شرح مفصّل لكل تطبيق: المميزات، الصلاحيات المطلوبة، لقطات الشاشة، وروابط تحميل مباشرة وسريعة دون تعقيد.\n\nماذا نقدّم؟\n• تحميل تطبيقات وألعاب أندرويد محدّثة باستمرار.\n• وصف تفصيلي ومولّد بالذكاء الاصطناعي لكل تطبيق لمساعدتك على فهم مميزاته بسرعة.\n• متجر منتجات رقمية مستقل (بطاقات شحن، خدمات رقمية).\n• نظام تقييم شفاف (إعجاب/عدم إعجاب) لكل تطبيق يعكس رأي المستخدمين الحقيقيين.\n• دعم فني سريع عبر تيليجرام.\n\nنحرص في {$siteNameForSeed} على تحديث المحتوى باستمرار وتقديم تجربة استخدام سريعة وسلسة بدون تعقيدات.",
+        'contact' => 'لأي استفسار أو دعم فني يمكنك التواصل معنا عبر تيليجرام: ' . ($defaults['support_telegram'] ?? '@layos_he') . ' وسيتم الرد عليك في أقرب وقت ممكن. فريق الدعم متاح للإجابة عن استفساراتك المتعلقة بالتحميلات، الحسابات، أو المنتجات الرقمية على مدار الأسبوع.',
+        'faq' => "س: كيف أحمّل تطبيقاً أو لعبة؟\nج: افتح صفحة التطبيق، اضغط «تحميل الآن»، انتظر العد التنازلي القصير ثم اضغط رابط التحميل المباشر.\n\nس: هل التطبيقات المعدّلة (المهكّرة) آمنة؟\nج: نحرص على فحص الروابط المعروضة، لكننا ننصح دوماً بفحص أي ملف بعد التحميل قبل تثبيته كإجراء احتياطي.\n\nس: التطبيق لا يعمل بعد التثبيت، ما الحل؟\nج: تأكد من توافق إصدار أندرويد لديك مع المتطلبات المذكورة بصفحة التطبيق، وتأكد من تفعيل «تثبيت من مصادر غير معروفة».\n\nس: كيف أشتري منتجاً من المتجر؟\nج: اختر المنتج واضغط طلب شراء، ثم أكمل عملية الدفع عبر أحد طرق الدفع المتاحة وأرفق إيصال التحويل، وسيقوم فريقنا بمراجعة الطلب وتفعيله.\n\nس: كم تستغرق معالجة الطلب؟\nج: عادة بين دقائق وحتى 24 ساعة بحسب نوع المنتج.\n\nس: هل يلزم تسجيل الدخول للتحميل؟\nج: لا، يمكنك تحميل أي تطبيق أو لعبة مباشرة بدون تسجيل دخول. التسجيل مطلوب فقط للشراء أو حفظ المفضّلة.\n\nس: نسيت كلمة المرور، ماذا أفعل؟\nج: استخدم رابط استعادة كلمة المرور من صفحة تسجيل الدخول.",
+        'guide' => "تحميل تطبيقات وألعاب أندرويد بأمان أصبح أسهل عبر {$siteNameForSeed}. في هذا الدليل نشرح خطوة بخطوة كيفية تحميل وتثبيت أي تطبيق أو لعبة من الموقع دون أي تعقيد، بدون الحاجة لتسجيل الدخول.\n\n1) ابحث عن التطبيق أو اللعبة عبر شريط البحث أو من خلال تصنيفات التطبيقات والألعاب في الصفحة الرئيسية.\n2) افتح صفحة التطبيق لقراءة الوصف، الصلاحيات المطلوبة، حجم الملف، والإصدار المتوافق.\n3) اضغط زر «تحميل الآن» وانتظر ثواني قليلة حتى يظهر رابط التحميل المباشر.\n4) بعد انتهاء التحميل، فعّل خيار «تثبيت من مصادر غير معروفة» من إعدادات هاتفك إذا طُلب منك ذلك، ثم افتح الملف لتثبيته.\n5) ننصح دوماً بفحص أي ملف APK باستخدام برنامج حماية قبل التثبيت، خصوصاً النسخ المعدّلة (المهكّرة).\n\nلماذا {$siteNameForSeed}؟ لأننا نوفّر تحميلاً مباشراً وسريعاً بدون روابط مختصرة مزيفة، مع تحديث مستمر لقاعدة التطبيقات والألعاب وتفاصيل دقيقة لكل إصدار.",
+        'top' => "إليك قائمة محدّثة بأفضل تطبيقات وألعاب أندرويد المتوفرة حالياً على {$siteNameForSeed}، شاملة النسخ الأصلية والمعدّلة (مود) الأكثر طلباً من زوار الموقع.\n\nأفضل فئات التطبيقات: تطبيقات التواصل الاجتماعي، تطبيقات تحرير الصور والفيديو، تطبيقات الإنتاجية والأدوات، وتطبيقات البث والمشاهدة.\n\nأفضل فئات الألعاب: ألعاب الأكشن والمغامرات، ألعاب الإستراتيجية، ألعاب الرياضة، وألعاب الذكاء والتسلية الخفيفة. كثير من هذه الألعاب متوفرة بنسخ معدّلة تتضمن مزايا إضافية مثل الأموال غير المحدودة أو فتح كل المراحل.\n\nيتم تحديث هذه القائمة باستمرار بناءً على أحدث الإضافات وأكثر التطبيقات تحميلاً، تابع صفحة التطبيقات والألعاب للحصول على كل الإضافات الجديدة فور نشرها.",
+        'article-charge-games' => '<article class="page-article"><h1>دليل شامل: كيفية شحن ألعاب الجوال والتطبيقات والاشتراكات عبر وسائل الدفع المحلية</h1><p class="article-lead">هل تريد شحن لعبتك المفضّلة أو الاشتراك في خدمة رقمية بدون بطاقة ائتمان دولية؟ هذا الدليل يشرح لك خطوة بخطوة كيفية الشحن عبر وسائل الدفع المحلية المتاحة في العالم العربي، من سيرياتيل كاش والشام كاش وصولاً إلى USDT.</p><h2>لماذا نحتاج وسائل الدفع المحلية؟</h2><p>يواجه كثير من المستخدمين العرب عقبة عدم امتلاك بطاقة فيزا أو ماستركارد للشراء مباشرةً من متاجر الألعاب العالمية. هنا يأتي دور وسائل الدفع المحلية كالمحافظ الإلكترونية وبطاقات الشحن التي تتيح لك الاستمتاع بخدماتك الرقمية بعملتك المحلية وبسهولة تامة.</p><h2>أبرز ألعاب وخدمات يمكن شحنها</h2><ul><li><strong>ببجي موبايل (PUBG Mobile):</strong> شحن UC لشراء ملابس وأسلحة وباصات الساحة الملكية.</li><li><strong>فري فاير (Free Fire):</strong> شحن الجواهر لفتح الشخصيات والملابس والسلاح الخاص.</li><li><strong>موبايل ليجندز (Mobile Legends):</strong> شحن الماسات لشراء الأبطال والجلود.</li><li><strong>كلاش أوف كلانس / كلاش رويال:</strong> شحن الجواهر لتسريع البناء والترقيات.</li><li><strong>نتفليكس وشاهد ووتش إيت:</strong> اشتراكات بث الفيديو الشهرية.</li><li><strong>سبوتيفاي ويوتيوب بريميوم:</strong> إزالة الإعلانات والاستماع بدون إنترنت.</li><li><strong>تيليجرام بريميوم:</strong> ملصقات لا محدودة وسرعة تحميل أعلى.</li></ul><h2>وسائل الدفع المتاحة</h2><h3>1. سيرياتيل كاش</h3><p>خدمة دفع محلية سورية تتيح لك تحويل الرصيد إلى متاجر الشحن. العملية: اتصل بـ 700، حوّل المبلغ لرقم البائع، أرسل صورة الإيصال، وانتظر تفعيل الشحن خلال دقائق.</p><h3>2. الشام كاش</h3><p>منصة دفع إلكتروني تخدم المستخدمين في سوريا والعراق وعدة دول عربية. تتيح التحويل الفوري بين المستخدمين. ادفع رصيد من تطبيق الشام كاش مباشرةً لحساب البائع.</p><h3>3. USDT (العملة المشفرة)</h3><p>خيار مثالي للمستخدمين الذين يمتلكون محافظ عملات مشفرة. يدعم شبكة TRC20 (تروني) الأقل في الرسوم. الحد الأدنى للدفع 10 دولار عادةً.</p><h3>4. Payeer وWebMoney</h3><p>محافظ إلكترونية عالمية تقبل التحويل بعدة عملات وتوفر طرق إيداع متعددة للمستخدمين العرب.</p><h2>خطوات الشحن على منصتنا</h2><ol><li>افتح المتجر واختر المنتج المطلوب (مثل: 660 UC ببجي).</li><li>اضغط "طلب شراء" وأدخل معلومات حسابك في اللعبة (ID الشخصية).</li><li>اختر طريقة الدفع المناسبة لك.</li><li>حوّل المبلغ وارفع صورة الإيصال.</li><li>انتظر التحقق من الدفع وتفعيل الشحن (عادةً خلال ساعة).</li><li>ستصلك رسالة تأكيد عبر الموقع أو تيليجرام عند اكتمال الشحن.</li></ol><h2>نصائح لتجنب الاحتيال</h2><ul><li>تعامل فقط مع المتاجر الموثوقة والمتاحة بشفافية مثل متجرنا.</li><li>لا تشارك كلمة مرور حسابك في اللعبة مع أي أحد.</li><li>احتفظ بصورة إيصال التحويل كدليل على الدفع.</li><li>تحقق من السعر الحالي قبل الشراء لأسعار العملات تتغير يومياً.</li></ul><h2>الخلاصة</h2><p>الشحن عبر وسائل الدفع المحلية أصبح سهلاً وآمناً مع الخدمات الصحيحة. لا تحتاج بعد الآن إلى بطاقة بنكية دولية للاستمتاع بألعابك وخدماتك الرقمية المفضّلة. استعرض منتجاتنا الرقمية واختر ما يناسبك.</p></article>',
+        'article-pubg' => '<article class="page-article"><h1>دليل شحن ببجي موبايل PUBG Mobile UC بأسعار منخفضة عبر الدفع المحلي</h1><p class="article-lead">ببجي موبايل (PUBG Mobile) من أشهر ألعاب الجوال في العالم العربي، وشحن UC (العملة الداخلية) يفتح لك عالماً كاملاً من التخصيص والمزايا. هذا الدليل يشرح كل شيء عن UC وكيفية الحصول عليها بأفضل سعر عبر الدفع المحلي.</p><h2>ما هو UC في ببجي موبايل؟</h2><p>UC اختصار لـ Unknown Cash، وهي العملة الرسمية داخل لعبة PUBG Mobile. تُستخدم UC لشراء: ملابس وأزياء شخصيتك، مركبات مزخرفة، تأثيرات الأسلحة، باصات Royale Pass الموسمية، وحزم الصندوق العشوائي (Crates). كلما كان لديك UC أكثر، كلما تمكّنت من تخصيص تجربة اللعب بشكل أكبر.</p><h2>كميات UC وأسعارها الرسمية</h2><ul><li><strong>60 UC:</strong> الباقة الأصغر للتجربة الأولى</li><li><strong>325 UC:</strong> مناسبة لشراء أزياء محدودة</li><li><strong>660 UC:</strong> الأكثر مبيعاً، تكفي لباص سيزون واحد</li><li><strong>1800 UC:</strong> للاعبين المتحمسين</li><li><strong>3850 UC:</strong> أفضل سعر للكميات الكبيرة</li><li><strong>8100 UC:</strong> للمحترفين وعشاق التخصيص</li></ul><h2>لماذا الشراء عبر موقعنا أوفر؟</h2><p>الشراء المباشر من تطبيق PUBG Mobile يُطبّق رسوم منصة (Google Play أو App Store) تصل إلى 15-30%. عبر موقعنا، تحصل على نفس الـ UC الرسمية بأسعار أقل لأننا نستخدم قنوات شحن بديلة معتمدة توفر تكلفة المنصة.</p><h2>طريقة الشحن خطوة بخطوة</h2><ol><li><strong>احصل على ID لاعبك:</strong> افتح PUBG Mobile → اضغط على صورة شخصيتك → ستجد الـ ID المكوّن من 9-10 أرقام.</li><li><strong>اختر الباقة:</strong> افتح المتجر على موقعنا وحدد كمية UC المطلوبة.</li><li><strong>أدخل بيانات حسابك:</strong> معرف اللاعب (Player ID) فقط، لا تحتاج إلى كلمة المرور.</li><li><strong>اختر طريقة الدفع:</strong> سيرياتيل كاش، الشام كاش، USDT أو غيرها.</li><li><strong>أتمم الدفع وارفع الإيصال:</strong> أرسل صورة تحويل واضحة.</li><li><strong>انتظر التأكيد:</strong> يصلك UC في حسابك خلال 15-60 دقيقة.</li></ol><h2>نصائح للاستفادة القصوى من UC</h2><ul><li>اشترِ Royale Pass في بداية الموسم (يمنحك عوائد UC إضافية).</li><li>لا تصرف UC على الصناديق العشوائية (Crates) — عوائدها غير مضمونة.</li><li>راقب العروض الموسمية الخاصة التي تُضاعف قيمة UC.</li><li>شارك في الأحداث اليومية للحصول على UC ومكافآت مجانية.</li></ul><h2>أسئلة شائعة عن شحن UC</h2><p><strong>هل يصل UC فوراً؟</strong> نعم، معظم الطلبات تُنجز خلال ساعة في أوقات الذروة.</p><p><strong>هل يمكن استرجاع UC؟</strong> لا، UC التي أُضيفت للحساب غير قابلة للاسترجاع، لذا تأكد من صحة Player ID.</p><p><strong>هل الشحن آمن؟</strong> نعم، نستخدم طرق شحن معتمدة لا تتطلب كلمة مرور حسابك.</p><h2>الخلاصة</h2><p>شحن UC في ببجي موبايل عبر وسائل الدفع المحلية أصبح الخيار الأذكى للاعبين العرب. وفّر مالك واستمتع بتجربة لعب أفضل مع متجرنا الموثوق.</p></article>',
+        'article-referral' => '<article class="page-article"><h1>نظام الإحالة: كيف تكسب نقاطاً مجانية بمشاركة رابطك مع الأصدقاء</h1><p class="article-lead">نظام الإحالة في موقعنا يتيح لك ربح نقاط مجانية بكل بساطة: شارك رابطك الخاص مع أصدقائك، وعندما يسجّلون عبر رابطك، تحصل أنت وهم على نقاط مكافأة يمكن استبدالها لاحقاً. هذا الدليل يشرح كل ما تحتاج معرفته.</p><h2>كيف يعمل نظام الإحالة؟</h2><p>عند تسجيلك في الموقع، يُنشأ لك رابط إحالة فريد يحتوي على رمز خاص بك. كل شخص يُسجّل عبر رابطك يُحسب إحالةً ناجحة، وتحصل فور تسجيله على نقاط مكافأة تُضاف تلقائياً لرصيد نقاطك.</p><h2>مزايا نظام الإحالة</h2><ul><li><strong>نقاط فورية:</strong> تُضاف نقاط الإحالة مباشرةً بعد تسجيل دخول صديقك للمرة الأولى.</li><li><strong>مكافأة مزدوجة:</strong> صديقك أيضاً يحصل على نقاط ترحيبية عند التسجيل عبر رابطك.</li><li><strong>لا حد أقصى:</strong> يمكنك دعوة عدد غير محدود من الأصدقاء والاستمرار في تراكم النقاط.</li><li><strong>تتبع فوري:</strong> تستطيع متابعة عدد إحالاتك الناجحة من صفحة ملفك الشخصي.</li></ul><h2>كيف تجد رابط إحالتك؟</h2><ol><li>سجّل دخولك إلى حسابك في الموقع.</li><li>اذهب إلى صفحة "ملفي الشخصي" من القائمة الجانبية.</li><li>ستجد قسم "رابط الإحالة" مع زر نسخ سريع.</li><li>شارك الرابط عبر واتساب، تيليجرام، أو أي منصة أخرى.</li></ol><h2>كيف تستخدم النقاط المكتسبة؟</h2><p>النقاط لها قيمة مالية حقيقية: كل 1000 نقطة تساوي دولاراً واحداً (وفق السعر الحالي). يمكنك:</p><ul><li><strong>سحب النقاط:</strong> تحويلها لمحفظتك الرقمية (USDT، الشام كاش، إلخ) عبر صفحة السحب.</li><li><strong>شراء منتجات:</strong> استخدام النقاط في المتجر مستقبلاً.</li><li><strong>المشاركة في المسابقات:</strong> استخدامها للمشاركة في أحداث خاصة.</li></ul><h2>طرق إضافية لكسب النقاط</h2><p>الإحالة ليست الطريقة الوحيدة لكسب النقاط، إليك المزيد:</p><ul><li><strong>مكافأة الترحيب:</strong> نقاط فور إنشاء حسابك.</li><li><strong>مكافأة يومية:</strong> سجّل دخولك كل يوم للحصول على نقاط يومية.</li><li><strong>إكمال الملف الشخصي:</strong> أضف صورة وسيرة ذاتية لحصابك.</li><li><strong>حل الكابتشا:</strong> حلّ تحديات الكابتشا اليومية لكسب نقاط إضافية.</li><li><strong>عجلة الحظ:</strong> الف العجلة مرة واحدة يومياً لفرصة الحصول على جائزة نقاط.</li></ul><h2>شروط نظام الإحالة</h2><ul><li>المستخدم المُحال يجب أن يسجّل بريد إلكتروني جديد غير مستخدم مسبقاً.</li><li>لا تُقبل الإحالات عبر حسابات مزيفة أو مكررة من نفس الجهاز.</li><li>تُحسب الإحالة ناجحةً فقط عند اكتمال التسجيل وتسجيل الدخول للمرة الأولى.</li><li>الحد الأقصى للإحالات القابلة للمكافأة يظهر في إعدادات صفحتك الشخصية.</li></ul><h2>الخلاصة</h2><p>نظام الإحالة طريقة ممتازة لبناء رصيد من النقاط بدون أي تكلفة. كلما شاركت رابطك أكثر، كلما تراكمت نقاطك بشكل أسرع. ابدأ الآن وشارك رابطك مع أصدقائك!</p></article>',
+        'article-app-reviews' => '<article class="page-article"><h1>مراجعات أفضل تطبيقات الأندرويد لعام 2025: دليلك الشامل</h1><p class="article-lead">مع آلاف التطبيقات المتاحة على متجر Google Play، أصبح اختيار التطبيق المناسب تحدياً حقيقياً. هنا نستعرض أفضل التطبيقات المجربة فعلياً في مختلف الفئات، مع ذكر الإيجابيات والسلبيات بصدق وشفافية.</p><h2>تطبيقات التواصل الاجتماعي</h2><h3>واتساب (WhatsApp)</h3><p><strong>التقييم: 4.5/5</strong></p><p>لا يزال واتساب الأول عربياً في المراسلة الفورية. مميزاته: رسائل مجانية، مكالمات صوتية وفيديو، مشاركة الملفات حتى 2GB، وضع النجوم على الرسائل المهمة. عيبه الوحيد: غياب النسخ المتعددة من حساب واحد على جهاز واحد.</p><h3>تيليجرام (Telegram)</h3><p><strong>التقييم: 5/5</strong></p><p>الأقوى في الخصوصية والمرونة. يتميز بالقنوات، المجموعات الكبيرة حتى 200,000 عضو، البوتات الآلية، والتشفير الكامل. تيليجرام بريميوم يضيف ملصقات، ترجمة فورية، وسرعة رفع أكبر.</p><h2>تطبيقات تحرير الصور والفيديو</h2><h3>CapCut</h3><p><strong>التقييم: 4.7/5</strong></p><p>أفضل تطبيق مونتاج فيديو مجاني على الإطلاق. يوفر قوالب جاهزة، مؤثرات صوتية، خلفيات ذكية، وتزامن تلقائي مع الموسيقى. مثالي لصانعي المحتوى على يوتيوب وتيك توك.</p><h3>PicsArt</h3><p><strong>التقييم: 4.3/5</strong></p><p>محرر صور شامل مع قوالب جاهزة، ملصقات، تأثيرات فنية، وخاصية إزالة الخلفية تلقائياً. النسخة المجانية كافية لمعظم الاستخدامات اليومية.</p><h2>تطبيقات الإنتاجية والعمل</h2><h3>Notion</h3><p><strong>التقييم: 4.6/5</strong></p><p>نظام متكامل لتنظيم المعلومات والمهام والمشاريع. يجمع بين الملاحظات، قواعد البيانات، والتقويمات في مكان واحد. الخطة المجانية وافية للاستخدام الفردي.</p><h3>Google Drive</h3><p><strong>التقييم: 4.8/5</strong></p><p>تخزين سحابي موثوق مع 15GB مجانية. التكامل مع Google Docs و Sheets و Slides يجعله الأفضل للعمل الجماعي عن بُعد.</p><h2>تطبيقات البث والترفيه</h2><h3>يوتيوب (YouTube)</h3><p><strong>التقييم: 4.5/5</strong></p><p>بلا منازع ملك منصات الفيديو. الإصدار المعدّل (YouTube ReVanced) المتوفر في متجرنا يتيح التشغيل في الخلفية وحجب الإعلانات بدون اشتراك مدفوع.</p><h3>Spotify</h3><p><strong>التقييم: 4.4/5</strong></p><p>أفضل منصة بث موسيقى عالمياً. مكتبة ضخمة من الأغاني العربية والعالمية. النسخة بريميوم تتيح التحميل للاستماع بدون إنترنت وإزالة الإعلانات.</p><h2>ألعاب الجوال الأكثر شعبية</h2><h3>PUBG Mobile</h3><p><strong>التقييم: 4.8/5</strong></p><p>ملك ألعاب البيتل رويال على الجوال. رسومات خيالية، تحديثات مستمرة، وتجربة تنافسية لا مثيل لها. يُنصح بشحن UC من موقعنا بأسعار أفضل.</p><h3>Free Fire</h3><p><strong>التقييم: 4.3/5</strong></p><p>البديل الأخف حجماً لـ PUBG، مثالي للهواتف المتوسطة. دورات اللعب أقصر (10 دقائق) مما يجعله مناسباً للجلسات القصيرة. الجواهر متوفرة في متجرنا.</p><h2>كيف تختار التطبيق المناسب؟</h2><ul><li><strong>اقرأ المراجعات الحديثة:</strong> التقييمات القديمة قد لا تعكس الحالة الراهنة للتطبيق.</li><li><strong>تحقق من حجم الملف:</strong> بعض التطبيقات تستهلك مساحة كبيرة دون مبرر.</li><li><strong>راجع الصلاحيات المطلوبة:</strong> تطبيق مصباح يطلب الوصول لجهات الاتصال؟ خطر!</li><li><strong>اختبر قبل الشراء:</strong> معظم تطبيقات الدفع تتيح تجربة مجانية.</li></ul><h2>الخلاصة</h2><p>عالم تطبيقات الأندرويد واسع ومتجدد باستمرار. في موقعنا ستجد أفضل التطبيقات محدّثة مع شرح تفصيلي لكل منها. استعرض قسم التطبيقات واكتشف المزيد!</p></article>',
+        'article-tutorials' => '<article class="page-article"><h1>شروحات التطبيقات: دليل خطوة بخطوة لأشهر برامج الجوال والكمبيوتر</h1><p class="article-lead">سواء كنت مبتدئاً يستخدم هاتفه الذكي لأول مرة أو محترفاً يبحث عن خصائص مخفية، هذه الشروحات تغطي كل ما تحتاجه للاستفادة القصوى من أشهر التطبيقات والبرامج في 2025.</p><h2>شرح واتساب: خصائص لا تعرفها</h2><h3>إرسال رسائل لنفسك</h3><p>ابحث عن اسمك في قائمة جهات الاتصال أو اكتب رقمك بنفسك وافتح محادثة معك. مفيد جداً لحفظ الروابط والملاحظات المؤقتة.</p><h3>الرسائل المؤقتة</h3><p>في أي محادثة، اضغط على اسم الشخص → "الرسائل المؤقتة" → اختر المدة (24 ساعة، 7 أيام، أو 90 يوماً). بعد انتهاء المدة تُحذف الرسائل تلقائياً من الجانبين.</p><h3>تنسيق النصوص</h3><ul><li><strong>غامق (Bold):</strong> أحط النص بنجمتين *هكذا*</li><li><em>مائل (Italic):</em> استخدم شرطة سفلية _هكذا_</li><li><s>شطب (Strikethrough):</s> استخدم مدة ~هكذا~</li><li><code>خط الكود (Monospace):</code> استخدم ثلاث فاصلة عليا ```هكذا```</li></ul><h2>شرح تيليجرام: دليل المزايا المتقدمة</h2><h3>إنشاء بوت تيليجرام بسيط</h3><p>افتح @BotFather في تيليجرام → اكتب /newbot → اتبع التعليمات لتسمية البوت والحصول على التوكن. يمكن بعد ذلك ربط البوت بسيرفرك عبر Webhook.</p><h3>البحث داخل الرسائل</h3><p>في أي محادثة، اضغط على أيقونة البحث (عدسة) واكتب الكلمة المراد البحث عنها. يمكن تصفية النتائج حسب النوع: صور، فيديو، ملفات، روابط.</p><h3>جدولة الرسائل</h3><p>اكتب رسالتك → اضغط مطولاً على زر الإرسال → اختر "جدولة الرسالة" → حدد التاريخ والوقت. مفيد لإرسال التهاني والتذكيرات.</p><h2>شرح CapCut: مونتاج احترافي بخطوات بسيطة</h2><h3>إنشاء فيديو من الصور</h3><ol><li>افتح CapCut واضغط "مشروع جديد".</li><li>اختر الصور من معرض الصور بالترتيب المطلوب.</li><li>اضغط "إضافة" ثم حدد المدة الزمنية لكل صورة.</li><li>اضغط على أيقونة الموسيقى وأضف أغنية من المكتبة.</li><li>اضغط "تصدير" واختر الجودة (1080p مُوصى بها).</li></ol><h3>إزالة الخلفية تلقائياً</h3><p>ضف مقطع الفيديو → اضغط "تعديل" → "إزالة الخلفية" → اضغط "تطبيق". تعمل الميزة بدقة عالية مع الأشخاص والأجسام الواضحة.</p><h2>شرح Google Drive: التخزين السحابي الذكي</h2><h3>المشاركة والتعاون</h3><p>انقر بزر الماوس الأيمن على أي ملف → "مشاركة" → أدخل بريد الشخص واختر مستوى الصلاحية: "مشاهدة فقط"، "تعليق"، أو "تحرير".</p><h3>العمل بدون إنترنت</h3><p>في تطبيق Drive → الإعدادات → "الوصول بدون اتصال" → فعّل الميزة للملفات التي تستخدمها كثيراً. ستُزامن التغييرات تلقائياً عند عودة الإنترنت.</p><h2>شرح PUBG Mobile: نصائح للمبتدئين</h2><h3>الإعدادات المثلى للجوال</h3><ul><li>الرسومات: "ناعم" مع "جودة عالية" للحصول على 60 FPS.</li><li>الحساسية: ابدأ بالإعدادات الافتراضية وعدّل تدريجياً.</li><li>الأزرار: فعّل إعداد "4 أصابع" لتحسين التحكم.</li><li>أوضع الفريق: استخدم الميكروفون للتنسيق مع الفريق.</li></ul><h3>استراتيجيات البقاء</h3><p>الهبوط في المناطق المتوسطة الكثافة (ليست الأكثر ضغطاً ولا الأهدأ)، التحرك مع الدائرة باستمرار، استخدام المركبات لقطع مسافات كبيرة، والمراقبة من التلال والمرتفعات.</p><h2>موارد إضافية للتعلم</h2><p>يوتيوب يحتوي على مئات آلاف الفيديوهات التعليمية بالعربية لكل تطبيق. نوصي بالبحث عن اسم التطبيق + "شرح" أو "دليل" للعثور على أفضل الشروحات. كما يمكنك متابعة قسم التطبيقات على موقعنا حيث نضيف شروحات نصية محدّثة بانتظام.</p><h2>الخلاصة</h2><p>إتقان التطبيقات يوفّر الوقت ويزيد الإنتاجية. ابدأ بتطبيق واحد وتعمّق فيه قبل الانتقال للتالي. هل تريد شرحاً لتطبيق معين لم يُذكر هنا؟ تواصل معنا وسنضيفه في التحديث القادم.</p></article>',
+        'article-payment-methods' => '<article class="page-article"><h1>طرق الدفع المتاحة للشحن وشراء الخدمات الرقمية في العالم العربي</h1><p class="article-lead">مع تنامي الاقتصاد الرقمي في المنطقة العربية، تعددت وسائل الدفع الإلكتروني المتاحة لشراء الخدمات الرقمية وشحن الألعاب والاشتراكات. هذا الدليل يستعرض أبرز طرق الدفع المقبولة لدينا، مميزاتها، وكيفية استخدامها.</p><h2>1. سيرياتيل كاش (Syriatel Cash)</h2><p>خدمة الدفع الإلكتروني المطلقة من شركة سيرياتيل، الرائدة في سوق الاتصالات السورية. تتيح للمستخدمين تخزين أموالهم إلكترونياً وإرسال واستقبال المبالغ بسهولة عبر الهاتف.</p><h3>كيفية الاستخدام:</h3><ol><li>ادفع لأي بائع لديه حساب سيرياتيل كاش.</li><li>اتصل بالرقم *700# أو استخدم تطبيق My Syriatel.</li><li>اختر "تحويل رصيد" وأدخل رقم البائع.</li><li>أدخل المبلغ ثم رقمك السري للتأكيد.</li><li>ارفع صورة رسالة التأكيد الواردة من سيرياتيل.</li></ol><p><strong>الحد الأدنى:</strong> 5 دولار | <strong>رسوم التحويل:</strong> بسيطة جداً | <strong>وقت المعالجة:</strong> فوري</p><h2>2. الشام كاش (Sham Cash)</h2><p>منصة دفع إلكتروني عربية تخدم سوريا والعراق وعدة دول في المنطقة. تتيح التحويل الفوري بين المستخدمين دون رسوم باهظة.</p><h3>مميزاتها:</h3><ul><li>التسجيل مجاني ولا يتطلب حساباً بنكياً.</li><li>دعم تحميل وسحب الرصيد عبر نقاط وكلاء منتشرة.</li><li>تطبيق جوال سهل الاستخدام.</li><li>مناسبة للمبالغ الصغيرة والكبيرة.</li></ul><h2>3. USDT (Tether - عملة مشفرة)</h2><p>أكثر العملات المشفرة استقراراً عالمياً، مرتبطة بسعر الدولار الأمريكي (1 USDT = 1 USD). مثالية للمعاملات الدولية دون قلق من تذبذب الأسعار.</p><h3>شبكات USDT المقبولة:</h3><ul><li><strong>TRC20 (تروني):</strong> الأرخص في الرسوم، رسوم التحويل أقل من دولار.</li><li><strong>BEP20 (بينانس):</strong> سريعة جداً وشائعة لدى مستخدمي Binance.</li></ul><h3>كيفية الإرسال:</h3><ol><li>افتح محفظتك (Binance, Trust Wallet, MetaMask, etc.).</li><li>اختر USDT والشبكة المطلوبة (TRC20 موصى بها).</li><li>انسخ عنوان محفظتنا الموضّح في تفاصيل الطلب.</li><li>أرسل المبلغ وانتظر التأكيدات (عادة 1-3 دقائق).</li><li>أرسل hash المعاملة (Transaction Hash) للتحقق.</li></ol><h2>4. Payeer</h2><p>محفظة إلكترونية دولية تتيح الإيداع والسحب عبر عدة عملات وطرق دفع متعددة. تقبل الشحن عبر بطاقات Visa/Mastercard، عملات مشفرة، وتحويلات بنكية.</p><h2>5. البنك الإلكتروني (Bank Transfer)</h2><p>التحويل البنكي المباشر متاح لعملاء بعض البنوك العربية عبر الخدمات الإلكترونية. أرسل تفاصيل التحويل واحصل على رقم مرجعي، ثم أرسل لنا صورة إيصال التحويل.</p><h2>مقارنة بين وسائل الدفع</h2><table style="width:100%;border-collapse:collapse;margin:16px 0"><tr style="background:rgba(255,255,255,0.05)"><th style="padding:10px;text-align:right;border:1px solid rgba(255,255,255,0.1)">الوسيلة</th><th style="padding:10px;text-align:right;border:1px solid rgba(255,255,255,0.1)">السرعة</th><th style="padding:10px;text-align:right;border:1px solid rgba(255,255,255,0.1)">الرسوم</th><th style="padding:10px;text-align:right;border:1px solid rgba(255,255,255,0.1)">الحد الأدنى</th></tr><tr><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">سيرياتيل كاش</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">فوري</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">منخفضة</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">3$</td></tr><tr><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">الشام كاش</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">فوري</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">منخفضة</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">3$</td></tr><tr><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">USDT TRC20</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">1-5 دقائق</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">أقل من $1</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">5$</td></tr><tr><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">Payeer</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">دقائق</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">متوسطة</td><td style="padding:10px;border:1px solid rgba(255,255,255,0.1)">5$</td></tr></table><h2>نصائح هامة للدفع الآمن</h2><ul><li>تأكد من عنوان المحفظة قبل الإرسال، التحويلات لا يمكن استرجاعها.</li><li>احتفظ بصورة الإيصال حتى تأكيد استلام الخدمة.</li><li>تعامل فقط مع البائعين الموثوقين ذوي السجل الإيجابي.</li><li>إذا مضى أكثر من ساعة على طلبك، تواصل مع الدعم على الفور.</li></ul><h2>الخلاصة</h2><p>تنوع وسائل الدفع يعني أن كل مستخدم عربي يجد الطريقة التي تناسبه بغض النظر عن بلده أو إمكانياته المالية. نحن نسعى دائماً لإضافة وسائل دفع جديدة بناءً على طلبات مستخدمينا.</p></article>',
+    ];
+    foreach ($pagesSeed as $slug => $content) {
         $st = $pdo->prepare("INSERT INTO pages (slug, content) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM pages WHERE slug = ?)");
         $st->execute([$slug, $content, $slug]);
     }
+
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='pages_content_v2_migrated'")->fetchColumn() === '') {
+        foreach (['privacy', 'terms', 'about'] as $slug) {
+            $pdo->prepare("UPDATE pages SET content = ? WHERE slug = ? AND (content LIKE '%...' OR content = '')")
+                ->execute([$pagesSeed[$slug], $slug]);
+        }
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('pages_content_v2_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('pages_content_v2_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: تعديل اسم الموقع إلى zanxpk حتى للمواقع المثبّتة مسبقاً بالاسم القديم.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='site_rename_zanxpk_migrated'")->fetchColumn() === '') {
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('site_name', 'zanxpk') ON CONFLICT(k) DO UPDATE SET v='zanxpk'"
+            : "INSERT INTO settings (k, v) VALUES ('site_name', 'zanxpk') ON DUPLICATE KEY UPDATE v='zanxpk'")
+            ->execute();
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('site_rename_zanxpk_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('site_rename_zanxpk_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    $walletCount = (int)$pdo->query("SELECT COUNT(*) c FROM wallets")->fetch()['c'];
+    if ($walletCount === 0) {
+        $pdo->prepare("INSERT INTO wallets (type, label, address) VALUES (?,?,?)")
+            ->execute(['usdt', 'USDT (شحن المحفظة)', '5e87321b9ab229a23cdce035290b10cb']);
+    }
+    $shamCount = (int)$pdo->query("SELECT COUNT(*) c FROM wallets WHERE type='sham'")->fetch()['c'];
+    if ($shamCount === 0) {
+        $pdo->prepare("INSERT INTO wallets (type, label, address, active) VALUES (?,?,?,0)")
+            ->execute(['sham', 'الشام كاش (شحن المحفظة)', 'ضع رقم محفظتك من لوحة الإدارة']);
+    }
+    // تصحيح بيانات قديمة: إن وُجدت أكثر من محفظة مفعّلة لنفس وسيلة الدفع (مثل ظهور الشام كاش مرتين)، نُبقي الأحدث فقط مفعّلة
+    $dupTypes = $pdo->query("SELECT type FROM wallets WHERE active=1 GROUP BY type HAVING COUNT(*) > 1")->fetchAll(PDO::FETCH_COLUMN);
+    foreach ($dupTypes as $dupType) {
+        $st = $pdo->prepare("SELECT id FROM wallets WHERE type=? AND active=1 ORDER BY id DESC");
+        $st->execute([$dupType]);
+        $ids = $st->fetchAll(PDO::FETCH_COLUMN);
+        array_shift($ids);
+        if ($ids) {
+            $pdo->prepare("UPDATE wallets SET active=0 WHERE id IN (" . implode(',', array_fill(0, count($ids), '?')) . ")")
+                ->execute($ids);
+        }
+    }
+
+    // بذور الأقسام الاحترافية (تظهر في الرئيسية بأيقونات مميّزة)
+    $catCount = (int)$pdo->query("SELECT COUNT(*) c FROM categories")->fetch()['c'];
+    if ($catCount === 0) {
+        $seedCats = [
+            ['games', 'game', 'الألعاب', '🎮', 'شحن أرصدة وجواهر جميع الألعاب الشهيرة', 'شحن ألعاب الجوال (ببجي، فري فاير، كلاش) عبر الشام كاش', 'شحن ألعاب, ببجي, فري فاير, كلاش أوف كلانس, شام كاش'],
+            ['apps', 'app', 'التطبيقات', '📱', 'شحن أرصدة تطبيقات التواصل والترفيه', 'شحن تطبيقات وخدمات رقمية عبر الشام كاش', 'تطبيقات, شحن تطبيقات, شام كاش'],
+            ['subscriptions', 'subscription', 'الاشتراكات', '⭐', 'اشتراكات نتفليكس وسبوتيفاي ويوتيوب وأكثر', 'اشتراكات نتفليكس وسبوتيفاي ويوتيوب — دفع بالشام كاش', 'اشتراكات, نتفليكس, سبوتيفاي, يوتيوب بريميوم, شام كاش'],
+            ['gift_cards', 'gift', 'بطاقات الهدايا', '🎁', 'بطاقات ستيم، آيتونز، جوجل بلاي، أمازون، بلايستيشن', 'بطاقات هدايا رقمية بأفضل الأسعار عبر الشام كاش', 'بطاقات هدايا, ستيم, آيتونز, جوجل بلاي, أمازون, بلايستيشن'],
+            ['payments', 'payment', 'المدفوعات والمحافظ', '💳', 'شحن USDT وPayPal وأرصدة الاتصالات', 'شحن USDT وPayPal ومحافظ رقمية عبر الشام كاش', 'مدفوعات, USDT, باي بال, محافظ, شام كاش'],
+            ['charging', 'charging', 'شحن الرصيد', '📶', 'شحن رصيد سيرياتيل، MTN، STC، زين، اتصالات', 'شحن رصيد شبكات الاتصالات — سيرياتيل، MTN، STC، زين', 'شحن رصيد, سيرياتيل, MTN, STC, زين, اتصالات'],
+        ];
+        $ins = $pdo->prepare("INSERT INTO categories (name, slug, kind, icon_svg, description, seo_title, seo_description, sort_order, visible_on_home) VALUES (?,?,?,?,?,?,?, ?, 1)");
+        foreach ($seedCats as $idx => [$slug, $kind, $name, $emoji, $desc, $seoT, $seoK]) {
+            $ins->execute([$name, $slug, $kind, $emoji, $desc, $seoT, $seoK, $idx]);
+        }
+    }
+
+    $bannerCount = (int)$pdo->query("SELECT COUNT(*) c FROM banners")->fetch()['c'];
+    if ($bannerCount === 0) {
+        $bannerDir = __DIR__ . '/uploads/banners';
+        if (!is_dir($bannerDir)) mkdir($bannerDir, 0755, true);
+        $bannerSeeds = [
+            ['تسوّق الآن واربح نقاطاً', '#2563eb', '#06b6d4'],
+            ['اسحب أرباحك فوراً', '#1e63d6', '#3fa9f5'],
+            ['عروض حصرية كل يوم', '#1ea672', '#34d399'],
+        ];
+        foreach ($bannerSeeds as $i => [$text, $c1, $c2]) {
+            $w = 1200; $h = 360;
+            $im = imagecreatetruecolor($w, $h);
+            [$r1, $g1, $b1] = sscanf($c1, "#%02x%02x%02x");
+            [$r2, $g2, $b2] = sscanf($c2, "#%02x%02x%02x");
+            for ($x = 0; $x < $w; $x++) {
+                $ratio = $x / $w;
+                $col = imagecolorallocate($im, (int)($r1 + ($r2 - $r1) * $ratio), (int)($g1 + ($g2 - $g1) * $ratio), (int)($b1 + ($b2 - $b1) * $ratio));
+                imageline($im, $x, 0, $x, $h, $col);
+            }
+            $white = imagecolorallocate($im, 255, 255, 255);
+            imagestring($im, 5, 40, (int)($h / 2) - 8, $text, $white);
+            $filename = 'seed_banner_' . ($i + 1) . '.jpg';
+            imagejpeg($im, $bannerDir . '/' . $filename, 85);
+            imagedestroy($im);
+            $pdo->prepare("INSERT INTO banners (image, link, sort_order) VALUES (?,?,?)")
+                ->execute(['uploads/banners/' . $filename, null, $i]);
+        }
+    }
+
+    // ترحيل مفتاح OpenRouter الفردي القديم إلى نظام المفاتيح المتعددة الجديد (مرة واحدة فقط)
+    $oldOrKey = (string)$pdo->query("SELECT v FROM settings WHERE k='openrouter_api_key'")->fetchColumn();
+    if ($oldOrKey !== '') {
+        $orKeysCount = (int)$pdo->query("SELECT COUNT(*) c FROM openrouter_keys")->fetch()['c'];
+        if ($orKeysCount === 0) {
+            $pdo->prepare("INSERT INTO openrouter_keys (label, api_key) VALUES (?,?)")->execute(['مفتاح مستورد', $oldOrKey]);
+        }
+    }
+
+    // ترحيل لمرة واحدة: حذف منتجات المتجر الافتراضية/الوهمية التي كانت تُضاف تلقائياً عند أول تشغيل
+    // (كانت تُسبب صعوبة تمييز منتجات الأدمن الحقيقية وسط بيانات تجريبية). لا تُضاف أي منتجات افتراضية بعد الآن.
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='fake_products_removed_migrated'")->fetchColumn() === '') {
+        $fakeNames = [
+        'شحن ببجي موبايل 60 UC',
+        'شحن ببجي موبايل 325 UC',
+        'شحن ببجي موبايل 660 UC',
+        'شحن فري فاير 100 جوهرة',
+        'شحن فري فاير 520 جوهرة',
+        'شحن فورتنايت 1000 V-Bucks',
+        'شحن كول أوف ديوتي موبايل 80 CP',
+        'شحن ليج أوف ليجندز RP',
+        'شحن جواهر كلاش أوف كلانس',
+        'شحن نقاط فيفا موبايل',
+        'شحن روبلوكس 400 Robux',
+        'شحن ماين كرافت كوينز',
+        'شحن جواكر شدات',
+        'شحن سوبر سيل جواهر',
+        'شحن جواهر متفرقة (عام)',
+        'بطاقة آيتونز 10$',
+        'بطاقة آيتونز 25$',
+        'بطاقة جوجل بلاي 10$',
+        'بطاقة جوجل بلاي 25$',
+        'بطاقة ستيم 10$',
+        'بطاقة ستيم 20$',
+        'بطاقة أمازون 25$',
+        'بطاقة بلايستيشن 10$',
+        'بطاقة إكس بوكس 10$',
+        'بطاقة نتفليكس هدية',
+        'اشتراك نتفليكس شهر',
+        'اشتراك نتفليكس 3 أشهر',
+        'اشتراك شاهد VIP شهر',
+        'اشتراك سبوتيفاي بريميوم شهر',
+        'اشتراك يوتيوب بريميوم شهر',
+        'اشتراك ديزني بلس شهر',
+        'اشتراك كانفا برو شهر',
+        'اشتراك ChatGPT Plus شهر',
+        'اشتراك مايكروسوفت 365 شهر',
+        'اشتراك آيكلود تخزين 50GB',
+        'شحن تيك توك كوينز',
+        'متابعين انستقرام 1000',
+        'اشتراك تيليجرام بريميوم شهر',
+        'اشتراك ديسكورد نيترو شهر',
+        'اشتراك زووم برو شهر',
+        'حماية كاسبرسكي سنة',
+        'اشتراك VPN بريميوم شهر',
+        'اشتراك أدوبي فوتوشوب شهر',
+        'اشتراك WPS Office بريميوم',
+        'اشتراك Grammarly بريميوم',
+        'شحن رصيد سيرياتيل 5$',
+        'شحن رصيد MTN سوريا 5$',
+        'بطاقة Visa افتراضية 10$',
+        'قسيمة شحن عام 5$',
+        'قسيمة شحن عام 10$',
+        'شحن ببجي موبايل 1800 UC',
+        'شحن ببجي موبايل 3850 UC',
+        'شحن فري فاير 1080 جوهرة',
+        'نجوم تيليجرام Telegram Stars',
+        'شحن جواهر جواكر 100 ألف',
+        'اشتراك بلايستيشن بلس شهر',
+        'اشتراك Xbox Game Pass Ultimate شهر',
+        'اشتراك أمازون برايم شهر',
+        'اشتراك سبوتيفاي عائلي شهر',
+        'اشتراك يوتيوب بريميوم عائلي',
+        'اشتراك آبل ميوزك شهر',
+        'اشتراك ديسكورد نيترو سنة',
+        'متابعين تيك توك 1000',
+        'لايكات انستقرام 1000',
+        'اشتراك X (تويتر) بريميوم شهر',
+        'اشتراك LinkedIn بريميوم شهر',
+        'اشتراك Duolingo Super شهر',
+        'بطاقة Google Play 50$',
+        'بطاقة ستيم 50$',
+        'شحن رصيد سيرياتيل 10$',
+        'بطاقة Valorant Points 10$',
+        'بطاقة فري فاير الذهبية',
+        'بطاقة Razer Gold 10$',
+        'بطاقة Garena Shells',
+        'بطاقة eBay 25$',
+        'بطاقة Walmart 25$',
+        'بطاقة Target 25$',
+        'بطاقة Roblox 25$',
+        'اشتراك Twitch Turbo شهر',
+        'اشتراك Hulu شهر',
+        'اشتراك HBO Max شهر',
+        'اشتراك Audible شهر',
+        'اشتراك NordVPN سنة',
+        'شحن متابعين تويتر 1000',
+        'شحن مشاهدات يوتيوب 1000',
+        'اشتراك Notion Plus شهر',
+        'اشتراك Canva Teams شهر',
+        'شحن رصيد فودافون مصر',
+        'شحن رصيد أورنج مصر',
+        'شحن رصيد STC السعودية',
+        'شحن رصيد موبايلي السعودية',
+        'شحن رصيد زين السعودية',
+        'شحن رصيد دو الإمارات',
+        'شحن رصيد اتصالات الإمارات',
+        'شحن رصيد Ooredoo قطر',
+        'شحن رصيد Zain العراق',
+        'بطاقة Visa افتراضية 25$',
+        'بطاقة Visa افتراضية 50$',
+        'قسيمة شحن عام 25$',
+        'قسيمة شحن عام 50$'
+        ];
+        $delStmt = $pdo->prepare("DELETE FROM products WHERE name = ? AND source IS NULL");
+        foreach ($fakeNames as $fn) $delStmt->execute([$fn]);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('fake_products_removed_migrated', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('fake_products_removed_migrated', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
+
+    // ترحيل لمرة واحدة: تزويد قسم "بوتات وسكربتات" بقوالب جاهزة افتراضية (ملفاتها داخل مجلد bot_templates/)
+    if ((string)$pdo->query("SELECT v FROM settings WHERE k='bot_templates_seeded'")->fetchColumn() === '') {
+        $templates = [
+            ['بوت تيليجرام لتحميل الفيديوهات', 'قالب بوت تيليجرام جاهز يستقبل رابط فيديو (يوتيوب/تيك توك/فيسبوك...) من المستخدم ويستخدم yt-dlp لجلب رابط تحميل مباشر وإرساله، قابل للتعديل والتركيب على أي سيرفر يدعم PHP وتنفيذ أوامر النظام.', 'telegram_bot', 'send', 'bot_templates/video_downloader_bot.php', '1.0'],
+            ['بوت تيليجرام للرد التلقائي والقوائم', 'قالب بوت تيليجرام بسيط بقوائم أزرار وردود تلقائية جاهز كنقطة بداية لبناء أي بوت خدمة عملاء أو دعم.', 'telegram_bot', 'terminal', 'bot_templates/auto_reply_bot.php', '1.0'],
+        ];
+        $insTpl = $pdo->prepare("INSERT INTO bot_scripts (name, description, category, icon, file_path, version, is_template, status) VALUES (?,?,?,?,?,?,1,'active')");
+        foreach ($templates as $t) $insTpl->execute($t);
+        $pdo->prepare(DB_DRIVER === 'sqlite'
+            ? "INSERT INTO settings (k, v) VALUES ('bot_templates_seeded', '1') ON CONFLICT(k) DO UPDATE SET v='1'"
+            : "INSERT INTO settings (k, v) VALUES ('bot_templates_seeded', '1') ON DUPLICATE KEY UPDATE v='1'")
+            ->execute();
+    }
 }
-migrate();
+/**
+ * ===== إصلاح أداء حرج =====
+ * كانت migrate() (إنشاء ~30 جدولاً + كل الفهارس + إدراج/فحص أكثر من 70 إعداداً افتراضياً)
+ * تُنفَّذ بالكامل مع كل طلب/زيارة لأي صفحة في الموقع (مئات الاستعلامات الزائدة كل تحميل صفحة)،
+ * وهذا كان السبب الرئيسي في ثقل واستجابة الموقع البطيئة.
+ * الآن تُنفَّذ مرة واحدة فقط عند أول تشغيل (أو بعد رفع نسخة جديدة من الملف)، ثم تُتخطى تلقائياً
+ * عبر ملف علامة بسيط لا يحتاج أي استعلام لقاعدة البيانات في الحالة الطبيعية.
+ */
+define('SCHEMA_MIGRATION_VERSION', '5');
+$__migrationFlag = __DIR__ . '/uploads/.schema_v' . SCHEMA_MIGRATION_VERSION . '.lock';
+if (!is_file($__migrationFlag)) {
+    migrate();
+    if (!is_dir(__DIR__ . '/uploads')) @mkdir(__DIR__ . '/uploads', 0755, true);
+    @file_put_contents($__migrationFlag, date('c'));
+}
+if (setting('moneytag_sw_enabled', '0') === '1' && !is_file(__DIR__ . '/sw.js')) write_moneytag_sw_file();
 
 /* ======================================================================
    2) HELPERS
    ====================================================================== */
 function e($s): string { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
-/**
- * شعار Yassota الافتراضي (SVG مدمج) — يظهر دائماً حتى بدون رفع صورة.
- * عملة ذهبية مع حرف Y، تتدرّج بألوان الهوية.
- */
-function brand_logo_svg(int $size = 36): string
+function app_canonical_url(array $a): string { return rtrim(SITE_URL, '/') . '/index.php?page=app&id=' . (int)$a['id']; }
+
+/* ---- Professional inline SVG icon set (no emojis) ---- */
+function wallet_type_label(string $type): array
 {
-    $s = (int)$size;
-    return '<svg width="' . $s . '" height="' . $s . '" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Yassota">'
-        . '<defs><linearGradient id="yg" x1="0" y1="0" x2="1" y2="1">'
-        . '<stop offset="0" stop-color="#6c5ce7"/><stop offset=".55" stop-color="#a08bff"/><stop offset="1" stop-color="#00d2a0"/>'
-        . '</linearGradient></defs>'
-        . '<rect x="2" y="2" width="60" height="60" rx="16" fill="url(#yg)"/>'
-        . '<circle cx="32" cy="32" r="20" fill="#0f1320" opacity=".18"/>'
-        . '<path d="M22 20l10 13 10-13" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>'
-        . '<path d="M32 33v12" stroke="#fff" stroke-width="5" stroke-linecap="round"/>'
-        . '</svg>';
+    $map = [
+        'usdt' => ['USDT (TRC20)', 'coins'],
+        'sham' => ['الشام كاش', 'wallet'],
+        'binance' => ['Binance Pay', 'coins'],
+        'crypto' => ['عملات مشفرة', 'coins'],
+        'payeer' => ['Payeer', 'wallet'],
+        'syriatel_cash' => ['سيرياتيل كاش', 'wallet'],
+        'mtn_cash' => ['MTN كاش', 'wallet'],
+        'bank_transfer' => ['حوالة بنكية', 'bank'],
+        'western_union' => ['ويسترن يونيون', 'bank'],
+    ];
+    return $map[$type] ?? [$type, 'wallet'];
+}
+
+function icon(string $name, string $class = 'ic'): string
+{
+    if ($name === 'google') {
+        return '<svg class="' . e($class) . '" viewBox="0 0 48 48" aria-hidden="true">'
+            . '<path fill="#FFC107" d="M43.6 20.1H42V20H24v8h11.3c-1.6 4.7-6.1 8-11.3 8-6.6 0-12-5.4-12-12s5.4-12 12-12c3.1 0 5.9 1.1 8 3l5.7-5.7C34.5 6.2 29.5 4 24 4 12.9 4 4 12.9 4 24s8.9 20 20 20 20-8.9 20-20c0-1.3-.1-2.7-.4-3.9z"/>'
+            . '<path fill="#FF3D00" d="M6.3 14.7l6.6 4.8C14.6 16 19 13 24 13c3.1 0 5.9 1.1 8 3l5.7-5.7C34.5 6.2 29.5 4 24 4 16.3 4 9.7 8.3 6.3 14.7z"/>'
+            . '<path fill="#4CAF50" d="M24 44c5.4 0 10.3-2.1 14-5.5l-6.5-5.4C29.5 34.7 26.9 36 24 36c-5.2 0-9.6-3.3-11.3-8l-6.6 5.1C9.6 39.6 16.3 44 24 44z"/>'
+            . '<path fill="#1976D2" d="M43.6 20.1H42V20H24v8h11.3c-.8 2.3-2.2 4.2-4.1 5.6l6.5 5.4C41.5 35.6 44 30.2 44 24c0-1.3-.1-2.7-.4-3.9z"/>'
+            . '</svg>';
+    }
+    $paths = [
+        'home' => '<path d="M3 11.5 12 4l9 7.5"/><path d="M5 10v10h14V10"/><path d="M9.5 20v-6h5v6"/>',
+        'coin' => '<circle cx="12" cy="12" r="9"/><path d="M9.5 9.5c0-1.2 1-2 2.5-2s2.5.8 2.5 2-1 1.6-2.5 2-2.5.8-2.5 2 1 2 2.5 2 2.5-.8 2.5-2"/>',
+        'tasks' => '<rect x="4" y="3.5" width="16" height="17" rx="2"/><path d="M8 8h8M8 12h8M8 16h5"/>',
+        'wallet' => '<rect x="3" y="6" width="18" height="13" rx="2"/><path d="M3 10h18"/><circle cx="16.5" cy="14.5" r="1.2"/>',
+        'orders' => '<path d="M4 7.5 12 3l8 4.5v9L12 21l-8-4.5z"/><path d="M4 7.5 12 12l8-4.5M12 12v9"/>',
+        'lock' => '<rect x="5" y="11" width="14" height="9" rx="2"/><path d="M8 11V8a4 4 0 0 1 8 0v3"/>',
+        'doc' => '<path d="M7 3h7l4 4v14H7z"/><path d="M14 3v4h4M9 12h6M9 16h6"/>',
+        'admin' => '<path d="M12 3 4 6v6c0 5 3.5 7.5 8 9 4.5-1.5 8-4 8-9V6z"/><path d="M9.5 12l1.8 1.8L15 10.2"/>',
+        'menu' => '<path d="M4 7h16M4 12h16M4 17h16"/>',
+        'close' => '<path d="M6 6l12 12M18 6 6 18"/>',
+        'user' => '<circle cx="12" cy="8" r="3.5"/><path d="M5 20c0-3.5 3.1-6 7-6s7 2.5 7 6"/>',
+        'logout' => '<path d="M10 4H6a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h4"/><path d="M16 16l4-4-4-4M20 12H9"/>',
+        'cart' => '<circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M3 4h2l2.2 11h10.6L20 7H6.3"/>',
+        'check' => '<path d="M5 12.5 9.5 17 19 7"/>',
+        'refresh' => '<path d="M4 12a8 8 0 0 1 14-5.3L20 8"/><path d="M20 4v4h-4"/><path d="M20 12a8 8 0 0 1-14 5.3L4 16"/><path d="M4 20v-4h4"/>',
+        'heart' => '<path d="M12 20.5s-7.5-4.6-10-9.3C0.4 8 2 4.5 5.5 4c2-0.3 3.8 0.6 5 2.2C11.7 4.6 13.5 3.7 15.5 4 19 4.5 20.6 8 19 11.2c-2.5 4.7-7 9.3-7 9.3z"/>',
+        'search' => '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.3-4.3"/>',
+        'x' => '<path d="M6 6l12 12M18 6 6 18"/>',
+        'edit' => '<path d="M4 17.5 14.5 7l3 3L7 20.5H4z"/><path d="M13 8 16.5 4.5l3 3L16 11"/>',
+        'trash' => '<path d="M5 7h14M9 7V5a1 1 0 0 1 1-1h4a1 1 0 0 1 1 1v2m1 0-.8 12.2a2 2 0 0 1-2 1.8H10.8a2 2 0 0 1-2-1.8L8 7"/>',
+        'toggle' => '<rect x="3" y="8" width="18" height="8" rx="4"/><circle cx="8" cy="12" r="2.6"/>',
+        'image' => '<rect x="3.5" y="5" width="17" height="14" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="M5 17l4.5-4.5 3 3L17.5 11l1.5 1.5"/>',
+        'settings' => '<circle cx="12" cy="12" r="3"/><path d="M19 12a7 7 0 0 0-.1-1.2l2-1.5-2-3.4-2.3.9a7 7 0 0 0-2-1.2L14.2 3H9.8l-.4 2.6a7 7 0 0 0-2 1.2l-2.3-.9-2 3.4 2 1.5A7 7 0 0 0 5 12c0 .4 0 .8.1 1.2l-2 1.5 2 3.4 2.3-.9c.6.5 1.3.9 2 1.2l.4 2.6h4.4l.4-2.6c.7-.3 1.4-.7 2-1.2l2.3.9 2-3.4-2-1.5c.1-.4.1-.8.1-1.2z"/>',
+        'plus' => '<path d="M12 5v14M5 12h14"/>',
+        'megaphone' => '<path d="M3 10v4l3 .6V18a1.5 1.5 0 0 0 3 0v-2.8l9 1.8V9L9 10.8 6 10z"/>',
+        'bell' => '<path d="M6 16V11a6 6 0 0 1 12 0v5l1.5 2.5H4.5z"/><path d="M10 20a2 2 0 0 0 4 0"/>',
+        'qr' => '<rect x="3.5" y="3.5" width="7" height="7" rx="1"/><rect x="13.5" y="3.5" width="7" height="7" rx="1"/><rect x="3.5" y="13.5" width="7" height="7" rx="1"/><path d="M13.5 13.5v3M13.5 20.5h3M17 13.5v3M20.5 17v3.5"/>',
+        'key' => '<circle cx="8" cy="13" r="4"/><path d="M11 12l9-9M15 5l3 3"/>',
+        'globe2' => '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a15 15 0 0 1 0 18M12 3a15 15 0 0 0 0 18"/>',
+        'palette' => '<path d="M12 3a9 9 0 1 0 0 18c1.7 0 3-1.3 3-3 0-.8-.3-1.5-.8-2.1-.5-.6-.7-1.3-.7-2 0-1.6 1.4-3 3-3H18a3 3 0 0 0 3-3c0-4.4-4-8-9-8z"/><circle cx="7.5" cy="10.5" r="1"/><circle cx="12" cy="7" r="1"/><circle cx="16.5" cy="10.5" r="1"/>',
+        'chart' => '<path d="M4 19h16M7 19V11M12 19V6M17 19v-8"/>',
+        'gift' => '<rect x="4" y="10" width="16" height="10" rx="1.5"/><path d="M4 10h16M12 10v10"/><path d="M12 10c-3 0-4-1.6-4-3a2.2 2.2 0 0 1 4-1.3c.3-.4.6-.7 1-.9M12 10c3 0 4-1.6 4-3a2.2 2.2 0 0 0-4-1.3c-.3-.4-.6-.7-1-.9"/>',
+        'pages' => '<path d="M6 3h9l5 5v13H6z"/><path d="M15 3v5h5M9 12h6M9 16h6"/>',
+        'users' => '<circle cx="9" cy="8" r="3"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/><circle cx="17" cy="9" r="2.4"/><path d="M15.5 14.2c2.6.4 4.5 2.2 4.5 4.8"/>',
+        'globe' => '<circle cx="12" cy="12" r="9"/><path d="M3 12h18M12 3a13 13 0 0 1 0 18M12 3a13 13 0 0 0 0 18"/>',
+        'upload' => '<path d="M12 16V4M7.5 8.5 12 4l4.5 4.5"/><path d="M4 16v3a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-3"/>',
+        'rocket' => '<path d="M12 3c3 1.5 5 4.5 5 8.5L12 15l-5-3.5C7 7.5 9 4.5 12 3z"/><path d="M9 14l-2.5 1.5L7 18l2.5-1M15 14l2.5 1.5L17 18l-2.5-1"/><circle cx="12" cy="9" r="1.3"/>',
+        'clock' => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/>',
+        'bank' => '<path d="M3 10 12 4l9 6"/><path d="M4 10h16v2H4z"/><path d="M6 12v7M10 12v7M14 12v7M18 12v7"/><path d="M3 21h18"/>',
+        'send' => '<path d="M4 12 20 4 13 20l-2-6-7-2z"/>',
+        'copy' => '<rect x="9" y="9" width="11" height="11" rx="1.5"/><path d="M5 15H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1h10a1 1 0 0 1 1 1v1"/>',
+        'history' => '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.5 2"/><path d="M3.5 9 3 6l-2.7 1"/>',
+        'shield' => '<path d="M12 3 5 6v6c0 5 3 7.5 7 9 4-1.5 7-4 7-9V6z"/><path d="M9.2 12l1.8 1.8L15 10.2"/>',
+        'coins' => '<circle cx="9" cy="9" r="5.5"/><path d="M15 9.3c2.7.5 4.5 2 4.5 4.2 0 3-2.9 5-6.5 5-2.7 0-5-1.1-6.1-2.7"/>',
+        'minus' => '<path d="M5 12h14"/>',
+        'chevron-up' => '<path d="M5 15l7-7 7 7"/>',
+        'chevron-right' => '<path d="M9 6l6 6-6 6"/>',
+        'star' => '<path d="M12 3.5 14.6 9l6 .9-4.3 4.2 1 6L12 17.3 6.7 20l1-6L3.4 9.9 9.4 9z"/>',
+        'hat' => '<path d="M4 13.5c0-4.5 3.6-8 8-8s8 3.5 8 8"/><ellipse cx="12" cy="13.5" rx="9" ry="2.2"/><path d="M9 6.2C9.3 4.3 10.5 3 12 3s2.7 1.3 3 3.2"/>',
+        'terminal' => '<rect x="3" y="4.5" width="18" height="15" rx="2"/><path d="M7 9.5 11 12l-4 2.5M13 15h4"/>',
+        'android' => '<path d="M7 9.5h10v8a1.5 1.5 0 0 1-1.5 1.5h-7A1.5 1.5 0 0 1 7 17.5z"/><path d="M7 12H4.5M20 12h-2.5M9 5l-1.3-1.8M15 5l1.3-1.8"/><path d="M7 9.5a5 5 0 0 1 10 0"/><circle cx="9.7" cy="7" r=".4" fill="currentColor"/><circle cx="14.3" cy="7" r=".4" fill="currentColor"/><path d="M8 21v-2M16 21v-2"/>',
+        'download' => '<path d="M12 4v11M7.5 11.5 12 16l4.5-4.5"/><path d="M4 19h16"/>',
+        'eye' => '<path d="M2.5 12S6 5.5 12 5.5 21.5 12 21.5 12 18 18.5 12 18.5 2.5 12 2.5 12z"/><circle cx="12" cy="12" r="3"/>',
+        'play' => '<path d="M7 4.5v15l13-7.5z"/>',
+        'thumb-up' => '<path d="M7 11v9H4a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1z"/><path d="M7 11l4-7a2 2 0 0 1 3.6 1.7L13.7 9H19a2 2 0 0 1 2 2.3l-1.2 7A2 2 0 0 1 17.8 20H10a3 3 0 0 1-3-3"/>',
+        'thumb-down' => '<path d="M17 13V4h3a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1z"/><path d="M17 13l-4 7a2 2 0 0 1-3.6-1.7L10.3 15H5a2 2 0 0 1-2-2.3l1.2-7A2 2 0 0 1 6.2 4H14a3 3 0 0 1 3 3"/>',
+        'bell' => '<path d="M6 16V10a6 6 0 1 1 12 0v6l1.5 2.5h-15z"/><path d="M9.5 19a2.5 2.5 0 0 0 5 0"/>',
+        'telegram' => '<path d="M21 4.5 2.7 11.6c-.9.36-.9 1.55.05 1.85l4.5 1.45 1.7 5.5c.3.95 1.55 1.15 2.1.3l2.4-3.6 4.5 3.3c.85.6 2.05.15 2.25-.85l3-15.4c.2-1.05-.85-1.85-1.7-1.6z"/><path d="M7.25 14.9 17 7.5"/>',
+    ];
+    $body = $paths[$name] ?? $paths['check'];
+    return '<svg class="' . e($class) . '" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">' . $body . '</svg>';
 }
 
 function setting(string $k, $default = '')
 {
-    static $cache = [];
-    if (isset($cache[$k])) return $cache[$k];
+    // إصلاح أداء: تحميل كل الإعدادات دفعة واحدة باستعلام واحد فقط عند أول استدعاء في الطلب،
+    // بدل تنفيذ استعلام منفصل لكل إعداد (كانت تُنفَّذ عشرات الاستعلامات المتكررة بكل تحميل صفحة).
+    static $cache = null;
+    static $loaded = false;
+    if (!$loaded) {
+        $cache = [];
+        try {
+            foreach (db()->query("SELECT k, v FROM settings") as $row) $cache[$row['k']] = $row['v'];
+        } catch (Throwable $e) {}
+        $loaded = true;
+    }
+    if (array_key_exists($k, $cache)) return $cache[$k];
+    // مفتاح غير موجود مسبقاً بالكاش (مثلاً أُضيف للتو بنفس الطلب) — نجلبه مباشرة ونضيفه للكاش
     $st = db()->prepare("SELECT v FROM settings WHERE k = ?");
     $st->execute([$k]);
     $row = $st->fetch();
@@ -285,11 +1120,180 @@ function setting(string $k, $default = '')
 }
 function set_setting(string $k, $v): void
 {
-    $st = db()->prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = ?");
-    if (DB_DRIVER === 'sqlite') {
-        $st = db()->prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = ?");
-    }
+    $sql = DB_DRIVER === 'sqlite'
+        ? "INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = ?"
+        : "INSERT INTO settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = ?";
+    $st = db()->prepare($sql);
     $st->execute([$k, $v, $v]);
+}
+
+// تُضبط من لوحة تحكم الموقع وتُخزَّن في قاعدة البيانات حتى يقرأهما بوت تيليجرام
+// المستقل (telegram_bot.php) من سيرفر VPS آخر يشارك نفس القاعدة، مع الرجوع
+// لقيم config.php كخيار احتياطي فقط.
+function bot_token(): string { return setting('bot_token') ?: (defined('BOT_TOKEN') ? BOT_TOKEN : ''); }
+function owner_id(): string { return setting('owner_id') ?: (defined('OWNER_ID') ? (string)OWNER_ID : ''); }
+
+function user_balance(int $uid): float
+{
+    $st = db()->prepare("SELECT balance FROM users WHERE id=?");
+    $st->execute([$uid]);
+    return (float)($st->fetchColumn() ?: 0);
+}
+function add_balance(int $uid, float $amount, string $source = 'topup', string $desc = ''): void
+{
+    db()->prepare("UPDATE users SET balance = balance + ? WHERE id = ?")->execute([$amount, $uid]);
+    db()->prepare("INSERT INTO earn_logs (user_id, amount, source, description) VALUES (?,?,?,?)")
+        ->execute([$uid, (int)round($amount * 100), $source, $desc]);
+}
+function fmt_money(float $amount): string
+{
+    return number_format($amount, 2) . setting('wallet_currency_symbol', '$');
+}
+function level_from_xp(int $xp): int
+{
+    return max(1, (int)floor(sqrt(max(0, $xp) / 50)) + 1);
+}
+function xp_to_next(int $xp): int
+{
+    $level = level_from_xp($xp);
+    $next = 50 * ($level * $level);
+    return max(1, $next - $xp);
+}
+function xp_progress_percent(int $xp): int
+{
+    $level = level_from_xp($xp);
+    $prev = 50 * (($level - 1) * ($level - 1));
+    $next = 50 * ($level * $level);
+    $span = max(1, $next - $prev);
+    return max(0, min(100, (int)round((($xp - $prev) / $span) * 100)));
+}
+function grant_xp(int $uid, int $amount): void
+{
+    db()->prepare("UPDATE users SET xp = xp + ?, level = ? WHERE id = ?")
+        ->execute([$amount, level_from_xp((int)(user_field($uid, 'xp') + $amount)), $uid]);
+}
+function user_field(int $uid, string $col)
+{
+    static $cache = [];
+    $key = $uid . ':' . $col;
+    if (isset($cache[$key])) return $cache[$key];
+    $st = db()->prepare("SELECT `$col` FROM users WHERE id=?");
+    $st->execute([$uid]);
+    return $cache[$key] = $st->fetchColumn();
+}
+function tg_send_admin(string $text, array $inlineKeyboard = null): ?string
+{
+    $token = bot_token();
+    $chatId = owner_id();
+    if (!$token || !$chatId) return null;
+    $body = ['chat_id' => $chatId, 'text' => $text, 'parse_mode' => 'HTML', 'disable_web_page_preview' => true];
+    if ($inlineKeyboard) $body['reply_markup'] = json_encode(['inline_keyboard' => $inlineKeyboard], JSON_UNESCAPED_UNICODE);
+    $ch = curl_init("https://api.telegram.org/bot$token/sendMessage");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($body, JSON_UNESCAPED_UNICODE),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 8,
+    ]);
+    $resp = curl_exec($ch);
+    curl_close($ch);
+    $data = json_decode($resp ?: '{}', true);
+    return isset($data['result']['message_id']) ? (string)$data['result']['message_id'] : null;
+}
+function tg_answer_callback(string $callbackId, string $text = '', bool $showAlert = false): void
+{
+    $token = bot_token();
+    if (!$token) return;
+    $ch = curl_init("https://api.telegram.org/bot$token/answerCallbackQuery");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query(['callback_query_id' => $callbackId, 'text' => $text, 'show_alert' => $showAlert ? 'true' : 'false']),
+        CURLOPT_TIMEOUT => 5,
+    ]);
+    curl_exec($ch);
+    curl_close($ch);
+}
+function tg_edit_message(string $chatId, string $messageId, string $newText): void
+{
+    $token = bot_token();
+    if (!$token) return;
+    $ch = curl_init("https://api.telegram.org/bot$token/editMessageText");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode(['chat_id' => $chatId, 'message_id' => $messageId, 'text' => $newText, 'parse_mode' => 'HTML'], JSON_UNESCAPED_UNICODE),
+        CURLOPT_HTTPHEADER => ['Content-Type: application/json'],
+        CURLOPT_TIMEOUT => 5,
+    ]);
+    curl_exec($ch);
+    curl_close($ch);
+}
+
+function product_needs_account_id(string $productName, string $categoryName = ''): bool
+{
+    $needle = mb_strtolower($productName . ' ' . $categoryName);
+    $keywords = ['شحن', 'ببجي', 'pubg', 'free fire', 'فري فاير', 'clash', 'كلاش', 'mobile legends', 'موبايل ليجندز', 'شدات', 'جواهر', 'ماس', 'uc', 'gem', 'tiktok', 'تيك توك', 'روبلوكس', 'roblox', 'valorant', 'فالورانت', 'garena', 'yalla ludo', 'يلا لودو', 'jawaker', 'جواكر'];
+    foreach ($keywords as $k) if (mb_strpos($needle, $k) !== false) return true;
+    return false;
+}
+function product_auto_emoji(string $name): string
+{
+    $n = mb_strtolower($name);
+    $map = [
+        'ببجي'=>'🎯', 'pubg'=>'🎯', 'فري فاير'=>'🔥', 'free fire'=>'🔥', 'كلاش'=>'⚔️', 'clash'=>'⚔️',
+        'ماين'=>'🧱', 'minecraft'=>'🧱', 'roblox'=>'🟥', 'روبلوكس'=>'🟥', 'يلا لودو'=>'🎲', 'yalla'=>'🎲', 'jawaker'=>'🃏', 'جواكر'=>'🃏',
+        'valorant'=>'🎮', 'فالورانت'=>'🎮', 'mobile legends'=>'⚔️', 'موبايل ليجندز'=>'⚔️',
+        'netflix'=>'🎬', 'نتفليكس'=>'🎬', 'شاهد'=>'📺', 'spotify'=>'🎵', 'سبوتيفاي'=>'🎵',
+        'youtube'=>'▶️', 'يوتيوب'=>'▶️', 'disney'=>'🏰', 'ديزني'=>'🏰',
+        'itunes'=>'🍎', 'آيتونز'=>'🍎', 'apple'=>'🍎', 'آبل'=>'🍎', 'icloud'=>'☁️', 'آيكلود'=>'☁️',
+        'google play'=>'▶️', 'جوجل بلاي'=>'▶️', 'steam'=>'🎮', 'ستيم'=>'🎮',
+        'playstation'=>'🎮', 'بلاي'=>'🎮', 'xbox'=>'🎮', 'إكس بوكس'=>'🎮',
+        'amazon'=>'📦', 'أمازون'=>'📦', 'walmart'=>'🛒', 'ebay'=>'🏷️',
+        'canva'=>'🎨', 'كانفا'=>'🎨', 'photoshop'=>'🖼️', 'فوتوشوب'=>'🖼️',
+        'chatgpt'=>'🤖', 'openai'=>'🤖', 'notion'=>'📝', 'grammarly'=>'✍️',
+        'vpn'=>'🛡️', 'kaspersky'=>'🛡️', 'nord'=>'🛡️', 'كاسبرسكي'=>'🛡️',
+        'discord'=>'💬', 'ديسكورد'=>'💬', 'telegram'=>'📱', 'تيليجرام'=>'📱', 'tiktok'=>'🎵', 'تيك توك'=>'🎵',
+        'instagram'=>'📷', 'انستقرام'=>'📷', 'twitter'=>'🐦', 'تويتر'=>'🐦', 'twitch'=>'🎥',
+        'stc'=>'📶', 'زين'=>'📶', 'موبايلي'=>'📶', 'اتصالات'=>'📶', 'du'=>'📶', 'ooredoo'=>'📶',
+        'سيرياتيل'=>'📶', 'mtn'=>'📶',
+        'visa'=>'💳', 'فيزا'=>'💳', 'master'=>'💳', 'ماستر'=>'💳',
+        'usdt'=>'💰', 'bitcoin'=>'₿', 'crypto'=>'💰', 'شام'=>'💵',
+        'شحن'=>'⚡', 'بطاقة'=>'💳', 'اشتراك'=>'⭐', 'كوينز'=>'🪙', 'جواهر'=>'💎', 'ماس'=>'💎',
+        'ذهب'=>'🥇', 'gold'=>'🥇', 'فضة'=>'🥈', 'brozne'=>'🥉',
+    ];
+    foreach ($map as $k => $emoji) if (mb_strpos($n, $k) !== false) return $emoji;
+    return '🛒';
+}
+
+function admob_cfg(): array {
+    $test = setting('admob_test_mode', '1') === '1';
+    return [
+        'app_id'        => setting('admob_app_id', defined('ADMOB_APP_ID') ? ADMOB_APP_ID : ''),
+        'rewarded'      => $test ? 'ca-app-pub-3940256099942544/5354046379' : (setting('admob_rewarded_id', defined('ADMOB_REWARDED_ID') ? ADMOB_REWARDED_ID : '')),
+        'interstitial'  => $test ? 'ca-app-pub-3940256099942544/1033173712' : (setting('admob_interstitial_id', defined('ADMOB_INTERSTITIAL_ID') ? ADMOB_INTERSTITIAL_ID : '')),
+        'test'          => $test,
+    ];
+}
+
+/** يرسل إشعار تيليجرام مباشر لمستخدم مرتبط بحسابه عبر تيليجرام (مثل تحديث حالة طلب). */
+function tg_notify_user(string $chatId, string $text): void
+{
+    if (!$chatId) return;
+    $token = bot_token();
+    if (!$token) return;
+    http_post_json("https://api.telegram.org/bot$token/sendMessage", [
+        'chat_id' => $chatId,
+        'text' => $text,
+        'parse_mode' => 'HTML',
+    ]);
+}
+
+function log_activity(int $adminId, string $adminName, string $field, string $filename, string $url): void
+{
+    db()->prepare("INSERT INTO activity_log (admin_id, admin_name, field, filename, url) VALUES (?,?,?,?,?)")
+        ->execute([$adminId, $adminName, $field, $filename, $url]);
 }
 
 function current_user(): ?array
@@ -301,6 +1305,11 @@ function current_user(): ?array
     $st->execute([$_SESSION['uid']]);
     $u = $st->fetch() ?: null;
     if ($u && $u['is_banned']) { logout(); return null; }
+    if ($u && empty($u['referral_code'])) {
+        $code = strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+        db()->prepare("UPDATE users SET referral_code = ? WHERE id = ?")->execute([$code, $u['id']]);
+        $u['referral_code'] = $code;
+    }
     return $u;
 }
 function is_admin(): bool
@@ -310,7 +1319,7 @@ function is_admin(): bool
 }
 function require_admin(): void
 {
-    if (!is_admin()) { http_response_code(403); die('🚫 ممنوع — هذه الصفحة للإدارة فقط.'); }
+    if (!is_admin()) { http_response_code(403); die('ممنوع — هذه الصفحة للإدارة فقط.'); }
 }
 function logout(): void { $_SESSION = []; session_destroy(); }
 
@@ -343,73 +1352,232 @@ function csrf_check(): void
     if (!$t || !hash_equals($_SESSION['csrf'] ?? '', $t)) { http_response_code(419); die('انتهت صلاحية الجلسة، أعد تحميل الصفحة.'); }
 }
 
-/* ---- OpenRouter AI helpers ---- */
-function openrouter_key(): string
+/* ---- نظام الحماية من تخمين كلمات المرور (Brute-force protection) ---- */
+function client_ip(): string
 {
-    $k = trim((string)setting('openrouter_key', ''));
-    return $k !== '' ? $k : (string)OPENROUTER_KEY;
-}
-function openrouter_request(string $path, string $method = 'GET', ?array $body = null): array
-{
-    $key = openrouter_key();
-    if (!$key) return ['ok' => false, 'status' => 0, 'data' => null, 'error' => 'لم يتم ضبط مفتاح OpenRouter.'];
-    $ch = curl_init('https://openrouter.ai/api/v1' . $path);
-    $headers = ['Authorization: Bearer ' . $key, 'Content-Type: application/json'];
-    if (defined('SITE_URL') && SITE_URL) { $headers[] = 'HTTP-Referer: ' . SITE_URL; }
-    $headers[] = 'X-Title: ' . setting('site_name', 'Yassota');
-    curl_setopt_array($ch, [
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_HTTPHEADER => $headers,
-        CURLOPT_TIMEOUT => 30,
-        CURLOPT_CUSTOMREQUEST => $method,
-    ]);
-    if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, json_encode($body, JSON_UNESCAPED_UNICODE));
-    $res = curl_exec($ch);
-    $status = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-    $err = curl_error($ch);
-    curl_close($ch);
-    if ($res === false) return ['ok' => false, 'status' => $status, 'data' => null, 'error' => $err ?: 'فشل الاتصال.'];
-    $data = json_decode($res, true);
-    return ['ok' => $status >= 200 && $status < 300, 'status' => $status, 'data' => $data, 'error' => $data['error']['message'] ?? ($status >= 400 ? 'خطأ HTTP ' . $status : '')];
+    return $_SERVER['REMOTE_ADDR'] ?? '0.0.0.0';
 }
 
-/* ---- Telegram helpers ---- */
-function tg_send(string $chatId, string $text, array $extra = []): void
+function is_ip_blocked(string $ip): bool
 {
-    if (!BOT_TOKEN) return;
-    $params = array_merge(['chat_id' => $chatId, 'text' => $text, 'parse_mode' => 'HTML'], $extra);
-    $ch = curl_init("https://api.telegram.org/bot" . BOT_TOKEN . "/sendMessage");
-    curl_setopt_array($ch, [
-        CURLOPT_POST => true,
-        CURLOPT_POSTFIELDS => $params,
-        CURLOPT_RETURNTRANSFER => true,
-        CURLOPT_TIMEOUT => 5,
-    ]);
-    curl_exec($ch);
-    curl_close($ch);
+    $st = db()->prepare("SELECT id FROM blocked_ips WHERE ip = ?");
+    $st->execute([$ip]);
+    return (bool)$st->fetch();
 }
-function tg_broadcast_product(array $product): void
+
+function login_attempts_limit(): int { return (int)setting('login_max_attempts', 5); }
+function login_lockout_minutes(): int { return (int)setting('login_lockout_minutes', 15); }
+
+// يتحقق إن كانت هوية/IP معينة تجاوزت عدد المحاولات الفاشلة المسموح بها خلال فترة القفل
+function is_login_locked(string $identity, string $ip): bool
 {
-    if (!BOT_TOKEN) return;
-    $chats = db()->query("SELECT chat_id FROM telegram_users")->fetchAll();
-    $text = "🆕 <b>منتج جديد!</b>\n\n"
-        . ($product['icon'] ? $product['icon'] . ' ' : '') . "<b>" . e($product['name']) . "</b>\n"
-        . "💵 السعر: <b>{$product['price']}$</b>\n"
-        . ($product['description'] ? e(mb_substr($product['description'], 0, 200)) . "\n" : "")
-        . "\n🔗 " . SITE_URL;
-    foreach ($chats as $c) tg_send($c['chat_id'], $text);
-    if (OWNER_ID) tg_send(OWNER_ID, "📢 تم بث المنتج لعدد " . count($chats) . " محادثة.");
+    if (is_ip_blocked($ip)) return true;
+    $limit = login_attempts_limit();
+    if ($limit <= 0) return false;
+    $since = date('Y-m-d H:i:s', time() - login_lockout_minutes() * 60);
+    $st = db()->prepare("SELECT COUNT(*) c FROM login_attempts WHERE (identity = ? OR ip = ?) AND success = 0 AND created_at >= ?");
+    $st->execute([$identity, $ip, $since]);
+    return (int)$st->fetch()['c'] >= $limit;
+}
+
+function record_login_attempt(string $identity, string $ip, bool $success): void
+{
+    db()->prepare("INSERT INTO login_attempts (identity, ip, success) VALUES (?,?,?)")
+        ->execute([$identity, $ip, $success ? 1 : 0]);
+    if ($success) {
+        db()->prepare("DELETE FROM login_attempts WHERE (identity = ? OR ip = ?) AND success = 0")
+            ->execute([$identity, $ip]);
+    }
+}
+
+/* ---- Telegram ----
+   البوت أصبح عملية مستقلة تعمل على سيرفر VPS منفصل (telegram_bot.php)
+   ويستخدم فقط نفس قاعدة البيانات. هذا الملف لا يتصل بـ Telegram API مباشرة إطلاقاً؛
+   عند نشر منتج جديد يُكتب سجل في bot_broadcast_queue ليقرأه البوت ويبثه بنفسه. */
+
+/* ---- Satofill API: مزامنة كتالوج المنتجات مع تطبيق نسبة هامش ربح ---- */
+function satofill_fetch_catalog(): array
+{
+    if (!defined('SATOFILL_API_TOKEN') || !SATOFILL_API_TOKEN) {
+        throw new RuntimeException('SATOFILL_API_TOKEN غير مُعرّف في config.php');
+    }
+    $base = rtrim(setting('satofill_api_base', 'https://satofill.com/api'), '/');
+    $ch = curl_init($base . '/products');
+    curl_setopt_array($ch, [
+        CURLOPT_HTTPHEADER => [
+            'Authorization: Bearer ' . SATOFILL_API_TOKEN,
+            'Accept: application/json',
+        ],
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 20,
+    ]);
+    $res = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($res === false || $code >= 400) {
+        throw new RuntimeException("فشل الاتصال بـ Satofill (HTTP $code)");
+    }
+    $data = json_decode($res, true);
+    if (!is_array($data)) throw new RuntimeException('استجابة غير صالحة من Satofill');
+    // الواجهة قد تُغلّف القائمة داخل data/products/items حسب توثيق المزود
+    foreach (['data', 'products', 'items'] as $k) {
+        if (isset($data[$k]) && is_array($data[$k])) { $data = $data[$k]; break; }
+    }
+    return $data;
+}
+
+// ضغط/تصغير الصور المرفوعة لتقليل حجمها وتسريع تحميلها (السبب الرئيسي لتجمّد الموقع أثناء عرض الصور).
+// يُعاد ترميز الصورة بجودة مضغوطة وتُصغَّر أبعادها إذا تجاوزت الحد الأقصى، مع الحفاظ على نوع الملف.
+/**
+ * يكتب ملف sw.js (Service Worker) في جذر الموقع حسب محتوى وحالة التفعيل المضبوطة من لوحة الإدارة،
+ * لأن service worker لا يعمل إلا إذا قُدّم فعلياً من مسار جذر الموقع (/sw.js) لا عبر index.php?...
+ */
+function write_moneytag_sw_file(): void
+{
+    $path = __DIR__ . '/sw.js';
+    if (setting('moneytag_sw_enabled', '0') !== '1') {
+        if (is_file($path)) @unlink($path);
+        return;
+    }
+    $content = setting('moneytag_sw_content', '');
+    if (trim($content) === '') $content = "self.addEventListener('install', () => self.skipWaiting());\nself.addEventListener('activate', () => self.clients.claim());";
+    @file_put_contents($path, $content);
+}
+
+function compress_image_file(string $path, int $maxDim = 1280, int $quality = 75): void
+{
+    $info = @getimagesize($path);
+    if (!$info) return;
+    [$w, $h, $type] = $info;
+    $needsResize = $w > $maxDim || $h > $maxDim;
+    if ($type === IMAGETYPE_GIF && !$needsResize) return; // لا نعيد ترميز gif إلا عند الحاجة لتصغيره (حفاظاً على الحركة قدر الإمكان)
+    $src = match ($type) {
+        IMAGETYPE_JPEG => @imagecreatefromjpeg($path),
+        IMAGETYPE_PNG => @imagecreatefrompng($path),
+        IMAGETYPE_WEBP => function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($path) : null,
+        IMAGETYPE_GIF => @imagecreatefromgif($path),
+        default => null,
+    };
+    if (!$src) return;
+    if ($needsResize) {
+        $ratio = min($maxDim / $w, $maxDim / $h);
+        $nw = max(1, (int)round($w * $ratio));
+        $nh = max(1, (int)round($h * $ratio));
+        $dst = imagecreatetruecolor($nw, $nh);
+        if ($type === IMAGETYPE_PNG || $type === IMAGETYPE_GIF) {
+            imagealphablending($dst, false);
+            imagesavealpha($dst, true);
+        }
+        imagecopyresampled($dst, $src, 0, 0, 0, 0, $nw, $nh, $w, $h);
+        imagedestroy($src);
+        $src = $dst;
+    }
+    switch ($type) {
+        case IMAGETYPE_JPEG: imagejpeg($src, $path, $quality); break;
+        case IMAGETYPE_PNG: imagepng($src, $path, 6); break;
+        case IMAGETYPE_WEBP: if (function_exists('imagewebp')) imagewebp($src, $path, $quality); break;
+        case IMAGETYPE_GIF: imagegif($src, $path); break;
+    }
+    imagedestroy($src);
+}
+
+// تنزيل صورة المنتج من سيرفر المزوّد محلياً مرة واحدة عند المزامنة، حتى لا يضطر متصفح المستخدم
+// لتحميلها من سيرفر بطيء/بعيد كل مرة (هذا هو السبب الرئيسي لبطء ظهور صور المنتجات).
+function cache_remote_image(string $url): string
+{
+    if ($url === '' || !preg_match('#^https?://#i', $url)) return $url;
+    $destDir = __DIR__ . '/uploads/cache';
+    if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+    $filename = hash('sha256', $url) . '.img';
+    $destFile = $destDir . '/' . $filename;
+    if (is_file($destFile)) return 'uploads/cache/' . $filename;
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [CURLOPT_RETURNTRANSFER => true, CURLOPT_TIMEOUT => 10, CURLOPT_FOLLOWLOCATION => true, CURLOPT_MAXREDIRS => 3]);
+    $bytes = curl_exec($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    if ($bytes === false || $code >= 400 || strlen($bytes) > 5 * 1024 * 1024) return $url;
+    $tmp = $destDir . '/tmp_' . $filename;
+    file_put_contents($tmp, $bytes);
+    $mime = mime_content_type($tmp);
+    $allowed = ['image/jpeg' => 'jpg', 'image/png' => 'png', 'image/webp' => 'webp', 'image/gif' => 'gif'];
+    if (!isset($allowed[$mime])) { unlink($tmp); return $url; }
+    rename($tmp, $destFile);
+    compress_image_file($destFile);
+    return 'uploads/cache/' . $filename;
+}
+
+function satofill_sync_products(): int
+{
+    $items = satofill_fetch_catalog();
+    $markup = (float)setting('satofill_markup_percent', 15);
+    $pdo = db();
+    $count = 0;
+    foreach ($items as $item) {
+        $extId = (string)($item['id'] ?? $item['product_id'] ?? '');
+        if ($extId === '') continue;
+        $name = trim((string)($item['name'] ?? $item['title'] ?? ''));
+        if ($name === '') continue;
+        $cost = (float)($item['price'] ?? $item['cost'] ?? 0);
+        $price = round($cost * (1 + $markup / 100), 2);
+        $image = cache_remote_image((string)($item['image'] ?? $item['thumbnail'] ?? $item['icon_url'] ?? ''));
+
+        $st = $pdo->prepare("SELECT id FROM products WHERE source='satofill' AND external_id=?");
+        $st->execute([$extId]);
+        $existing = $st->fetch();
+        if ($existing) {
+            $pdo->prepare("UPDATE products SET name=?, price=?, image=? WHERE id=?")
+                ->execute([$name, $price, $image, $existing['id']]);
+        } else {
+            $pdo->prepare("INSERT INTO products (name, price, image, source, external_id, status) VALUES (?,?,?,?,?,'active')")
+                ->execute([$name, $price, $image, 'satofill', $extId]);
+        }
+        $count++;
+    }
+    return $count;
 }
 
 /* ======================================================================
-   3) GOOGLE OAUTH
+   3) GOOGLE OAUTH + TRADITIONAL AUTH
    ====================================================================== */
+function google_redirect_uri(): string
+{
+    // مهم جداً: يجب أن يكون هذا الرابط ثابتاً ومطابقاً تماماً للمسجَّل في Google Cloud Console.
+    // نبنيه من SITE_URL وليس من $_SERVER حتى لا يتغيّر حسب طريقة فتح الصفحة (yassota.com مقابل yassota.com/index.php)،
+    // لأن أي اختلاف ولو بسيط يسبب خطأ redirect_uri_mismatch.
+    if (defined('SITE_URL') && SITE_URL) {
+        return rtrim(SITE_URL, '/') . '/index.php?action=google_callback';
+    }
+    // احتياطي للتشغيل المحلي فقط
+    $scheme = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || ($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https' ? 'https' : 'http';
+    $host = $_SERVER['HTTP_HOST'] ?? 'localhost';
+    $path = strtok($_SERVER['REQUEST_URI'] ?? '/', '?');
+    return "$scheme://$host$path?action=google_callback";
+}
+
+function gen_username(string $base): string
+{
+    $base = preg_replace('/[^a-zA-Z0-9_]/', '', strtolower(explode('@', $base)[0]));
+    if ($base === '') $base = 'user';
+    $base = mb_substr($base, 0, 20);
+    $username = $base;
+    $i = 0;
+    while (true) {
+        $st = db()->prepare("SELECT id FROM users WHERE username = ?");
+        $st->execute([$username]);
+        if (!$st->fetch()) return $username;
+        $i++;
+        $username = $base . $i;
+    }
+}
+
+
 function google_login_url(): string
 {
     if (!GOOGLE_CLIENT_ID) return '#';
     $params = [
         'client_id' => GOOGLE_CLIENT_ID,
-        'redirect_uri' => GOOGLE_REDIRECT_URI,
+        'redirect_uri' => google_redirect_uri(),
         'response_type' => 'code',
         'scope' => 'openid email profile',
         'access_type' => 'online',
@@ -418,19 +1586,131 @@ function google_login_url(): string
     return 'https://accounts.google.com/o/oauth2/v2/auth?' . http_build_query($params);
 }
 
+function http_post(string $url, array $fields): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query($fields),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_HTTPHEADER => ['Content-Type: application/x-www-form-urlencoded'],
+    ]);
+    $body = curl_exec($ch);
+    $err = curl_error($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['body' => $body, 'error' => $err, 'code' => $code];
+}
+
+function http_get(string $url): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 15,
+        CURLOPT_SSL_VERIFYPEER => true,
+    ]);
+    $body = curl_exec($ch);
+    $err = curl_error($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['body' => $body, 'error' => $err, 'code' => $code];
+}
+
+function smtp_send_mail(string $to, string $subject, string $bodyHtml): array
+{
+    if (setting('mail_enabled') !== '1') return ['ok' => false, 'msg' => 'إرسال البريد غير مفعّل من الإعدادات.'];
+    $host = setting('smtp_host');
+    $port = (int)setting('smtp_port', '587');
+    $user = setting('smtp_user');
+    $pass = setting('smtp_pass');
+    $secure = setting('smtp_secure', 'tls');
+    $fromEmail = setting('mail_from_email') ?: $user;
+    $fromName = setting('mail_from_name') ?: setting('site_name', 'الموقع');
+    if (!$host || !$user || !$pass || !$fromEmail) return ['ok' => false, 'msg' => 'إعدادات SMTP غير مكتملة من لوحة الإدارة.'];
+
+    $errno = 0; $errstr = '';
+    $transport = $secure === 'ssl' ? 'ssl://' : '';
+    $fp = @fsockopen($transport . $host, $port, $errno, $errstr, 15);
+    if (!$fp) return ['ok' => false, 'msg' => "فشل الاتصال بخادم SMTP: $errstr"];
+    stream_set_timeout($fp, 15);
+    $readLine = function () use ($fp) {
+        $data = '';
+        while (($str = fgets($fp, 515)) !== false) { $data .= $str; if (isset($str[3]) && $str[3] === ' ') break; }
+        return $data;
+    };
+    $write = function (string $cmd) use ($fp) { fwrite($fp, $cmd . "\r\n"); };
+    $codeOf = function (string $resp): int { return (int)substr($resp, 0, 3); };
+    $heloHost = defined('SITE_URL') ? (parse_url(SITE_URL, PHP_URL_HOST) ?: 'localhost') : 'localhost';
+
+    $readLine();
+    $write('EHLO ' . $heloHost); $resp = $readLine();
+    if ($secure === 'tls') {
+        $write('STARTTLS'); $resp = $readLine();
+        if ($codeOf($resp) !== 220) { fclose($fp); return ['ok' => false, 'msg' => 'فشل STARTTLS: ' . trim($resp)]; }
+        if (!stream_socket_enable_crypto($fp, true, STREAM_CRYPTO_METHOD_TLS_CLIENT)) { fclose($fp); return ['ok' => false, 'msg' => 'فشل تفعيل التشفير TLS.']; }
+        $write('EHLO ' . $heloHost); $resp = $readLine();
+    }
+    $write('AUTH LOGIN'); $readLine();
+    $write(base64_encode($user)); $readLine();
+    $write(base64_encode($pass)); $resp = $readLine();
+    if ($codeOf($resp) !== 235) { fclose($fp); return ['ok' => false, 'msg' => 'فشل تسجيل الدخول SMTP (تحقق من بيانات الاعتماد): ' . trim($resp)]; }
+    $write('MAIL FROM:<' . $fromEmail . '>'); $readLine();
+    $write('RCPT TO:<' . $to . '>'); $resp = $readLine();
+    if ($codeOf($resp) !== 250 && $codeOf($resp) !== 251) { fclose($fp); return ['ok' => false, 'msg' => 'البريد المستلم مرفوض: ' . trim($resp)]; }
+    $write('DATA'); $readLine();
+    $headers = "From: " . mb_encode_mimeheader($fromName, 'UTF-8') . " <$fromEmail>\r\n"
+        . "To: <$to>\r\nSubject: " . mb_encode_mimeheader($subject, 'UTF-8') . "\r\n"
+        . "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n";
+    $write($headers . "\r\n" . str_replace("\r\n.", "\r\n..", $bodyHtml) . "\r\n.");
+    $resp = $readLine();
+    $write('QUIT'); fclose($fp);
+    if ($codeOf($resp) !== 250) return ['ok' => false, 'msg' => 'فشل إرسال الرسالة: ' . trim($resp)];
+    return ['ok' => true, 'msg' => 'تم الإرسال بنجاح'];
+}
+
+function http_post_json(string $url, array $payload, array $headers = [], int $timeout = 30): array
+{
+    $ch = curl_init($url);
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => json_encode($payload, JSON_UNESCAPED_UNICODE),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => $timeout,
+        CURLOPT_SSL_VERIFYPEER => true,
+        CURLOPT_HTTPHEADER => array_merge(['Content-Type: application/json'], $headers),
+    ]);
+    $body = curl_exec($ch);
+    $err = curl_error($ch);
+    $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+    curl_close($ch);
+    return ['body' => $body, 'error' => $err, 'code' => $code];
+}
+
 function google_handle_callback(string $code): void
 {
-    $tokenRes = json_decode(file_get_contents('https://oauth2.googleapis.com/token?' . http_build_query([
+    if (!$code) { flash('فشل تسجيل الدخول بجوجل: لم يصل رمز التفويض من جوجل.', 'error'); redirect('?'); }
+
+    $tokenHttp = http_post('https://oauth2.googleapis.com/token', [
         'code' => $code,
         'client_id' => GOOGLE_CLIENT_ID,
         'client_secret' => GOOGLE_CLIENT_SECRET,
-        'redirect_uri' => GOOGLE_REDIRECT_URI,
+        'redirect_uri' => google_redirect_uri(),
         'grant_type' => 'authorization_code',
-    ]), false, stream_context_create(['http' => ['method' => 'POST', 'header' => "Content-Type: application/x-www-form-urlencoded\r\n"]])), true);
+    ]);
+    $tokenRes = json_decode((string)$tokenHttp['body'], true);
 
-    if (empty($tokenRes['access_token'])) { flash('فشل تسجيل الدخول بجوجل.', 'error'); redirect('?'); }
+    if (empty($tokenRes['access_token'])) {
+        $detail = $tokenHttp['error'] ?: ($tokenRes['error_description'] ?? $tokenRes['error'] ?? 'استجابة غير متوقعة من جوجل (HTTP ' . $tokenHttp['code'] . ')');
+        error_log('Google OAuth token exchange failed: ' . $detail . ' | redirect_uri=' . google_redirect_uri());
+        flash('فشل تسجيل الدخول بجوجل: ' . $detail, 'error');
+        redirect('?');
+    }
 
-    $info = json_decode(file_get_contents('https://www.googleapis.com/oauth2/v3/userinfo?access_token=' . $tokenRes['access_token']), true);
+    $infoHttp = http_get('https://www.googleapis.com/oauth2/v3/userinfo?access_token=' . urlencode($tokenRes['access_token']));
+    $info = json_decode((string)$infoHttp['body'], true);
     if (empty($info['email'])) { flash('تعذّر جلب بيانات حسابك من جوجل.', 'error'); redirect('?'); }
 
     $email = $info['email'];
@@ -442,99 +1722,417 @@ function google_handle_callback(string $code): void
     $st->execute([$email]);
     $u = $st->fetch();
     $role = ($email === ADMIN_EMAIL) ? 'admin' : 'user';
+    $isNew = !$u;
 
     if ($u) {
         db()->prepare("UPDATE users SET name=?, avatar=?, google_id=?, role=?, last_login=" . (DB_DRIVER === 'sqlite' ? "datetime('now')" : 'NOW()') . " WHERE id=?")
             ->execute([$name, $avatar, $gid, $role, $u['id']]);
         $uid = $u['id'];
     } else {
-        $refCode = substr(strtoupper(bin2hex(random_bytes(4))), 0, 7);
-        // ربط الإحالة لو وُجد رمز محفوظ
-        $referrer = null;
-        if (!empty($_COOKIE['ref_code'])) {
-            $rc = preg_replace('/[^A-Za-z0-9]/', '', $_COOKIE['ref_code']);
-            $rs = db()->prepare("SELECT id FROM users WHERE ref_code=?");
-            $rs->execute([$rc]);
-            $referrer = $rs->fetch()['id'] ?? null;
-        }
-        db()->prepare("INSERT INTO users (google_id, email, name, avatar, role, ref_code, referred_by) VALUES (?,?,?,?,?,?,?)")
-            ->execute([$gid, $email, $name, $avatar, $role, $refCode, $referrer]);
+        $username = gen_username($email);
+        db()->prepare("INSERT INTO users (google_id, email, name, avatar, role, username) VALUES (?,?,?,?,?,?)")
+            ->execute([$gid, $email, $name, $avatar, $role, $username]);
         $uid = db()->lastInsertId();
-        if ($referrer) {
-            $rw = (int)setting('referral_reward', 100);
-            add_points((int)$referrer, $rw, 'referral', 'مكافأة دعوة صديق جديد');
-            add_points((int)$uid, (int)round($rw / 2), 'referral', 'مكافأة ترحيب عبر دعوة');
-        }
     }
     $_SESSION['uid'] = $uid;
+    redirect($isNew ? '?' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
+}
+
+function telegram_handle_login(): void
+{
+    if (!bot_token()) { flash('تسجيل الدخول بتيليجرام غير مفعّل حالياً.', 'error'); redirect('?page=login'); }
+    $data = $_POST;
+    $hash = $data['hash'] ?? '';
+    unset($data['hash']);
+    if (empty($data['id']) || !$hash) { flash('بيانات تيليجرام غير مكتملة.', 'error'); redirect('?page=login'); }
+
+    $checkArr = [];
+    foreach ($data as $k => $v) $checkArr[] = $k . '=' . $v;
+    sort($checkArr);
+    $checkString = implode("\n", $checkArr);
+    $secretKey = hash('sha256', bot_token(), true);
+    $computedHash = hash_hmac('sha256', $checkString, $secretKey);
+
+    if (!hash_equals($computedHash, $hash)) { flash('تعذّر التحقق من حساب تيليجرام.', 'error'); redirect('?page=login'); }
+    if (time() - (int)($data['auth_date'] ?? 0) > 86400) { flash('انتهت صلاحية جلسة تيليجرام، حاول مجدداً.', 'error'); redirect('?page=login'); }
+
+    $tgId = (string)$data['id'];
+    $name = trim(($data['first_name'] ?? '') . ' ' . ($data['last_name'] ?? '')) ?: ('tg_' . $tgId);
+    $avatar = $data['photo_url'] ?? '';
+
+    $st = db()->prepare("SELECT * FROM users WHERE telegram_id = ?");
+    $st->execute([$tgId]);
+    $u = $st->fetch();
+    $isNew = !$u;
+
+    if ($u) {
+        db()->prepare("UPDATE users SET name=?, avatar=?, last_login=" . (DB_DRIVER === 'sqlite' ? "datetime('now')" : 'NOW()') . " WHERE id=?")
+            ->execute([$name, $avatar, $u['id']]);
+        $uid = $u['id'];
+        $role = $u['role'];
+    } else {
+        $email = 'tg_' . $tgId . '@telegram.local';
+        $username = gen_username($email);
+        db()->prepare("INSERT INTO users (telegram_id, email, name, avatar, role, username) VALUES (?,?,?,?,?,?)")
+            ->execute([$tgId, $email, $name, $avatar, 'user', $username]);
+        $uid = db()->lastInsertId();
+        $role = 'user';
+    }
+    $_SESSION['uid'] = $uid;
+    redirect($isNew ? '?' : ('?' . ($role === 'admin' ? 'page=admin' : '')));
+}
+
+// تجزئة بسيطة لعنوان IP + متصفح المستخدم لمنع تكرار الإحالة من نفس الجهاز.
+// ليست حماية مطلقة (يمكن تجاوزها بـ VPN/متصفح مختلف) لكنها تردع إعادة التسجيل السريعة.
+function device_fingerprint(): string
+{
+    return hash('sha256', ($_SERVER['REMOTE_ADDR'] ?? '') . '|' . ($_SERVER['HTTP_USER_AGENT'] ?? ''));
+}
+
+// كابتشا عالمية حقيقية عبر Cloudflare Turnstile (مفتاح/سر يُضبطان من لوحة الإدارة).
+// إن لم يُضبط أي مفتاح يُعتبر التحقق غير مفعّل ولا يمنع تسجيل الدخول/الحساب.
+function turnstile_verify(): bool
+{
+    $secret = setting('turnstile_secret_key');
+    if (!$secret) return true;
+    $token = $_POST['cf-turnstile-response'] ?? '';
+    if (!$token) return false;
+    $ch = curl_init('https://challenges.cloudflare.com/turnstile/v0/siteverify');
+    curl_setopt_array($ch, [
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query(['secret' => $secret, 'response' => $token, 'remoteip' => $_SERVER['REMOTE_ADDR'] ?? '']),
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_TIMEOUT => 10,
+    ]);
+    $res = curl_exec($ch);
+    curl_close($ch);
+    if ($res === false) return false;
+    $data = json_decode($res, true);
+    return !empty($data['success']);
+}
+
+function turnstile_widget(): string
+{
+    $siteKey = setting('turnstile_site_key');
+    if (!$siteKey) return '';
+    return '<div class="cf-turnstile" data-sitekey="' . e($siteKey) . '" data-theme="dark"></div>';
+}
+
+function handle_register(): void
+{
+    csrf_check();
+    $username = trim($_POST['username'] ?? '');
+    $email = trim($_POST['email'] ?? '');
+    $password = (string)($_POST['password'] ?? '');
+
+    if (is_ip_blocked(client_ip())) { flash('عذراً، لا يمكن التسجيل من هذا العنوان حالياً.', 'error'); redirect('?'); }
+    if (!turnstile_verify()) { flash('فشل التحقق الأمني (الكابتشا)، يرجى المحاولة مجدداً.', 'error'); redirect('?'); }
+    if (!$username || !$email || !$password) { flash('يرجى تعبئة جميع الحقول.', 'error'); redirect('?'); }
+    if (!filter_var($email, FILTER_VALIDATE_EMAIL)) { flash('البريد الإلكتروني غير صالح.', 'error'); redirect('?'); }
+    if (mb_strlen($password) < 6) { flash('كلمة المرور يجب أن تكون 6 أحرف على الأقل.', 'error'); redirect('?'); }
+    if (!preg_match('/^[a-zA-Z0-9_]{3,20}$/', $username)) { flash('اسم المستخدم يجب أن يكون 3-20 حرف/رقم إنجليزي بدون مسافات.', 'error'); redirect('?'); }
+
+    $st = db()->prepare("SELECT id FROM users WHERE email = ?");
+    $st->execute([$email]);
+    if ($st->fetch()) { flash('هذا البريد مسجل مسبقاً، سجّل الدخول.', 'error'); redirect('?'); }
+
+    $st = db()->prepare("SELECT id FROM users WHERE username = ?");
+    $st->execute([$username]);
+    if ($st->fetch()) { flash('اسم المستخدم محجوز، اختر اسماً آخر.', 'error'); redirect('?'); }
+
+    $role = ($email === ADMIN_EMAIL) ? 'admin' : 'user';
+    $refCode = strtoupper(substr(bin2hex(random_bytes(4)), 0, 8));
+    $fingerprint = device_fingerprint();
+    $referredBy = null;
+    if (!empty($_SESSION['ref_code'])) {
+        $st = db()->prepare("SELECT id FROM users WHERE referral_code = ?");
+        $st->execute([$_SESSION['ref_code']]);
+        $ref = $st->fetch();
+        if ($ref) $referredBy = (int)$ref['id'];
+    }
+    $verifyToken = bin2hex(random_bytes(32));
+    db()->prepare("INSERT INTO users (username, email, password_hash, name, role, referral_code, referred_by, signup_fingerprint, email_verify_token) VALUES (?,?,?,?,?,?,?,?,?)")
+        ->execute([$username, $email, password_hash($password, PASSWORD_DEFAULT), $username, $role, $refCode, $referredBy, $fingerprint, $verifyToken]);
+    $uid = db()->lastInsertId();
+    unset($_SESSION['ref_code']);
+    $_SESSION['uid'] = $uid;
+    try {
+        if (setting('mail_enabled') === '1') {
+            $verifyLink = (defined('SITE_URL') ? SITE_URL : '') . '?action=verify_email&token=' . $verifyToken;
+            $siteName = setting('site_name', 'الموقع');
+            $body = '<div dir="rtl" style="font-family:Tahoma,Arial,sans-serif"><h2>مرحباً ' . e($username) . '</h2>'
+                . '<p>شكراً لتسجيلك في ' . e($siteName) . '. يرجى تأكيد بريدك الإلكتروني بالضغط على الرابط التالي:</p>'
+                . '<p><a href="' . e($verifyLink) . '">تأكيد البريد الإلكتروني</a></p></div>';
+            smtp_send_mail($email, 'تأكيد بريدك الإلكتروني - ' . $siteName, $body);
+        }
+    } catch (Throwable $e) {}
+    redirect('?');
+}
+
+function handle_login(): void
+{
+    csrf_check();
+    $identity = trim($_POST['identity'] ?? '');
+    $password = (string)($_POST['password'] ?? '');
+    $ip = client_ip();
+
+    if (is_login_locked($identity, $ip)) {
+        flash('تم حظر تسجيل الدخول مؤقتاً بسبب محاولات فاشلة كثيرة، حاول بعد ' . login_lockout_minutes() . ' دقيقة.', 'error');
+        redirect('?');
+    }
+    if (!turnstile_verify()) { flash('فشل التحقق الأمني (الكابتشا)، يرجى المحاولة مجدداً.', 'error'); redirect('?'); }
+    if (!$identity || !$password) { flash('يرجى تعبئة جميع الحقول.', 'error'); redirect('?'); }
+
+    $st = db()->prepare("SELECT * FROM users WHERE email = ? OR username = ?");
+    $st->execute([$identity, $identity]);
+    $u = $st->fetch();
+
+    if (!$u || !$u['password_hash'] || !password_verify($password, $u['password_hash'])) {
+        record_login_attempt($identity, $ip, false);
+        flash('بيانات الدخول غير صحيحة.', 'error'); redirect('?');
+    }
+    if ($u['is_banned']) { flash('هذا الحساب محظور.', 'error'); redirect('?'); }
+    if (setting('email_verify_required') === '1' && (int)($u['email_verified'] ?? 0) !== 1) {
+        flash('يرجى تأكيد بريدك الإلكتروني أولاً، تحقق من بريدك الوارد.', 'error'); redirect('?');
+    }
+
+    record_login_attempt($identity, $ip, true);
+    $role = ($u['email'] === ADMIN_EMAIL) ? 'admin' : $u['role'];
+    db()->prepare("UPDATE users SET role=?, last_login=" . (DB_DRIVER === 'sqlite' ? "datetime('now')" : 'NOW()') . " WHERE id=?")
+        ->execute([$role, $u['id']]);
+    $_SESSION['uid'] = $u['id'];
     redirect('?' . ($role === 'admin' ? 'page=admin' : ''));
 }
 
 /* ======================================================================
    4) ROUTING
    ====================================================================== */
+if (is_ip_blocked(client_ip())) { http_response_code(403); die('عذراً، تم حظر هذا العنوان من الوصول للموقع.'); }
+
 $action = $_GET['action'] ?? '';
 $page = $_GET['page'] ?? 'home';
+$appsKindNav = $_GET['kind'] ?? '';
 
-// ملاحظة: استقبال أوامر بوت تيليجرام الكاملة (القوائم/الأرباح/المحفظة) يتم في telegram_bot.php
-// هذا الملف فقط يستخدم tg_broadcast_product() للبث عند نشر منتج جديد.
+if (!empty($_GET['ref']) && preg_match('/^[A-Z0-9]{4,20}$/', $_GET['ref'])) {
+    $_SESSION['ref_code'] = $_GET['ref'];
+}
+
+// ملاحظة: بوت تيليجرام (القوائم/الأرباح/المحفظة) يعمل كعملية مستقلة بالكامل عبر telegram_bot.php
+// على سيرفر منفصل، ويتواصل مع هذا الموقع فقط من خلال قاعدة البيانات المشتركة (لا استدعاء API مباشر هنا).
 
 if ($action === 'google_callback') {
     google_handle_callback($_GET['code'] ?? '');
     exit;
 }
 
+if ($action === 'telegram_login') { telegram_handle_login(); exit; }
+
+if ($action === 'register') { handle_register(); exit; }
+
+if ($action === 'verify_email') {
+    $token = $_GET['token'] ?? '';
+    if ($token) {
+        $st = db()->prepare("SELECT id FROM users WHERE email_verify_token = ?");
+        $st->execute([$token]);
+        $vu = $st->fetch();
+        if ($vu) {
+            db()->prepare("UPDATE users SET email_verified=1, email_verify_token=NULL WHERE id=?")->execute([$vu['id']]);
+            flash('تم تأكيد بريدك الإلكتروني بنجاح.', 'success');
+        } else {
+            flash('رابط التأكيد غير صالح أو تم استخدامه مسبقاً.', 'error');
+        }
+    }
+    redirect('?');
+}
+if ($action === 'login') { handle_login(); exit; }
+
 if ($action === 'logout') { logout(); redirect('?'); }
 
-// التقاط رمز الإحالة وتخزينه لحين التسجيل
-if (!empty($_GET['ref'])) {
-    setcookie('ref_code', preg_replace('/[^A-Za-z0-9]/', '', $_GET['ref']), time() + 60 * 60 * 24 * 30, '/');
-}
-
-// ملف PWA Manifest (لتحويل الموقع إلى تطبيق APK عبر TWA / Bubblewrap)
-if ($action === 'manifest') {
-    header('Content-Type: application/manifest+json; charset=utf-8');
-    $name = setting('site_name', 'Yassota Store');
-    $logo = setting('logo_url', '');
-    $icon = $logo ?: '?action=appicon';
-    echo json_encode([
-        'name' => $name,
-        'short_name' => $name,
-        'description' => setting('site_description', ''),
-        'start_url' => './',
-        'display' => 'standalone',
-        'orientation' => 'portrait',
-        'background_color' => '#0f1320',
-        'theme_color' => '#0f1320',
-        'lang' => 'ar',
-        'dir' => 'rtl',
-        'icons' => [
-            ['src' => $icon, 'sizes' => '192x192', 'type' => 'image/png', 'purpose' => 'any maskable'],
-            ['src' => $icon, 'sizes' => '512x512', 'type' => 'image/png', 'purpose' => 'any maskable'],
-        ],
-    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    exit;
-}
-
-// أيقونة التطبيق الافتراضية (SVG) — تُستخدم عند عدم وجود شعار مرفوع
-if ($action === 'appicon') {
-    header('Content-Type: image/svg+xml; charset=utf-8');
-    echo brand_logo_svg(512);
-    exit;
-}
-
-// Service Worker بسيط لدعم العمل دون اتصال وتثبيت التطبيق
-if ($action === 'sw') {
-    header('Content-Type: application/javascript; charset=utf-8');
-    echo "const C='yassota-v1';self.addEventListener('install',e=>self.skipWaiting());self.addEventListener('activate',e=>self.clients.claim());self.addEventListener('fetch',e=>{e.respondWith(fetch(e.request).catch(()=>caches.match(e.request)))});";
-    exit;
-}
-
-if ($page === 'admin' && !is_admin()) { http_response_code(403); die('🚫 ممنوع — هذه الصفحة للإدارة فقط. سجّل الدخول ببريد الأدمن.'); }
+if ($page === 'admin' && !is_admin()) { http_response_code(403); die('ممنوع — هذه الصفحة للإدارة فقط. سجّل الدخول ببريد الأدمن.'); }
 
 if ($action === 'accept_policy') {
     setcookie('policy_accepted', setting('policy_version', '1'), time() + 60 * 60 * 24 * 365, '/');
     echo 'ok'; exit;
+}
+
+if ($action === 'tg_set_webhook') {
+    // تعيين webhook تلقائي - للأدمن فقط
+    if (!is_admin()) { http_response_code(403); die('غير مصرح'); }
+    header('Content-Type: application/json; charset=utf-8');
+    $token = bot_token();
+    if (!$token) { echo json_encode(['ok' => false, 'msg' => 'BOT_TOKEN غير مُعرَّف.']); exit; }
+    $webhookUrl = rtrim(SITE_URL, '/') . '/index.php?action=tg_webhook';
+    $ch = curl_init("https://api.telegram.org/bot$token/setWebhook");
+    curl_setopt_array($ch, [
+        CURLOPT_RETURNTRANSFER => true,
+        CURLOPT_POST => true,
+        CURLOPT_POSTFIELDS => http_build_query(['url' => $webhookUrl, 'allowed_updates' => json_encode(['callback_query', 'message'])]),
+        CURLOPT_TIMEOUT => 8,
+    ]);
+    $resp = curl_exec($ch);
+    curl_close($ch);
+    echo $resp ?: json_encode(['ok' => false, 'msg' => 'فشل الاتصال بتيليجرام']);
+    exit;
+}
+
+if ($action === 'tg_admin_webhook' || $action === 'tg_webhook') {
+    // Webhook تيليجرام مباشر (يُعيَّن مسار هذا الرابط في BotFather أو setWebhook).
+    // يعالج أزرار الموافقة/الرفض للطلبات + كل الرسائل مباشرة بدون بوت خارجي.
+    header('Content-Type: application/json; charset=utf-8');
+    $raw = file_get_contents('php://input');
+    $data = json_decode($raw ?: '{}', true);
+    // سجل مبسّط للفحص
+    @file_put_contents(__DIR__ . '/uploads/tg_webhook.log', date('c') . " " . substr($raw ?? '', 0, 1000) . "\n", FILE_APPEND);
+    $cb = $data['callback_query'] ?? null;
+    if (!$cb) { echo '{"ok":true}'; exit; }
+    $fromId = (string)($cb['from']['id'] ?? '');
+    $ownerId = (string)owner_id();
+    // مقارنة رقمية (البعض يخزّن OWNER_ID كنص، وتيليجرام يرسل كرقم)
+    if ($ownerId !== '' && (int)$fromId !== (int)$ownerId) {
+        tg_answer_callback((string)$cb['id'], 'غير مصرح لك.', true);
+        echo '{"ok":true}'; exit;
+    }
+    $payload = (string)($cb['data'] ?? '');
+    $chatId = (string)($cb['message']['chat']['id'] ?? '');
+    $msgId = (string)($cb['message']['message_id'] ?? '');
+    $origText = (string)($cb['message']['text'] ?? '');
+    [$act, $rid] = array_pad(explode(':', $payload, 2), 2, '');
+    $rid = (int)$rid;
+    if ($rid <= 0) { tg_answer_callback((string)$cb['id'], 'طلب غير صالح.', true); echo '{"ok":true}'; exit; }
+
+    if ($act === 'topup_approve') {
+        $st = db()->prepare("SELECT * FROM topup_requests WHERE id=? AND status='pending'");
+        $st->execute([$rid]);
+        $req = $st->fetch();
+        if (!$req) { tg_answer_callback($cb['id'], 'الطلب غير موجود أو تمّت معالجته.', true); echo '{"ok":true}'; exit; }
+        db()->beginTransaction();
+        try {
+            add_balance((int)$req['user_id'], (float)$req['amount'], 'topup', "طلب #$rid");
+            db()->prepare("UPDATE topup_requests SET status='approved' WHERE id=?")->execute([$rid]);
+            grant_xp((int)$req['user_id'], 20);
+            db()->commit();
+        } catch (Throwable $e) { db()->rollBack(); tg_answer_callback($cb['id'], 'خطأ: ' . $e->getMessage(), true); echo '{"ok":true}'; exit; }
+        tg_answer_callback($cb['id'], '✅ تمت الموافقة وإضافة الرصيد');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n✅ <b>تم القبول والإضافة</b>");
+    } elseif ($act === 'topup_reject') {
+        db()->prepare("UPDATE topup_requests SET status='rejected' WHERE id=? AND status='pending'")->execute([$rid]);
+        tg_answer_callback($cb['id'], '❌ تم الرفض');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n❌ <b>تم الرفض</b>");
+    } elseif ($act === 'withdraw_done') {
+        db()->prepare("UPDATE withdraw_requests SET status='completed' WHERE id=? AND status='pending'")->execute([$rid]);
+        tg_answer_callback($cb['id'], '✅ تم تعليمه كمُحوّل');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n✅ <b>تم التحويل</b>");
+    } elseif ($act === 'order_done') {
+        db()->prepare("UPDATE orders SET status='completed' WHERE id=? AND status IN ('processing','pending')")->execute([$rid]);
+        tg_answer_callback($cb['id'], '✅ تم تعليم الطلب كمكتمل');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n✅ <b>تم التنفيذ</b>");
+    } elseif ($act === 'order_refund') {
+        $st = db()->prepare("SELECT * FROM orders WHERE id=? AND status IN ('processing','pending')");
+        $st->execute([$rid]);
+        $ord = $st->fetch();
+        if ($ord) {
+            db()->prepare("UPDATE users SET balance = balance + ? WHERE id = ?")->execute([$ord['price'], $ord['user_id']]);
+            db()->prepare("UPDATE orders SET status='refunded' WHERE id=?")->execute([$rid]);
+        }
+        tg_answer_callback($cb['id'], '↩️ تم استرداد المبلغ');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n↩️ <b>تم استرداد المبلغ للمستخدم</b>");
+    } elseif ($act === 'withdraw_reject') {
+        $st = db()->prepare("SELECT * FROM withdraw_requests WHERE id=? AND status='pending'");
+        $st->execute([$rid]);
+        $req = $st->fetch();
+        if ($req) {
+            db()->prepare("UPDATE users SET balance = balance + ? WHERE id = ?")->execute([$req['amount_usd'], $req['user_id']]);
+            db()->prepare("UPDATE withdraw_requests SET status='rejected' WHERE id=?")->execute([$rid]);
+        }
+        tg_answer_callback($cb['id'], '❌ تم الرفض وإعادة الرصيد');
+        tg_edit_message($chatId, $msgId, $origText . "\n\n❌ <b>تم الرفض وإعادة الرصيد</b>");
+    }
+    echo '{"ok":true}'; exit;
+}
+
+if ($action === 'robots') {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo "User-agent: *\nAllow: /\nSitemap: " . rtrim(SITE_URL, '/') . "/index.php?action=sitemap\n";
+    exit;
+}
+
+if ($action === 'ads_txt') {
+    header('Content-Type: text/plain; charset=utf-8');
+    echo setting('ads_txt_content', '');
+    exit;
+}
+
+if ($action === 'webmanifest') {
+    header('Content-Type: application/manifest+json; charset=utf-8');
+    $logoUrl = setting('logo_url') ?: setting('apk_logo_image');
+    echo json_encode([
+        'name' => setting('site_name', 'الموقع'),
+        'short_name' => setting('site_name', 'الموقع'),
+        'start_url' => '/',
+        'display' => 'standalone',
+        'background_color' => '#0d1117',
+        'theme_color' => setting('theme_accent_color', '#2563eb'),
+        'icons' => $logoUrl ? [['src' => $logoUrl, 'sizes' => '512x512', 'type' => 'image/png']] : [],
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
+if ($action === 'sitemap') {
+    header('Content-Type: application/xml; charset=utf-8');
+    $base = rtrim(SITE_URL, '/') . '/index.php';
+    $urls = [
+        ['loc' => $base, 'priority' => '1.0'],
+        ['loc' => $base . '?page=apps', 'priority' => '0.9'],
+        ['loc' => $base . '?page=store', 'priority' => '0.7'],
+        ['loc' => $base . '?page=privacy', 'priority' => '0.3'],
+        ['loc' => $base . '?page=terms', 'priority' => '0.3'],
+        ['loc' => $base . '?page=about', 'priority' => '0.5'],
+        ['loc' => $base . '?page=faq', 'priority' => '0.5'],
+        ['loc' => $base . '?page=guide', 'priority' => '0.8'],
+        ['loc' => $base . '?page=top', 'priority' => '0.8'],
+        ['loc' => $base . '?page=article-charge-games', 'priority' => '0.9'],
+        ['loc' => $base . '?page=article-pubg', 'priority' => '0.9'],
+        ['loc' => $base . '?page=article-referral', 'priority' => '0.8'],
+        ['loc' => $base . '?page=article-app-reviews', 'priority' => '0.9'],
+        ['loc' => $base . '?page=article-tutorials', 'priority' => '0.8'],
+        ['loc' => $base . '?page=article-payment-methods', 'priority' => '0.8'],
+    ];
+    $apps = db()->query("SELECT id, created_at FROM apps WHERE status='published'")->fetchAll();
+    foreach ($apps as $a) {
+        $urls[] = ['loc' => $base . '?page=app&id=' . (int)$a['id'], 'priority' => '0.9', 'lastmod' => substr((string)$a['created_at'], 0, 10)];
+    }
+    $products = db()->query("SELECT id, created_at FROM products WHERE status='active'")->fetchAll();
+    foreach ($products as $p) {
+        $urls[] = ['loc' => $base . '?page=product&id=' . (int)$p['id'], 'priority' => '0.7', 'lastmod' => substr((string)$p['created_at'], 0, 10)];
+    }
+    echo '<?xml version="1.0" encoding="UTF-8"?>' . "\n";
+    echo '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">' . "\n";
+    foreach ($urls as $u) {
+        echo '<url><loc>' . e($u['loc']) . '</loc>';
+        if (!empty($u['lastmod'])) echo '<lastmod>' . e($u['lastmod']) . '</lastmod>';
+        echo '<priority>' . $u['priority'] . '</priority></url>' . "\n";
+    }
+    echo '</urlset>';
+    exit;
+}
+
+if ($action === 'app_vote') {
+    header('Content-Type: application/json; charset=utf-8');
+    csrf_check();
+    $appId = (int)($_POST['id'] ?? 0);
+    $dir = $_POST['dir'] ?? '';
+    if (!$appId || !in_array($dir, ['up', 'down'], true)) { echo json_encode(['ok' => false, 'msg' => 'طلب غير صالح.']); exit; }
+    $voted = $_SESSION['voted_apps'] ?? [];
+    if (isset($voted[$appId])) { echo json_encode(['ok' => false, 'msg' => 'لقد قيّمت هذا التطبيق مسبقاً.']); exit; }
+    $col = $dir === 'up' ? 'likes_count' : 'dislikes_count';
+    db()->prepare("UPDATE apps SET $col = $col + 1 WHERE id=?")->execute([$appId]);
+    $voted[$appId] = $dir;
+    $_SESSION['voted_apps'] = $voted;
+    $row = db()->prepare("SELECT likes_count, dislikes_count FROM apps WHERE id=?");
+    $row->execute([$appId]);
+    $r = $row->fetch();
+    echo json_encode(['ok' => true, 'likes' => (int)$r['likes_count'], 'dislikes' => (int)$r['dislikes_count']]);
+    exit;
 }
 
 /* ---- JSON API actions (AJAX) ---- */
@@ -542,140 +2140,378 @@ if ($action && str_starts_with($action, 'api_')) {
     header('Content-Type: application/json; charset=utf-8');
     $u = current_user();
 
-    if (!$u && !in_array($action, ['api_ping'])) {
+    if (!$u && !in_array($action, ['api_ping', 'api_report_app'])) {
         echo json_encode(['ok' => false, 'msg' => 'يجب تسجيل الدخول أولاً.']); exit;
     }
 
     switch ($action) {
-        case 'api_buy_product':
+        case 'api_wallet_topup':
             csrf_check();
+            $amount = (float)($_POST['amount'] ?? 0);
+            $walletId = (int)($_POST['wallet_id'] ?? 0);
+            $txNumber = trim($_POST['tx_number'] ?? '');
+            $note = mb_substr(trim($_POST['note'] ?? ''), 0, 200);
+            $minAmt = (float)setting('wallet_min_topup', '5');
+            $maxAmt = (float)setting('wallet_max_topup', '500');
+            if ($amount < $minAmt || $amount > $maxAmt) {
+                echo json_encode(['ok' => false, 'msg' => "المبلغ يجب أن يكون بين $minAmt و $maxAmt"]); exit;
+            }
+            $wSt = db()->prepare("SELECT * FROM wallets WHERE id=? AND active=1");
+            $wSt->execute([$walletId]);
+            $wallet = $wSt->fetch();
+            if (!$wallet) { echo json_encode(['ok' => false, 'msg' => 'وسيلة الدفع غير متاحة.']); exit; }
+            if ($txNumber === '' && empty($_FILES['receipt']['name'])) {
+                echo json_encode(['ok' => false, 'msg' => 'أدخل رقم عملية التحويل أو ارفع صورة الإيصال.']); exit;
+            }
+            $receiptRel = null;
+            if (!empty($_FILES['receipt']['name'])) {
+                $res = io_process_image_upload($_FILES['receipt'], 'receipts');
+                if (!$res['ok']) { echo json_encode($res); exit; }
+                $receiptRel = $res['url'];
+            }
+            db()->prepare("INSERT INTO topup_requests (user_id, wallet_id, amount, note, tx_number, receipt_image, status) VALUES (?,?,?,?,?,?,'pending')")
+                ->execute([$u['id'], $walletId, $amount, $note, $txNumber ?: null, $receiptRel]);
+            $reqId = (int)db()->lastInsertId();
+            // إشعار تيليجرام للأدمن مع أزرار موافقة/رفض
+            if (setting('tg_notify_new_topup', '1') === '1') {
+                [$walletLabel] = wallet_type_label($wallet['type']);
+                $siteUrl = rtrim(SITE_URL, '/');
+                $receiptLine = $receiptRel ? "\n📷 الإيصال: $siteUrl/" . ltrim($receiptRel, '/') : '';
+                $txLine = $txNumber !== '' ? "\n🔢 رقم العملية: <code>" . e($txNumber) . "</code>" : '';
+                $noteLine = $note !== '' ? "\n📝 ملاحظة: " . e($note) : '';
+                $msg = "💰 <b>طلب شحن جديد #$reqId</b>\n"
+                    . "👤 المستخدم: " . e($u['name'] ?: $u['email']) . " (#{$u['id']})\n"
+                    . "📧 البريد: " . e($u['email']) . "\n"
+                    . "💵 المبلغ: <b>" . number_format($amount, 2) . "$</b>\n"
+                    . "💳 الوسيلة: " . e($walletLabel) . " — <code>" . e($wallet['address']) . "</code>"
+                    . $txLine . $receiptLine . $noteLine
+                    . "\n\n⏰ " . date('Y-m-d H:i');
+                $kb = [[
+                    ['text' => '✅ موافقة', 'callback_data' => "topup_approve:$reqId"],
+                    ['text' => '❌ رفض', 'callback_data' => "topup_reject:$reqId"],
+                ]];
+                $mid = tg_send_admin($msg, $kb);
+                if ($mid) db()->prepare("UPDATE topup_requests SET tg_message_id=? WHERE id=?")->execute([$mid, $reqId]);
+            }
+            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب الشحن، سيتم تفعيل رصيدك بعد المراجعة.', 'request_id' => $reqId]); exit;
+
+        case 'api_wallet_withdraw':
+            csrf_check();
+            if (setting('wallet_withdraw_enabled', '1') !== '1') {
+                echo json_encode(['ok' => false, 'msg' => 'السحب معطّل حالياً.']); exit;
+            }
+            $amount = (float)($_POST['amount'] ?? 0);
+            $walletType = trim($_POST['wallet_type'] ?? '');
+            $walletAddr = trim($_POST['wallet_address'] ?? '');
+            $minW = (float)setting('wallet_min_withdraw', '10');
+            $bal = user_balance($u['id']);
+            if ($amount < $minW) { echo json_encode(['ok' => false, 'msg' => "الحد الأدنى للسحب $minW$"]); exit; }
+            if ($amount > $bal) { echo json_encode(['ok' => false, 'msg' => 'الرصيد غير كافٍ.']); exit; }
+            if ($walletType === '' || $walletAddr === '') { echo json_encode(['ok' => false, 'msg' => 'حدّد وسيلة وعنوان الاستلام.']); exit; }
+            db()->prepare("UPDATE users SET balance = balance - ? WHERE id = ?")->execute([$amount, $u['id']]);
+            db()->prepare("INSERT INTO withdraw_requests (user_id, amount_points, amount_usd, wallet_type, wallet_address, status) VALUES (?,?,?,?,?,'pending')")
+                ->execute([$u['id'], 0, $amount, $walletType, $walletAddr]);
+            $reqId = (int)db()->lastInsertId();
+            if (setting('tg_notify_new_withdraw', '1') === '1') {
+                $msg = "💸 <b>طلب سحب جديد #$reqId</b>\n"
+                    . "👤 " . e($u['name'] ?: $u['email']) . " (#{$u['id']})\n"
+                    . "💵 المبلغ: <b>" . number_format($amount, 2) . "$</b>\n"
+                    . "💳 الوسيلة: " . e($walletType) . "\n"
+                    . "📮 العنوان: <code>" . e($walletAddr) . "</code>";
+                $kb = [[
+                    ['text' => '✅ تم التحويل', 'callback_data' => "withdraw_done:$reqId"],
+                    ['text' => '❌ رفض', 'callback_data' => "withdraw_reject:$reqId"],
+                ]];
+                tg_send_admin($msg, $kb);
+            }
+            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب السحب.']); exit;
+
+        case 'api_save_user_settings':
+            csrf_check();
+            $fields = [
+                'privacy_hide_balance', 'privacy_profile_visibility',
+                'notify_telegram_orders', 'notify_telegram_wallet',
+                'notify_email_orders', 'notify_email_wallet', 'notify_email_promotions',
+                'ui_theme', 'ui_language', 'ui_accent',
+            ];
+            $set = []; $vals = [];
+            foreach ($fields as $f) {
+                if (isset($_POST[$f])) {
+                    $val = $_POST[$f];
+                    if (in_array($f, ['privacy_hide_balance','notify_telegram_orders','notify_telegram_wallet','notify_email_orders','notify_email_wallet','notify_email_promotions'])) {
+                        $val = $val === '1' || $val === 'on' ? 1 : 0;
+                    } elseif ($f === 'privacy_profile_visibility') {
+                        $val = in_array($val, ['public','private','friends'], true) ? $val : 'public';
+                    } elseif ($f === 'ui_theme') {
+                        $val = in_array($val, ['dark','light','auto'], true) ? $val : 'dark';
+                    } elseif ($f === 'ui_language') {
+                        $val = in_array($val, ['ar','en','tr'], true) ? $val : 'ar';
+                    }
+                    $set[] = "$f = ?"; $vals[] = $val;
+                }
+            }
+            if ($set) {
+                $vals[] = $u['id'];
+                db()->prepare("UPDATE users SET " . implode(',', $set) . " WHERE id = ?")->execute($vals);
+            }
+            echo json_encode(['ok' => true, 'msg' => 'تم حفظ الإعدادات.']); exit;
+
+        case 'api_change_password':
+            csrf_check();
+            $current = $_POST['current_password'] ?? '';
+            $new = $_POST['new_password'] ?? '';
+            if (strlen($new) < 6) { echo json_encode(['ok' => false, 'msg' => 'كلمة المرور الجديدة قصيرة (6+ أحرف).']); exit; }
+            $st = db()->prepare("SELECT password_hash FROM users WHERE id=?");
+            $st->execute([$u['id']]);
+            $hash = $st->fetchColumn();
+            if ($hash && !password_verify($current, $hash)) {
+                echo json_encode(['ok' => false, 'msg' => 'كلمة المرور الحالية غير صحيحة.']); exit;
+            }
+            db()->prepare("UPDATE users SET password_hash = ? WHERE id = ?")
+                ->execute([password_hash($new, PASSWORD_DEFAULT), $u['id']]);
+            echo json_encode(['ok' => true, 'msg' => 'تم تغيير كلمة المرور بنجاح.']); exit;
+
+        case 'api_change_email':
+            csrf_check();
+            $newEmail = filter_var(trim($_POST['new_email'] ?? ''), FILTER_VALIDATE_EMAIL);
+            if (!$newEmail) { echo json_encode(['ok' => false, 'msg' => 'البريد الإلكتروني غير صالح.']); exit; }
+            $st = db()->prepare("SELECT id FROM users WHERE email = ? AND id <> ?");
+            $st->execute([$newEmail, $u['id']]);
+            if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'هذا البريد مستخدم من قبل.']); exit; }
+            db()->prepare("UPDATE users SET email = ? WHERE id = ?")->execute([$newEmail, $u['id']]);
+            echo json_encode(['ok' => true, 'msg' => 'تم تحديث البريد الإلكتروني.']); exit;
+
+        case 'api_toggle_2fa':
+            csrf_check();
+            $enable = ($_POST['enable'] ?? '0') === '1';
+            $st = db()->prepare("SELECT two_factor_secret FROM users WHERE id=?");
+            $st->execute([$u['id']]);
+            $secret = $st->fetchColumn();
+            if ($enable) {
+                if (!$secret) {
+                    $secret = strtoupper(substr(bin2hex(random_bytes(20)), 0, 32));
+                    db()->prepare("UPDATE users SET two_factor_secret = ?, two_factor_enabled = 1 WHERE id = ?")
+                        ->execute([$secret, $u['id']]);
+                } else {
+                    db()->prepare("UPDATE users SET two_factor_enabled = 1 WHERE id = ?")->execute([$u['id']]);
+                }
+                echo json_encode(['ok' => true, 'msg' => 'تم تفعيل التحقق الثنائي.', 'secret' => $secret]); exit;
+            } else {
+                db()->prepare("UPDATE users SET two_factor_enabled = 0 WHERE id = ?")->execute([$u['id']]);
+                echo json_encode(['ok' => true, 'msg' => 'تم إيقاف التحقق الثنائي.']); exit;
+            }
+
+        case 'api_buy_package':
+            csrf_check();
+            $pkgId = (int)($_POST['package_id'] ?? 0);
+            $accountId = trim($_POST['account_id'] ?? '');
+            $customAmount = (float)($_POST['custom_amount'] ?? 0);
+            $pkgSt = db()->prepare("SELECT pk.*, p.name AS product_name, p.category_id FROM packages pk JOIN products p ON p.id = pk.product_id WHERE pk.id = ? AND pk.active = 1");
+            $pkgSt->execute([$pkgId]);
+            $pkg = $pkgSt->fetch();
+            if (!$pkg) { echo json_encode(['ok' => false, 'msg' => 'الباقة غير متوفرة.']); exit; }
+            $price = (float)$pkg['price'];
+            if ((int)$pkg['allow_custom_amount']) {
+                if ($customAmount < (float)$pkg['min_amount'] || $customAmount > (float)$pkg['max_amount']) {
+                    echo json_encode(['ok' => false, 'msg' => 'المبلغ المخصّص خارج النطاق المسموح.']); exit;
+                }
+                $price = $customAmount;
+            }
+            if ($accountId === '') { echo json_encode(['ok' => false, 'msg' => 'يجب إدخال آيدي حسابك في اللعبة/التطبيق.']); exit; }
+            $balance = user_balance($u['id']);
+            if ($balance < $price) {
+                echo json_encode(['ok' => false, 'msg' => 'رصيدك غير كافٍ. ينقصك ' . number_format($price - $balance, 2) . setting('wallet_currency_symbol','$')]); exit;
+            }
+            db()->beginTransaction();
+            try {
+                db()->prepare("UPDATE users SET balance = balance - ? WHERE id = ?")->execute([$price, $u['id']]);
+                db()->prepare("INSERT INTO orders (user_id, product_id, package_id, package_name, price, account_id, custom_amount, status) VALUES (?,?,?,?,?,?,?, 'processing')")
+                    ->execute([$u['id'], (int)$pkg['product_id'], $pkgId, $pkg['name'], $price, $accountId, (int)$pkg['allow_custom_amount'] ? $customAmount : null]);
+                $orderId = (int)db()->lastInsertId();
+                grant_xp($u['id'], 15);
+                db()->commit();
+            } catch (Throwable $e) {
+                db()->rollBack();
+                echo json_encode(['ok' => false, 'msg' => 'تعذّر إتمام الطلب.']); exit;
+            }
+            if (setting('tg_notify_new_order', '1') === '1') {
+                $msg = "🛒 <b>طلب باقة جديد #$orderId</b>\n"
+                    . "👤 " . e($u['name'] ?: $u['email']) . " (#{$u['id']})\n"
+                    . "🎮 المنتج: " . e($pkg['product_name']) . "\n"
+                    . "📦 الباقة: <b>" . e($pkg['name']) . "</b>\n"
+                    . "💵 السعر: " . number_format($price, 2) . "$\n"
+                    . "🆔 آيدي الحساب: <code>" . e($accountId) . "</code>";
+                $kb = [[['text' => '✅ تم التنفيذ', 'callback_data' => "order_done:$orderId"], ['text' => '↩️ استرداد', 'callback_data' => "order_refund:$orderId"]]];
+                tg_send_admin($msg, $kb);
+            }
+            echo json_encode(['ok' => true, 'msg' => "✅ تم الطلب #$orderId — رصيدك الجديد: " . number_format($balance - $price, 2) . setting('wallet_currency_symbol','$'), 'order_id' => $orderId]);
+            exit;
+
+        case 'api_report_app':
+            $appId = (int)($_POST['app_id'] ?? 0);
+            if ($appId <= 0) { echo json_encode(['ok' => false]); exit; }
+            $st = db()->prepare("SELECT id FROM apps WHERE id=?"); $st->execute([$appId]);
+            if (!$st->fetch()) { echo json_encode(['ok' => false]); exit; }
+            db()->prepare("INSERT INTO app_reports (app_id, user_id, message) VALUES (?,?,?)")
+                ->execute([$appId, $u ? $u['id'] : null, 'رابط التحميل لا يعمل']);
+            echo json_encode(['ok' => true]); exit;
+
+        case 'api_update_profile':
+            csrf_check();
+            $newName = trim($_POST['name'] ?? '');
+            $newUsername = preg_replace('/[^a-zA-Z0-9_]/', '', trim($_POST['username'] ?? ''));
+            $newBio = mb_substr(trim($_POST['bio'] ?? ''), 0, 255);
+            if ($newName === '' || $newUsername === '') { echo json_encode(['ok' => false, 'msg' => 'الاسم واسم المستخدم مطلوبان.']); exit; }
+            $st = db()->prepare("SELECT id FROM users WHERE username=? AND id<>?");
+            $st->execute([$newUsername, $u['id']]);
+            if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'اسم المستخدم هذا مستخدم من قبل.']); exit; }
+            db()->prepare("UPDATE users SET name=?, username=?, bio=? WHERE id=?")->execute([$newName, $newUsername, $newBio, $u['id']]);
+            echo json_encode(['ok' => true, 'msg' => 'تم حفظ التعديلات.']); exit;
+
+        case 'api_submit_suggestion':
+            csrf_check();
+            $title = trim($_POST['title'] ?? '');
+            $details = mb_substr(trim($_POST['details'] ?? ''), 0, 500);
+            if ($title === '') { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم المنتج المقترح.']); exit; }
+            db()->prepare("INSERT INTO product_suggestions (user_id, title, details) VALUES (?,?,?)")->execute([$u['id'], $title, $details]);
+            echo json_encode(['ok' => true, 'msg' => 'تم إرسال اقتراحك، شكراً لك!']); exit;
+
+        case 'api_toggle_wishlist':
+            csrf_check();
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $st = db()->prepare("SELECT id FROM wishlist WHERE user_id=? AND product_id=?");
+            $st->execute([$u['id'], $pid]);
+            $row = $st->fetch();
+            if ($row) {
+                db()->prepare("DELETE FROM wishlist WHERE id=?")->execute([$row['id']]);
+                echo json_encode(['ok' => true, 'added' => false]);
+            } else {
+                db()->prepare("INSERT INTO wishlist (user_id, product_id) VALUES (?,?)")->execute([$u['id'], $pid]);
+                echo json_encode(['ok' => true, 'added' => true]);
+            }
+            exit;
+
+        case 'api_submit_review':
+            csrf_check();
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $rating = max(1, min(5, (int)($_POST['rating'] ?? 0)));
+            $comment = trim($_POST['comment'] ?? '');
+            $st = db()->prepare("SELECT 1 FROM orders WHERE user_id=? AND product_id=? AND status='approved'");
+            $st->execute([$u['id'], $pid]);
+            if (!$st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'يمكنك تقييم المنتجات التي اشتريتها فقط.']); exit; }
+            $st = db()->prepare("SELECT id FROM reviews WHERE user_id=? AND product_id=?");
+            $st->execute([$u['id'], $pid]);
+            if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'لقد قيّمت هذا المنتج مسبقاً.']); exit; }
+            db()->prepare("INSERT INTO reviews (product_id, user_id, rating, comment) VALUES (?,?,?,?)")->execute([$pid, $u['id'], $rating, $comment]);
+            echo json_encode(['ok' => true, 'msg' => 'شكراً لتقييمك!']); exit;
+
+        case 'api_validate_coupon':
+            $code = trim($_POST['code'] ?? '');
             $pid = (int)($_POST['product_id'] ?? 0);
             $st = db()->prepare("SELECT * FROM products WHERE id=? AND status='active'");
             $st->execute([$pid]);
             $p = $st->fetch();
             if (!$p) { echo json_encode(['ok' => false, 'msg' => 'المنتج غير متوفر.']); exit; }
-            if ($u['points'] < $p['price'] / max(points_to_usd(1), 0.0000001)) {
-                // fallback simple check using usd balance equivalent
+            $st = db()->prepare("SELECT * FROM coupons WHERE code=? AND active=1");
+            $st->execute([$code]);
+            $c = $st->fetch();
+            if (!$c) { echo json_encode(['ok' => false, 'msg' => 'كود الخصم غير صالح.']); exit; }
+            if ($c['max_uses'] > 0 && $c['used_count'] >= $c['max_uses']) { echo json_encode(['ok' => false, 'msg' => 'تم استهلاك هذا الكود بالكامل.']); exit; }
+            if ($c['expires_at'] && $c['expires_at'] < date('Y-m-d')) { echo json_encode(['ok' => false, 'msg' => 'انتهت صلاحية هذا الكود.']); exit; }
+            $newPrice = round($p['price'] * (1 - $c['discount_percent'] / 100), 2);
+            echo json_encode(['ok' => true, 'new_price' => $newPrice, 'discount_percent' => (float)$c['discount_percent']]); exit;
+
+        case 'api_buy_product':
+            csrf_check();
+            $pid = (int)($_POST['product_id'] ?? 0);
+            $accountId = trim($_POST['account_id'] ?? '');
+            $couponCode = trim($_POST['coupon_code'] ?? '');
+            $st = db()->prepare("SELECT * FROM products WHERE id=? AND status='active'");
+            $st->execute([$pid]);
+            $p = $st->fetch();
+            if (!$p) { echo json_encode(['ok' => false, 'msg' => 'المنتج غير متوفر.']); exit; }
+
+            // Detect if product needs an account ID (games/apps recharge)
+            $catName = '';
+            if (!empty($p['category_id'])) {
+                $catSt = db()->prepare("SELECT name FROM categories WHERE id=?");
+                $catSt->execute([$p['category_id']]);
+                $catName = (string)$catSt->fetchColumn();
             }
-            $usd_balance = points_to_usd($u['points']);
-            if ($usd_balance < $p['price']) {
-                echo json_encode(['ok' => false, 'msg' => 'رصيدك غير كافٍ لإتمام الشراء.']); exit;
+            $needsId = product_needs_account_id($p['name'], $catName);
+            if ($needsId && $accountId === '') { echo json_encode(['ok' => false, 'msg' => 'يجب إدخال آيدي حسابك في اللعبة/التطبيق.']); exit; }
+
+            $finalPrice = (float)$p['price'];
+            $coupon = null;
+            if ($couponCode !== '') {
+                $st = db()->prepare("SELECT * FROM coupons WHERE code=? AND active=1");
+                $st->execute([$couponCode]);
+                $coupon = $st->fetch();
+                if (!$coupon) { echo json_encode(['ok' => false, 'msg' => 'كود الخصم غير صالح.']); exit; }
+                if ($coupon['max_uses'] > 0 && $coupon['used_count'] >= $coupon['max_uses']) { echo json_encode(['ok' => false, 'msg' => 'تم استهلاك هذا الكود بالكامل.']); exit; }
+                if ($coupon['expires_at'] && $coupon['expires_at'] < date('Y-m-d')) { echo json_encode(['ok' => false, 'msg' => 'انتهت صلاحية هذا الكود.']); exit; }
+                $finalPrice = round($finalPrice * (1 - $coupon['discount_percent'] / 100), 2);
             }
-            db()->prepare("INSERT INTO orders (user_id, product_id, price) VALUES (?,?,?)")
-                ->execute([$u['id'], $pid, $p['price']]);
-            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب الشراء، بانتظار موافقة الإدارة.']);
-            exit;
 
-        case 'api_solve_captcha':
-            csrf_check();
-            $answer = trim($_POST['answer'] ?? '');
-            $expected = $_SESSION['captcha_code'] ?? null;
-            $day = date('Y-m-d');
-            $st = db()->prepare("SELECT * FROM captcha_logs WHERE user_id=? AND day=?");
-            $st->execute([$u['id'], $day]);
-            $log = $st->fetch();
-            $count = $log['count'] ?? 0;
-            $max = (int)setting('captcha_max_per_day', 40);
-            if ($count >= $max) { echo json_encode(['ok' => false, 'msg' => 'وصلت للحد اليومي من الكابتشا.']); exit; }
-            if (!$expected || $answer !== $expected) { echo json_encode(['ok' => false, 'msg' => 'الرقم غير صحيح، حاول مجدداً.']); exit; }
-            unset($_SESSION['captcha_code']);
-            $reward = (int)setting('captcha_reward', 10);
-            add_points($u['id'], $reward, 'captcha', 'إنجاز كابتشا');
-            if ($log) db()->prepare("UPDATE captcha_logs SET count=count+1 WHERE id=?")->execute([$log['id']]);
-            else db()->prepare("INSERT INTO captcha_logs (user_id, day, count) VALUES (?,?,1)")->execute([$u['id'], $day]);
-            echo json_encode(['ok' => true, 'msg' => "تم! +{$reward} عملة Yassota", 'reward' => $reward, 'remaining' => $max - $count - 1]);
-            exit;
-
-        case 'api_new_captcha':
-            $code = (string)random_int(1000, 9999);
-            $_SESSION['captcha_code'] = $code;
-            echo json_encode(['ok' => true, 'code' => $code]);
-            exit;
-
-        case 'api_complete_task':
-            csrf_check();
-            $tid = (int)($_POST['task_id'] ?? 0);
-            $day = date('Y-m-d');
-            $st = db()->prepare("SELECT * FROM tasks WHERE id=? AND active=1");
-            $st->execute([$tid]);
-            $task = $st->fetch();
-            if (!$task) { echo json_encode(['ok' => false, 'msg' => 'المهمة غير موجودة.']); exit; }
-            $st = db()->prepare("SELECT * FROM task_completions WHERE user_id=? AND task_id=? AND day=?");
-            $st->execute([$u['id'], $tid, $day]);
-            if ($st->fetch()) { echo json_encode(['ok' => false, 'msg' => 'أنجزت هذه المهمة اليوم بالفعل.']); exit; }
-            $st = db()->prepare("SELECT COUNT(*) c FROM task_completions WHERE user_id=? AND day=?");
-            $st->execute([$u['id'], $day]);
-            if ($st->fetch()['c'] >= (int)setting('task_max_per_day', 10)) {
-                echo json_encode(['ok' => false, 'msg' => 'وصلت للحد اليومي من المهام.']); exit;
+            // === الدفع من الرصيد مباشرة (لا حاجة لإيصال أو تحويل) ===
+            $balance = user_balance($u['id']);
+            if ($balance < $finalPrice) {
+                $missing = number_format($finalPrice - $balance, 2);
+                echo json_encode(['ok' => false, 'msg' => "رصيدك غير كافٍ، ينقصك $missing" . setting('wallet_currency_symbol','$') . "، اشحن محفظتك أولاً."]);
+                exit;
             }
-            db()->prepare("INSERT INTO task_completions (user_id, task_id, day) VALUES (?,?,?)")->execute([$u['id'], $tid, $day]);
-            add_points($u['id'], (int)$task['reward'], 'task', 'مهمة: ' . $task['title']);
-            echo json_encode(['ok' => true, 'msg' => "+{$task['reward']} عملة Yassota"]);
+
+            db()->beginTransaction();
+            try {
+                db()->prepare("UPDATE users SET balance = balance - ? WHERE id = ?")->execute([$finalPrice, $u['id']]);
+                db()->prepare("INSERT INTO orders (user_id, product_id, price, account_id, coupon_code, status) VALUES (?,?,?,?,?, 'processing')")
+                    ->execute([$u['id'], $pid, $finalPrice, $accountId, $couponCode ?: null]);
+                $orderId = (int)db()->lastInsertId();
+                db()->prepare("INSERT INTO earn_logs (user_id, amount, source, description) VALUES (?,?,?,?)")
+                    ->execute([$u['id'], -(int)round($finalPrice * 100), 'purchase', "طلب #$orderId — {$p['name']}"]);
+                if ($coupon) db()->prepare("UPDATE coupons SET used_count = used_count + 1 WHERE id = ?")->execute([$coupon['id']]);
+                grant_xp($u['id'], 15);
+                db()->commit();
+            } catch (Throwable $e) {
+                db()->rollBack();
+                echo json_encode(['ok' => false, 'msg' => 'تعذّر إتمام الطلب، حاول مرة أخرى.']); exit;
+            }
+
+            // إشعار تيليجرام للأدمن
+            if (setting('tg_notify_new_order', '1') === '1') {
+                $msg = "🛒 <b>طلب شراء جديد #$orderId</b>\n"
+                    . "👤 " . e($u['name'] ?: $u['email']) . " (#{$u['id']})\n"
+                    . "📦 المنتج: " . e($p['name']) . "\n"
+                    . "💵 السعر: <b>" . number_format($finalPrice, 2) . "$</b>\n"
+                    . ($accountId !== '' ? "🆔 آيدي الحساب: <code>" . e($accountId) . "</code>\n" : '')
+                    . ($couponCode !== '' ? "🎟️ كود خصم: <code>" . e($couponCode) . "</code>\n" : '')
+                    . "💰 خُصم من رصيد المستخدم مباشرة";
+                $kb = [[
+                    ['text' => '✅ تم التنفيذ', 'callback_data' => "order_done:$orderId"],
+                    ['text' => '↩️ استرداد الرصيد', 'callback_data' => "order_refund:$orderId"],
+                ]];
+                tg_send_admin($msg, $kb);
+            }
+            echo json_encode(['ok' => true, 'msg' => "✅ تم الشراء بنجاح! طلب #$orderId قيد التنفيذ. رصيدك الجديد: " . number_format($balance - $finalPrice, 2) . setting('wallet_currency_symbol','$')]);
             exit;
 
-        case 'api_request_topup':
+        case 'api_upload_receipt':
             csrf_check();
-            $amount = (float)($_POST['amount'] ?? 0);
-            $wid = (int)($_POST['wallet_id'] ?? 0);
-            $note = trim($_POST['note'] ?? '');
-            if ($amount <= 0) { echo json_encode(['ok' => false, 'msg' => 'أدخل مبلغاً صحيحاً.']); exit; }
-            db()->prepare("INSERT INTO topup_requests (user_id, wallet_id, amount, note) VALUES (?,?,?,?)")
-                ->execute([$u['id'], $wid, $amount, $note]);
-            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب الشحن، بانتظار مراجعة الإدارة.']);
+            // نظام الصور الموحّد: تحقق حقيقي من الملف + إعادة ترميز كاملة (حماية من الملفات الضارة)
+            // + تحويل تلقائي لـ WebP/AVIF + توليد 4 أحجام + روابط جاهزة لـ CDN عند تفعيله.
+            $res = io_process_image_upload($_FILES['file'] ?? [], 'receipts');
+            if (!$res['ok']) { echo json_encode(['ok' => false, 'msg' => $res['msg']]); exit; }
+            echo json_encode(['ok' => true, 'url' => $res['url'], 'sizes' => $res['urls']]);
             exit;
 
-        case 'api_save_wallet':
+        case 'api_upload_avatar':
             csrf_check();
-            $type = $_POST['type'] ?? '';
-            $addr = trim($_POST['address'] ?? '');
-            db()->prepare("UPDATE users SET wallet_type=?, wallet_address=? WHERE id=?")->execute([$type, $addr, $u['id']]);
-            echo json_encode(['ok' => true, 'msg' => 'تم حفظ المحفظة.']);
-            exit;
-
-        case 'api_request_withdraw':
-            csrf_check();
-            $min = (float)setting('min_withdraw_usd', 25);
-            $usd = points_to_usd($u['points']);
-            if ($usd < $min) { echo json_encode(['ok' => false, 'msg' => "الحد الأدنى للسحب {$min}$"]); exit; }
-            if (!$u['wallet_address']) { echo json_encode(['ok' => false, 'msg' => 'أضف محفظتك أولاً.']); exit; }
-            db()->prepare("INSERT INTO withdraw_requests (user_id, amount_points, amount_usd, wallet_type, wallet_address) VALUES (?,?,?,?,?)")
-                ->execute([$u['id'], $u['points'], $usd, $u['wallet_type'], $u['wallet_address']]);
-            db()->prepare("UPDATE users SET points = 0 WHERE id = ?")->execute([$u['id']]);
-            echo json_encode(['ok' => true, 'msg' => 'تم إرسال طلب السحب.']);
-            exit;
-
-        case 'api_spin_wheel':
-            csrf_check();
-            $cost = (int)setting('wheel_cost', 20);
-            if ($u['points'] < $cost) { echo json_encode(['ok' => false, 'msg' => 'رصيدك من العملات غير كافٍ للدوران.']); exit; }
-            $prizes = array_values(array_filter(array_map('intval', explode(',', setting('wheel_prizes', '0,5,10,20,50,100')))));
-            if (!$prizes) $prizes = [0, 5, 10, 20, 50, 100];
-            $idx = random_int(0, count($prizes) - 1);
-            $prize = $prizes[$idx];
-            // خصم التكلفة ثم إضافة الجائزة
-            db()->prepare("UPDATE users SET points = points - ? WHERE id = ?")->execute([$cost, $u['id']]);
-            if ($prize > 0) add_points($u['id'], $prize, 'wheel', 'جائزة عجلة الحظ');
-            db()->prepare("INSERT INTO wheel_spins (user_id, prize, cost) VALUES (?,?,?)")->execute([$u['id'], $prize, $cost]);
-            $st = db()->prepare("SELECT points FROM users WHERE id=?"); $st->execute([$u['id']]);
-            $bal = (int)$st->fetch()['points'];
-            echo json_encode(['ok' => true, 'prize' => $prize, 'index' => $idx, 'prizes' => $prizes, 'balance' => $bal,
-                'msg' => $prize > 0 ? "🎉 ربحت {$prize} عملة!" : '💨 حظ أوفر المرة القادمة!']);
-            exit;
-
-        case 'api_watch_ad':
-            csrf_check();
-            $day = date('Y-m-d');
-            $max = (int)setting('ad_watch_max_per_day', 20);
-            $st = db()->prepare("SELECT * FROM ad_watch_logs WHERE user_id=? AND day=?");
-            $st->execute([$u['id'], $day]);
-            $log = $st->fetch();
-            $count = $log['count'] ?? 0;
-            if ($count >= $max) { echo json_encode(['ok' => false, 'msg' => 'وصلت للحد اليومي من مشاهدة الإعلانات.']); exit; }
-            $reward = (int)setting('ad_watch_reward', 50);
-            add_points($u['id'], $reward, 'ad_watch', 'مشاهدة إعلان مكافأ');
-            if ($log) db()->prepare("UPDATE ad_watch_logs SET count=count+1 WHERE id=?")->execute([$log['id']]);
-            else db()->prepare("INSERT INTO ad_watch_logs (user_id, day, count) VALUES (?,?,1)")->execute([$u['id'], $day]);
-            echo json_encode(['ok' => true, 'msg' => "تم! +{$reward} عملة", 'reward' => $reward, 'remaining' => $max - $count - 1]);
+            $oldAvatar = (string)($u['avatar'] ?? '');
+            $res = io_process_image_upload($_FILES['file'] ?? [], 'avatars', $oldAvatar ? [$oldAvatar] : [], ['thumb' => 150, 'medium' => 600]);
+            if (!$res['ok']) { echo json_encode(['ok' => false, 'msg' => $res['msg']]); exit; }
+            $url = $res['url'];
+            db()->prepare("UPDATE users SET avatar=? WHERE id=?")->execute([$url, $u['id']]);
+            echo json_encode(['ok' => true, 'url' => $url, 'sizes' => $res['urls'], 'msg' => 'تم تحديث صورة الملف الشخصي.']);
             exit;
 
         default:
@@ -684,31 +2520,505 @@ if ($action && str_starts_with($action, 'api_')) {
     }
 }
 
+/* ---- Admin file upload (logo/banner/product images) ---- */
+if ($action === 'admin_upload') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $field = preg_replace('/[^a-z_]/', '', $_POST['field'] ?? 'misc');
+    $dir = match (true) {
+        str_contains($field, 'logo') => 'site',
+        str_contains($field, 'banner') => 'banners',
+        default => 'products',
+    };
+    // الرابط القديم (إن أُرسل من الواجهة) يُحذف تلقائياً بعد نجاح رفع الصورة الجديدة
+    $oldUrl = (string)($_POST['old_url'] ?? '');
+    $res = io_process_image_upload($_FILES['file'] ?? [], $dir, $oldUrl ? [$oldUrl] : []);
+    if (!$res['ok']) { echo json_encode(['ok' => false, 'msg' => $res['msg']]); exit; }
+    $url = $res['url'];
+    $admin = current_user();
+    log_activity((int)$admin['id'], $admin['name'] ?: $admin['username'], $field, $_FILES['file']['name'] ?? '', $url);
+    echo json_encode(['ok' => true, 'url' => $url, 'sizes' => $res['urls']]);
+    exit;
+}
+
+/* ---- رفع متعدد بالسحب والإفلات (لبنرات متعددة أو معرض صور منتج دفعة واحدة) ---- */
+if ($action === 'admin_upload_multi') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $field = preg_replace('/[^a-z_]/', '', $_POST['field'] ?? 'misc');
+    $dir = match (true) {
+        str_contains($field, 'logo') => 'site',
+        str_contains($field, 'banner') => 'banners',
+        default => 'products',
+    };
+    if (empty($_FILES['files'])) { echo json_encode(['ok' => false, 'msg' => 'لم يتم إرسال أي ملفات.']); exit; }
+    $results = io_process_multi_upload($_FILES['files'], $dir);
+    $admin = current_user();
+    $urls = [];
+    foreach ($results as $r) {
+        if (!empty($r['ok'])) {
+            $urls[] = $r['url'];
+            log_activity((int)$admin['id'], $admin['name'] ?: $admin['username'], $field, 'multi-upload', $r['url']);
+        }
+    }
+    echo json_encode(['ok' => count($urls) > 0, 'urls' => $urls, 'count' => count($urls), 'failed' => count($results) - count($urls)]);
+    exit;
+}
+
+/* ---- رفع دفعي لعدة بنرات دفعة واحدة (سحب وإفلات) + إنشاء سجل بنر لكل صورة تلقائياً ---- */
+if ($action === 'admin_upload_banners_multi') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    if (empty($_FILES['files'])) { echo json_encode(['ok' => false, 'msg' => 'لم يتم إرسال أي ملفات.']); exit; }
+    $results = io_process_multi_upload($_FILES['files'], 'banners');
+    $ins = db()->prepare("INSERT INTO banners (image, link) VALUES (?, NULL)");
+    $count = 0;
+    foreach ($results as $r) {
+        if (!empty($r['ok'])) { $ins->execute([$r['url']]); $count++; }
+    }
+    echo json_encode(['ok' => $count > 0, 'count' => $count, 'failed' => count($results) - $count, 'msg' => $count > 0 ? "تم إضافة $count بنر بنجاح" : 'فشل رفع جميع الصور.']);
+    exit;
+}
+
+/* ---- OpenRouter AI helpers (admin) ---- */
+function openrouter_active_keys(): array
+{
+    return db()->query("SELECT * FROM openrouter_keys WHERE active=1 ORDER BY sort_order ASC, id ASC")->fetchAll();
+}
+
+function openrouter_mark_error(int $keyId, string $msg): void
+{
+    db()->prepare("UPDATE openrouter_keys SET last_error=? WHERE id=?")->execute([mb_substr($msg, 0, 255), $keyId]);
+}
+
+/**
+ * يجري الطلب عبر كل المفاتيح النشطة بالتتابع (round-robin بحسب sort_order) حتى ينجح أحدها،
+ * لتفادي توقف الخدمة بالكامل إذا انتهى حد استخدام مفتاح واحد أو تعطّل.
+ */
+function openrouter_request(array $payload, int $timeout = 30): array
+{
+    $keys = openrouter_active_keys();
+    if (!$keys) {
+        // توافق مع الإصدار القديم: مفتاح واحد في الإعدادات
+        $legacy = setting('openrouter_api_key');
+        if (!$legacy) return ['ok' => false, 'msg' => 'لم يتم ضبط أي مفتاح OpenRouter من الإعدادات.'];
+        $keys = [['id' => 0, 'api_key' => $legacy]];
+    }
+    $lastErr = 'تعذر الاتصال بـ OpenRouter.';
+    foreach ($keys as $k) {
+        $res = http_post_json('https://openrouter.ai/api/v1/chat/completions', $payload, [
+            'Authorization: Bearer ' . $k['api_key'],
+            'HTTP-Referer: ' . (defined('SITE_URL') ? SITE_URL : 'https://yassota.com'),
+        ], $timeout);
+        $data = json_decode((string)$res['body'], true);
+        $hasContent = !empty($data['choices'][0]['message']['content']) || !empty($data['choices'][0]['message']['images']);
+        if ($hasContent) return ['ok' => true, 'data' => $data];
+        $lastErr = $res['error'] ?: ($data['error']['message'] ?? 'استجابة غير متوقعة من OpenRouter (HTTP ' . $res['code'] . ')');
+        if (!empty($k['id'])) openrouter_mark_error((int)$k['id'], $lastErr);
+        // أخطاء المصادقة/الحصة تستدعي تجربة المفتاح التالي، غير ذلك (مثل خطأ بالموديل) لا فائدة من التكرار
+        $code = (int)($res['code'] ?? 0);
+        if (!in_array($code, [401, 402, 403, 429, 0], true)) break;
+    }
+    return ['ok' => false, 'msg' => $lastErr];
+}
+
+/**
+ * قائمة احتياطية ثابتة تُستخدم فقط إذا تعذّر جلب قائمة الموديلات المجانية الفعلية من OpenRouter
+ * (مثلاً بسبب انقطاع الشبكة). أسماء موديلات OpenRouter المجانية تتغيّر بمرور الوقت (تقاعد/إعادة تسمية)،
+ * لذلك الاعتماد الأساسي يكون على openrouter_free_models() التي تجلب القائمة الحقيقية الحالية مباشرة.
+ */
+const OPENROUTER_FREE_FALLBACK_MODELS = [
+    'meta-llama/llama-3.3-70b-instruct:free',
+    'qwen/qwen-2.5-72b-instruct:free',
+    'mistralai/mistral-7b-instruct:free',
+    'deepseek/deepseek-r1:free',
+];
+
+/**
+ * يجلب قائمة الموديلات المجانية الحقيقية والمتاحة حالياً من واجهة OpenRouter العامة (بدون مفتاح)،
+ * ويخزّنها مؤقتاً في الإعدادات لمدة 6 ساعات لتجنّب إرسال طلب لكل محادثة. هذا يحل مشكلة فشل موديلات
+ * تم تقاعدها أو تغيير اسمها من طرف OpenRouter (مثل ظهور خطأ "No endpoints found" لموديل قديم).
+ */
+function openrouter_free_models(): array
+{
+    $cachedAt = (int)setting('openrouter_free_models_at', 0);
+    $cached = setting('openrouter_free_models_list', '');
+    if ($cached !== '' && (time() - $cachedAt) < 6 * 3600) {
+        return array_values(array_filter(array_map('trim', explode(',', $cached))));
+    }
+    $list = [];
+    $res = http_get('https://openrouter.ai/api/v1/models');
+    $data = json_decode((string)$res['body'], true);
+    if (is_array($data['data'] ?? null)) {
+        foreach ($data['data'] as $m) {
+            $id = $m['id'] ?? '';
+            $pricing = $m['pricing'] ?? [];
+            $isFree = str_ends_with($id, ':free') || ((float)($pricing['prompt'] ?? 1) === 0.0 && (float)($pricing['completion'] ?? 1) === 0.0);
+            if ($id && $isFree) $list[] = $id;
+        }
+    }
+    if ($list) {
+        set_setting('openrouter_free_models_list', implode(',', $list));
+        set_setting('openrouter_free_models_at', (string)time());
+        return $list;
+    }
+    return OPENROUTER_FREE_FALLBACK_MODELS;
+}
+
+function openrouter_chat(string $prompt, bool $jsonMode = false, int $maxTokens = 0, int $timeout = 30): array
+{
+    $primary = setting('openrouter_model', 'meta-llama/llama-3.3-70b-instruct:free');
+    $models = array_values(array_unique(array_merge([$primary], openrouter_free_models(), OPENROUTER_FREE_FALLBACK_MODELS)));
+    $lastErr = 'تعذر الاتصال بـ OpenRouter.';
+    $triedNoEndpoint = [];
+    foreach ($models as $model) {
+        $payload = [
+            'model' => $model,
+            'messages' => [['role' => 'user', 'content' => $prompt]],
+        ];
+        if ($jsonMode) $payload['response_format'] = ['type' => 'json_object'];
+        if ($maxTokens > 0) $payload['max_tokens'] = $maxTokens;
+        $r = openrouter_request($payload, $timeout);
+        if ($r['ok']) {
+            $data = $r['data'];
+            if (!empty($data['choices'][0]['message']['content'])) {
+                return ['ok' => true, 'text' => $data['choices'][0]['message']['content']];
+            }
+            $lastErr = $data['error']['message'] ?? 'استجابة غير متوقعة من OpenRouter.';
+            continue;
+        }
+        if (stripos($r['msg'], 'no endpoints') !== false || stripos($r['msg'], 'not found') !== false) {
+            $triedNoEndpoint[] = $model;
+            continue; // موديل متقاعد/غير موجود، جرّب التالي فوراً بدون اعتباره الخطأ النهائي
+        }
+        $lastErr = $r['msg'];
+    }
+    if ($triedNoEndpoint && $lastErr === 'تعذر الاتصال بـ OpenRouter.') {
+        $lastErr = 'كل الموديلات المجانية المتاحة حالياً غير صالحة أو منتهية لدى OpenRouter حالياً (تمت تجربة: ' . implode(', ', $triedNoEndpoint) . '). يرجى مراجعة مفتاح OpenRouter API أو تجربة موديل آخر من القائمة.';
+    }
+    return ['ok' => false, 'msg' => $lastErr];
+}
+
+function openrouter_image(string $prompt, string $destSubdir = 'products'): array
+{
+    $model = setting('openrouter_image_model');
+    if (!$model) return ['ok' => false, 'msg' => 'لم يتم ضبط موديل توليد الصور من الإعدادات.'];
+    $r = openrouter_request([
+        'model' => $model,
+        'modalities' => ['image', 'text'],
+        'messages' => [['role' => 'user', 'content' => $prompt]],
+    ]);
+    if (!$r['ok']) return $r;
+    $data = $r['data'];
+    $dataUri = $data['choices'][0]['message']['images'][0]['image_url']['url'] ?? null;
+    if (!$dataUri || !preg_match('#^data:image/(\w+);base64,(.+)$#', $dataUri, $m)) {
+        return ['ok' => false, 'msg' => $data['error']['message'] ?? 'لم يُرجع الموديل صورة (تأكد أن الموديل يدعم توليد الصور).'];
+    }
+    $ext = $m[1] === 'jpeg' ? 'jpg' : $m[1];
+    $bytes = base64_decode($m[2]);
+    if (!$bytes) return ['ok' => false, 'msg' => 'فشل فك تشفير الصورة الناتجة.'];
+    $destDir = __DIR__ . '/uploads/' . $destSubdir;
+    if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+    $filename = bin2hex(random_bytes(8)) . '.' . $ext;
+    file_put_contents($destDir . '/' . $filename, $bytes);
+    compress_image_file($destDir . '/' . $filename, 1280, 78);
+    return ['ok' => true, 'url' => 'uploads/' . $destSubdir . '/' . $filename];
+}
+
+if ($action === 'admin_test_openrouter') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $r = openrouter_chat('قل "تم الاتصال بنجاح" فقط بدون أي إضافات.');
+    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
+    echo json_encode(['ok' => true, 'msg' => 'الاتصال يعمل بنجاح: ' . trim($r['text'])]);
+    exit;
+}
+
+if ($action === 'admin_test_smtp') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $to = trim($_POST['to'] ?? ADMIN_EMAIL);
+    $r = smtp_send_mail($to, 'رسالة اختبار - ' . setting('site_name', 'الموقع'), '<p dir="rtl" style="font-family:Tahoma">تم الاتصال بخادم SMTP بنجاح. هذه رسالة اختبار.</p>');
+    echo json_encode($r['ok'] ? ['ok' => true, 'msg' => 'تم إرسال رسالة اختبار بنجاح إلى ' . $to] : ['ok' => false, 'msg' => $r['msg']]);
+    exit;
+}
+
+if ($action === 'admin_send_campaign') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    set_time_limit(280);
+    $type = $_POST['type'] ?? 'promo';
+    $subject = trim($_POST['subject'] ?? '');
+    $bodyHtml = trim($_POST['body'] ?? '');
+    if ($type === 'review') {
+        $reviewUrl = setting('google_review_url');
+        if (!$reviewUrl) { echo json_encode(['ok' => false, 'msg' => 'يرجى ضبط رابط تقييم Google من الإعدادات أولاً.']); exit; }
+        $subject = $subject ?: 'رأيك يهمنا - شاركنا تقييمك';
+        $bodyHtml = $bodyHtml ?: ('<p dir="rtl" style="font-family:Tahoma">شكراً لاستخدامك ' . e(setting('site_name', 'الموقع')) . '! نسعد كثيراً لو شاركت تجربتك الحقيقية معنا بتقييم على جوجل:</p><p><a href="' . e($reviewUrl) . '">اضغط هنا لإضافة تقييمك</a></p>');
+    }
+    if (!$subject || !$bodyHtml) { echo json_encode(['ok' => false, 'msg' => 'يرجى تعبئة عنوان ومحتوى الرسالة.']); exit; }
+    $rows = db()->query("SELECT email FROM users WHERE email IS NOT NULL AND email <> '' AND is_banned = 0")->fetchAll();
+    $sent = 0; $failed = 0; $lastErr = '';
+    foreach ($rows as $row) {
+        $r = smtp_send_mail($row['email'], $subject, $bodyHtml);
+        if ($r['ok']) $sent++; else { $failed++; $lastErr = $r['msg']; }
+    }
+    echo json_encode(['ok' => true, 'msg' => "تم الإرسال إلى $sent مستخدم" . ($failed ? "، وفشل الإرسال إلى $failed (آخر خطأ: $lastErr)" : '.')]);
+    exit;
+}
+
+if ($action === 'admin_clear_cache') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $cleared = [];
+    if (function_exists('opcache_reset') && opcache_reset()) $cleared[] = 'OPcache (شيفرة PHP المخزّنة)';
+    clearstatcache();
+    $cacheDir = __DIR__ . '/uploads/cache';
+    $removed = 0;
+    if (is_dir($cacheDir)) {
+        foreach (glob($cacheDir . '/*') as $f) { if (is_file($f) && @unlink($f)) $removed++; }
+    }
+    if ($removed) $cleared[] = "$removed صورة مؤقتة من ذاكرة التخزين المؤقت";
+    $newVersion = (string)(((int)setting('asset_version', '1')) + 1);
+    db()->prepare(DB_DRIVER === 'sqlite'
+        ? "INSERT INTO settings (k, v) VALUES ('asset_version', ?) ON CONFLICT(k) DO UPDATE SET v=?"
+        : "INSERT INTO settings (k, v) VALUES ('asset_version', ?) ON DUPLICATE KEY UPDATE v=?")
+        ->execute([$newVersion, $newVersion]);
+    $cleared[] = 'رقم إصدار الموقع (لإجبار المتصفحات على تحميل نسخة جديدة)';
+    echo json_encode(['ok' => true, 'msg' => 'تم تفريغ الكاش بنجاح: ' . implode('، ', $cleared) . '.']);
+    exit;
+}
+
+if ($action === 'admin_ai_generate') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $name = trim($_POST['name'] ?? '');
+    $price = trim($_POST['price'] ?? '');
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم المنتج أولاً.']); exit; }
+    $prompt = "اكتب لمنتج إلكتروني اسمه \"$name\" بسعر $price دولار، وصفاً تسويقياً جذاباً بالعربية (3-4 جمل)، ووصف SEO قصير (جملة واحدة، أقل من 150 حرفاً). "
+        . "أعد الإجابة بصيغة JSON فقط بدون أي نص إضافي بهذا الشكل: {\"description\":\"...\",\"meta_description\":\"...\"}";
+    $r = openrouter_chat($prompt);
+    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
+    $text = trim($r['text']);
+    $text = preg_replace('/^```json|```$/m', '', $text);
+    $json = json_decode(trim($text), true);
+    if (!$json || empty($json['description'])) {
+        $out = ['ok' => true, 'description' => trim($r['text']), 'meta_description' => ''];
+    } else {
+        $out = ['ok' => true, 'description' => $json['description'], 'meta_description' => $json['meta_description'] ?? ''];
+    }
+    if (($_POST['gen_image'] ?? '') === '1') {
+        $imgPrompt = "صورة منتج رقمي إعلانية بجودة عالية لمنتج اسمه \"$name\"، تصميم نظيف وجذاب مناسب لمتجر إلكتروني، بدون نص مكتوب على الصورة.";
+        $imgRes = openrouter_image($imgPrompt);
+        if ($imgRes['ok']) {
+            $out['image'] = $imgRes['url'];
+        } else {
+            $out['image_error'] = $imgRes['msg'];
+        }
+    }
+    echo json_encode($out);
+    exit;
+}
+
+if ($action === 'admin_ai_generate_app') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $name = trim($_POST['name'] ?? '');
+    $kind = ($_POST['kind'] ?? 'app') === 'game' ? 'لعبة' : 'تطبيق';
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    $prompt = "أنت خبير ASO/SEO لمتاجر تطبيقات أندرويد. لـ$kind اسمه \"$name\"، أنشئ محتوى نشر كامل بالعربية مناسب لمتجر تطبيقات عالمي يشبه APKPure، واجعل عنوان SEO جذاباً يحتوي كلمات بحث يستخدمها المستخدمون فعلياً (مثل تحميل، آخر إصدار، مهكرة إن كان مناسباً). "
+        . "أعد الإجابة بصيغة JSON فقط بدون أي نص إضافي وبدون Markdown، بالمفاتيح التالية فقط: "
+        . '{"short_description":"جملة واحدة جذابة أقل من 80 حرفاً","description":"وصف تفصيلي 4-6 جمل يشرح المزايا","changelog":"سطرين عن آخر تحديث افتراضي مناسب","category":"تصنيف التطبيق المناسب (مثل: ألعاب أكشن، أدوات، تواصل اجتماعي)","permissions":"3-5 صلاحيات شائعة مفصولة بفاصلة","seo_title":"عنوان SEO جذاب أقل من 65 حرفاً يحتوي اسم التطبيق وكلمة تحميل","seo_description":"وصف SEO أقل من 155 حرفاً","seo_keywords":"5-8 كلمات مفتاحية مفصولة بفاصلة"}';
+    $r = openrouter_chat($prompt, true);
+    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
+    $text = trim($r['text']);
+    $text = preg_replace('/^```json|```$/m', '', $text);
+    $json = json_decode(trim($text), true);
+    if (!$json) { echo json_encode(['ok' => false, 'msg' => 'تعذر فهم استجابة الذكاء الاصطناعي، حاول مجدداً.']); exit; }
+    echo json_encode(array_merge(['ok' => true], $json));
+    exit;
+}
+
+if ($action === 'admin_ai_continue_content') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    set_time_limit(180);
+    $name = trim($_POST['name'] ?? '');
+    $kindRaw = ($_POST['kind'] ?? 'app');
+    $kind = $kindRaw === 'game' ? 'لعبة' : 'تطبيق';
+    $existing = trim($_POST['existing'] ?? '');
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    $prompt = "أنت كاتب محتوى SEO احترافي للتطبيقات. أكمل الوصف التالي لـ$kind اسمه \"$name\" بإضافة 600-800 كلمة عربية جديدة تكمّل ما بدأ. "
+        . "أضِف: 1) شرح تفصيلي لمزايا إضافية 2) مقارنة مختصرة بتطبيقات مشابهة 3) نصائح للمستخدم 4) لماذا يُنصح بتحميله. "
+        . "اكتب فقرات طبيعية مفصلة (لا نقاط) واستخدم كلمات مفتاحية تكرارية طبيعية مثل: تحميل، آخر إصدار، مجاني، آمن. لا تُكرر ما جاء في:\n\n$existing\n\nأخرج فقط المحتوى الجديد (بدون عناوين، بدون Markdown، فقرات عربية فقط).";
+    $r = openrouter_chat($prompt, true);
+    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
+    echo json_encode(['ok' => true, 'content' => trim($r['text'])]);
+    exit;
+}
+
+if ($action === 'admin_ai_generate_icon') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    set_time_limit(120);
+    $name = trim($_POST['name'] ?? '');
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    // 1) حاول التوليد الحقيقي عبر OpenRouter
+    $imgPrompt = "app icon logo for \"$name\", modern flat design, high quality, no text, centered, square 512x512, professional gradient background";
+    $imgRes = openrouter_image($imgPrompt);
+    if (!empty($imgRes['ok']) && !empty($imgRes['url'])) {
+        echo json_encode(['ok' => true, 'url' => $imgRes['url'], 'source' => 'ai']);
+        exit;
+    }
+    // 2) fallback: توليد أيقونة SVG محلياً (لن يفشل أبداً)
+    $letter = mb_substr($name, 0, 1);
+    $colors = ['#10b981,#059669', '#2563eb,#06b6d4', '#8b5cf6,#6d28d9', '#f59e0b,#d97706', '#ef4444,#dc2626'];
+    $pick = $colors[abs(crc32($name)) % count($colors)];
+    [$c1, $c2] = explode(',', $pick);
+    $svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="' . $c1 . '"/><stop offset="1" stop-color="' . $c2 . '"/></linearGradient></defs><rect width="512" height="512" rx="110" fill="url(#g)"/><text x="256" y="330" font-family="Cairo, Arial" font-size="240" font-weight="900" fill="#fff" text-anchor="middle">' . htmlspecialchars($letter, ENT_QUOTES) . '</text></svg>';
+    $filename = 'ai_icon_' . bin2hex(random_bytes(6)) . '.svg';
+    $dir = __DIR__ . '/uploads/apps';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    file_put_contents($dir . '/' . $filename, $svg);
+    echo json_encode(['ok' => true, 'url' => 'uploads/apps/' . $filename, 'source' => 'svg', 'msg' => ($imgRes['msg'] ?? '') . ' — تم توليد أيقونة SVG محلياً']);
+    exit;
+}
+
+if ($action === 'admin_ai_seo_boost') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    set_time_limit(180);
+    $name = trim($_POST['name'] ?? '');
+    $kindRaw = ($_POST['kind'] ?? 'app');
+    $kind = $kindRaw === 'game' ? 'لعبة' : 'تطبيق';
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    $category = trim($_POST['category'] ?? '');
+    $version = trim($_POST['version'] ?? '');
+
+    $seoPrompt = "أنت خبير ASO/SEO محترف في متاجر تطبيقات أندرويد الكبيرة (مثل APKPure وAPKMirror وUptodown). "
+        . "لـ$kind اسمه \"$name\"" . ($category ? " (تصنيف: $category)" : '') . ($version ? " (إصدار: $version)" : '') . "، "
+        . "أنشئ عنوان SEO قوي جداً وطويل نسبياً (بين 80 و160 حرفاً) يختلف عن مجرد اسم $kind، ويحتوي كلمات بحث فعلية يستخدمها المستخدمون (مثل: تحميل، آخر إصدار، مهكرة/مود إن كان مناسباً للسياق، مجاناً، APK، 2026)، بنفس أسلوب عناوين نتائج جوجل القوية المنافسة، بالإضافة لوصف SEO جذاب (140-160 حرفاً) وكلمات مفتاحية. "
+        . "أعد الإجابة بصيغة JSON فقط بدون أي نص إضافي وبدون Markdown، بالمفاتيح: "
+        . '{"seo_title":"عنوان SEO قوي 80-160 حرفاً","seo_description":"وصف SEO 140-160 حرفاً","seo_keywords":"8-12 كلمة مفتاحية مفصولة بفاصلة"}';
+    $seoRes = openrouter_chat($seoPrompt, true, 600, 40);
+    if (!$seoRes['ok']) { echo json_encode(['ok' => false, 'msg' => $seoRes['msg']]); exit; }
+    $seoText = preg_replace('/^```json|```$/m', '', trim($seoRes['text']));
+    $seoJson = json_decode(trim($seoText), true);
+    if (!$seoJson) { echo json_encode(['ok' => false, 'msg' => 'تعذر فهم استجابة عنوان SEO، حاول مجدداً.']); exit; }
+
+    $contentPrompt = "اكتب محتوى تسويقي وتعريفي طويل جداً وعالي الجودة بالعربية لصفحة $kind اسمه \"$name\" على متجر تطبيقات أندرويد، بهدف تحسين ظهوره في محركات البحث (SEO Content). "
+        . "اكتب نص عادي متصل بدون Markdown وبدون عناوين بـ # وبدون أكواد، فقط فقرات وأسطر نصية عربية مفصولة بفواصل أسطر. "
+        . "يجب ألا يقل عدد الأسطر الناتجة عن 500 سطر، فاكتب بتفصيل كبير يغطي كل هذه المحاور بفقرات وقوائم مطولة: نظرة عامة شاملة عن $kind، أهم المزايا والمميزات (قائمة مطولة جداً مع شرح كل ميزة بعدة أسطر)، طريقة التحميل والتثبيت خطوة بخطوة بالتفصيل، المتطلبات والمواصفات التقنية، الفروقات بين هذا الإصدار والإصدارات السابقة، نصائح وحلول للمشاكل الشائعة عند التشغيل، أسئلة شائعة وأجوبتها (لا يقل عدد الأسئلة عن 15 سؤال مع إجابة مفصلة لكل سؤال)، مقارنة مع تطبيقات/ألعاب مشابهة، ولماذا يُفضَّل تحميله من هذا الموقع، وخاتمة تحفيزية للتحميل. "
+        . "لا تكتب أي تحذير أو ملاحظة عن كونك ذكاء اصطناعي، اكتب المحتوى النهائي مباشرة فقط.";
+    $contentRes = openrouter_chat($contentPrompt, false, 8000, 150);
+    if (!$contentRes['ok']) { echo json_encode(['ok' => false, 'msg' => $contentRes['msg']]); exit; }
+    $description = trim($contentRes['text']);
+    $description = preg_replace('/^```\w*|```$/m', '', $description);
+
+    echo json_encode([
+        'ok' => true,
+        'seo_title' => $seoJson['seo_title'] ?? '',
+        'seo_description' => $seoJson['seo_description'] ?? '',
+        'seo_keywords' => $seoJson['seo_keywords'] ?? '',
+        'description' => trim($description),
+    ]);
+    exit;
+}
+
+if ($action === 'admin_ai_generate_app_icon') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    $name = trim($_POST['name'] ?? '');
+    $kind = ($_POST['kind'] ?? 'app') === 'game' ? 'لعبة' : 'تطبيق';
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    $imgPrompt = "أيقونة تطبيق أندرويد ($kind) اسمه \"$name\"، تصميم مسطح عصري بزوايا دائرية، ألوان جذابة متناسقة، بدون أي نص مكتوب على الأيقونة، خلفية مربعة كاملة، أسلوب متجر تطبيقات محترف.";
+    $imgRes = openrouter_image($imgPrompt, 'apps');
+    if (!$imgRes['ok']) { echo json_encode(['ok' => false, 'msg' => $imgRes['msg']]); exit; }
+    echo json_encode(['ok' => true, 'url' => $imgRes['url']]);
+    exit;
+}
+
 /* ---- Admin POST actions ---- */
 if ($action && str_starts_with($action, 'admin_')) {
     require_admin();
     csrf_check();
 
     switch ($action) {
+        case 'admin_save_category':
+            $slug = preg_replace('/[^a-z0-9_-]/i', '-', trim($_POST['slug'] ?? '')) ?: preg_replace('/\s+/', '-', trim($_POST['name'] ?? ''));
+            db()->prepare("INSERT INTO categories (name, slug, kind, icon_svg, description, seo_title, seo_description, sort_order, visible_on_home) VALUES (?,?,?,?,?,?,?,?,?)")
+                ->execute([
+                    trim($_POST['name'] ?? ''),
+                    $slug,
+                    $_POST['kind'] ?? 'general',
+                    trim($_POST['icon_svg'] ?? '📦'),
+                    trim($_POST['description'] ?? ''),
+                    trim($_POST['seo_title'] ?? ''),
+                    trim($_POST['seo_description'] ?? ''),
+                    (int)($_POST['sort_order'] ?? 0),
+                    isset($_POST['visible_on_home']) ? 1 : 0,
+                ]);
+            flash('تم إضافة القسم', 'success');
+            redirect('?page=admin&tab=categories');
+        case 'admin_delete_category':
+            $cid = (int)($_GET['id'] ?? 0);
+            if ($cid > 0) db()->prepare("DELETE FROM categories WHERE id=?")->execute([$cid]);
+            redirect('?page=admin&tab=categories');
+        case 'admin_save_package':
+            db()->prepare("INSERT INTO packages (product_id, name, icon, price, old_price, quantity, currency, tag, sort_order, active, allow_custom_amount, min_amount, max_amount) VALUES (?,?,?,?,?,?,?,?,?,1,?,?,?)")
+                ->execute([
+                    (int)($_POST['product_id'] ?? 0),
+                    trim($_POST['name'] ?? ''),
+                    trim($_POST['icon'] ?? '💎'),
+                    (float)($_POST['price'] ?? 0),
+                    $_POST['old_price'] !== '' ? (float)$_POST['old_price'] : null,
+                    (int)($_POST['quantity'] ?? 0),
+                    trim($_POST['currency'] ?? ''),
+                    trim($_POST['tag'] ?? ''),
+                    (int)($_POST['sort_order'] ?? 0),
+                    isset($_POST['allow_custom_amount']) ? 1 : 0,
+                    $_POST['min_amount'] !== '' ? (float)$_POST['min_amount'] : null,
+                    $_POST['max_amount'] !== '' ? (float)$_POST['max_amount'] : null,
+                ]);
+            db()->prepare("UPDATE products SET has_packages = 1 WHERE id = ?")->execute([(int)($_POST['product_id'] ?? 0)]);
+            flash('تم إضافة الباقة', 'success');
+            redirect('?page=admin&tab=packages');
+        case 'admin_delete_package':
+            $pkgid = (int)($_GET['id'] ?? 0);
+            if ($pkgid > 0) db()->prepare("DELETE FROM packages WHERE id=?")->execute([$pkgid]);
+            redirect('?page=admin&tab=packages');
         case 'admin_save_product':
             $id = (int)($_POST['id'] ?? 0);
             $name = trim($_POST['name'] ?? '');
-            $icon = trim($_POST['icon'] ?? '');
             $price = (float)($_POST['price'] ?? 0);
             $old_price = $_POST['old_price'] !== '' ? (float)$_POST['old_price'] : null;
             $cat = (int)($_POST['category_id'] ?? 0) ?: null;
             $desc = trim($_POST['description'] ?? '');
+            $metaDesc = trim($_POST['meta_description'] ?? '');
             $tag = trim($_POST['tag'] ?? '');
             $image = trim($_POST['image'] ?? '');
+            $picon = trim($_POST['icon'] ?? '');
             if ($id) {
-                db()->prepare("UPDATE products SET name=?, icon=?, price=?, old_price=?, category_id=?, description=?, tag=?, image=? WHERE id=?")
-                    ->execute([$name, $icon, $price, $old_price, $cat, $desc, $tag, $image, $id]);
+                db()->prepare("UPDATE products SET name=?, price=?, old_price=?, category_id=?, description=?, meta_description=?, tag=?, image=?, icon=? WHERE id=?")
+                    ->execute([$name, $price, $old_price, $cat, $desc, $metaDesc, $tag, $image, $picon, $id]);
             } else {
-                db()->prepare("INSERT INTO products (name, icon, price, old_price, category_id, description, tag, image) VALUES (?,?,?,?,?,?,?,?)")
-                    ->execute([$name, $icon, $price, $old_price, $cat, $desc, $tag, $image]);
+                db()->prepare("INSERT INTO products (name, price, old_price, category_id, description, meta_description, tag, image, icon) VALUES (?,?,?,?,?,?,?,?,?)")
+                    ->execute([$name, $price, $old_price, $cat, $desc, $metaDesc, $tag, $image, $picon]);
                 $id = db()->lastInsertId();
-                $st = db()->prepare("SELECT * FROM products WHERE id=?"); $st->execute([$id]);
-                tg_broadcast_product($st->fetch());
+                db()->prepare("INSERT INTO bot_broadcast_queue (product_id) VALUES (?)")->execute([$id]);
             }
             flash('تم حفظ المنتج بنجاح.');
             redirect('?page=admin&tab=products');
@@ -720,119 +3030,272 @@ if ($action && str_starts_with($action, 'admin_')) {
 
         case 'admin_save_category':
             $name = trim($_POST['name'] ?? '');
-            if ($name) db()->prepare("INSERT INTO categories (name) VALUES (?)")->execute([$name]);
+            $cid = (int)($_POST['id'] ?? 0);
+            $cimage = trim($_POST['image'] ?? '');
+            $ccolor = trim($_POST['color'] ?? '');
+            if ($name && $cid) {
+                db()->prepare("UPDATE categories SET name=?, image=?, color=? WHERE id=?")->execute([$name, $cimage ?: null, $ccolor ?: null, $cid]);
+            } elseif ($name) {
+                db()->prepare("INSERT INTO categories (name, image, color) VALUES (?,?,?)")->execute([$name, $cimage ?: null, $ccolor ?: null]);
+            }
+            redirect('?page=admin&tab=products');
+
+        case 'admin_delete_category':
+            db()->prepare("DELETE FROM categories WHERE id=?")->execute([(int)$_POST['id']]);
+            flash('تم حذف القسم.');
+            redirect('?page=admin&tab=products');
+
+        case 'admin_save_app':
+            $id = (int)($_POST['id'] ?? 0);
+            $name = trim($_POST['name'] ?? '');
+            if (!$name) { flash('اسم التطبيق مطلوب.', 'error'); redirect('?page=admin&tab=apps'); }
+            $fields = [
+                'kind' => in_array($_POST['kind'] ?? 'app', ['app', 'game'], true) ? $_POST['kind'] : 'app',
+                'package_name' => trim($_POST['package_name'] ?? ''),
+                'version' => trim($_POST['version'] ?? ''),
+                'size_label' => trim($_POST['size_label'] ?? ''),
+                'min_android' => trim($_POST['min_android'] ?? ''),
+                'category' => trim($_POST['category'] ?? ''),
+                'developer_name' => trim($_POST['developer_name'] ?? ''),
+                'developer_website' => trim($_POST['developer_website'] ?? ''),
+                'privacy_policy_url' => trim($_POST['privacy_policy_url'] ?? ''),
+                'icon' => trim($_POST['icon'] ?? ''),
+                'banner_image' => trim($_POST['banner_image'] ?? ''),
+                'screenshots' => trim($_POST['screenshots'] ?? ''),
+                'video_url' => trim($_POST['video_url'] ?? ''),
+                'short_description' => trim($_POST['short_description'] ?? ''),
+                'description' => trim($_POST['description'] ?? ''),
+                'changelog' => trim($_POST['changelog'] ?? ''),
+                'permissions' => trim($_POST['permissions'] ?? ''),
+                'download_url' => trim($_POST['download_url'] ?? ''),
+                'seo_title' => trim($_POST['seo_title'] ?? ''),
+                'seo_description' => trim($_POST['seo_description'] ?? ''),
+                'seo_keywords' => trim($_POST['seo_keywords'] ?? ''),
+                'status' => in_array($_POST['status'] ?? 'published', ['published', 'pending', 'hidden', 'draft'], true) ? $_POST['status'] : 'published',
+            ];
+            $slugBase = trim(preg_replace('/[^a-z0-9-]+/', '-', strtolower($name)), '-') ?: 'app';
+            $admin = current_user();
+            if ($id) {
+                $fields['slug'] = $slugBase . '-' . $id;
+                $sql = "UPDATE apps SET name=?, " . implode('=?, ', array_keys($fields)) . "=?, slug=? WHERE id=?";
+                db()->prepare($sql)->execute([$name, ...array_values($fields), $fields['slug'], $id]);
+            } else {
+                $cols = array_keys($fields);
+                $sql = "INSERT INTO apps (name, publisher_id, " . implode(',', $cols) . ") VALUES (?,?," . implode(',', array_fill(0, count($cols), '?')) . ")";
+                db()->prepare($sql)->execute([$name, (int)$admin['id'], ...array_values($fields)]);
+                $id = (int)db()->lastInsertId();
+                db()->prepare("UPDATE apps SET slug=? WHERE id=?")->execute([$slugBase . '-' . $id, $id]);
+            }
+            flash('تم حفظ التطبيق بنجاح.');
+            redirect('?page=admin&tab=apps');
+
+        case 'admin_delete_app':
+            db()->prepare("DELETE FROM apps WHERE id=?")->execute([(int)$_POST['id']]);
+            flash('تم حذف التطبيق.');
+            redirect('?page=admin&tab=apps');
+
+        case 'admin_satofill_sync':
+            try {
+                $n = satofill_sync_products();
+                flash("تمت مزامنة $n منتج من Satofill بنجاح.");
+            } catch (Throwable $e) {
+                flash('فشلت المزامنة مع Satofill: ' . $e->getMessage());
+            }
             redirect('?page=admin&tab=products');
 
         case 'admin_order_decision':
             $oid = (int)$_POST['id']; $dec = $_POST['decision'] === 'approve' ? 'approved' : 'rejected';
             db()->prepare("UPDATE orders SET status=?, admin_note=? WHERE id=?")->execute([$dec, $_POST['note'] ?? '', $oid]);
+            $orderInfo = db()->prepare("SELECT u.telegram_id, p.name pname FROM orders o JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id WHERE o.id=?");
+            $orderInfo->execute([$oid]);
+            if ($oi = $orderInfo->fetch()) {
+                if (!empty($oi['telegram_id'])) {
+                    $msg = $dec === 'approved'
+                        ? "✅ تم قبول طلبك على منتج «" . e($oi['pname']) . "» بنجاح."
+                        : "❌ تم رفض طلبك على منتج «" . e($oi['pname']) . "»" . (!empty($_POST['note']) ? ("\nسبب: " . e($_POST['note'])) : '') . ".";
+                    tg_notify_user($oi['telegram_id'], $msg);
+                }
+            }
             flash('تم تحديث حالة الطلب.');
             redirect('?page=admin&tab=orders');
 
-        case 'admin_topup_decision':
-            $tid = (int)$_POST['id']; $dec = $_POST['decision'];
-            $st = db()->prepare("SELECT * FROM topup_requests WHERE id=?"); $st->execute([$tid]); $tr = $st->fetch();
-            if ($tr && $dec === 'approve' && $tr['status'] === 'pending') {
-                $pts = (int)round($tr['amount'] / max((float)setting('points_rate', 0.001), 0.0000001));
-                add_points($tr['user_id'], $pts, 'topup', 'شحن رصيد معتمد');
-            }
-            db()->prepare("UPDATE topup_requests SET status=? WHERE id=?")->execute([$dec === 'approve' ? 'approved' : 'rejected', $tid]);
-            flash('تم تحديث طلب الشحن.');
-            redirect('?page=admin&tab=topups');
-
-        case 'admin_withdraw_decision':
-            $wid = (int)$_POST['id']; $dec = $_POST['decision'];
-            $st = db()->prepare("SELECT * FROM withdraw_requests WHERE id=?"); $st->execute([$wid]); $wr = $st->fetch();
-            if ($wr && $dec === 'reject' && $wr['status'] === 'pending') {
-                add_points($wr['user_id'], $wr['amount_points'], 'refund', 'إرجاع بعد رفض السحب');
-            }
-            db()->prepare("UPDATE withdraw_requests SET status=? WHERE id=?")->execute([$dec === 'approve' ? 'approved' : 'rejected', $wid]);
-            flash('تم تحديث طلب السحب.');
-            redirect('?page=admin&tab=withdraws');
-
         case 'admin_save_wallet':
+            // ضمان عدم تفعيل أكثر من محفظة واحدة لنفس وسيلة الدفع (مثل الشام كاش) في نفس الوقت
+            db()->prepare("UPDATE wallets SET active=0 WHERE type=?")->execute([$_POST['type']]);
             db()->prepare("INSERT INTO wallets (type, label, address) VALUES (?,?,?)")
                 ->execute([$_POST['type'], $_POST['label'], $_POST['address']]);
             flash('تمت إضافة المحفظة.');
             redirect('?page=admin&tab=wallets');
 
         case 'admin_toggle_wallet':
-            db()->prepare("UPDATE wallets SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
+            $wid = (int)$_POST['id'];
+            $st = db()->prepare("SELECT type, active FROM wallets WHERE id=?"); $st->execute([$wid]);
+            $row = $st->fetch();
+            if ($row && !$row['active']) {
+                db()->prepare("UPDATE wallets SET active=0 WHERE type=?")->execute([$row['type']]);
+            }
+            db()->prepare("UPDATE wallets SET active = 1 - active WHERE id=?")->execute([$wid]);
             redirect('?page=admin&tab=wallets');
 
         case 'admin_delete_wallet':
             db()->prepare("DELETE FROM wallets WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=wallets');
 
-        case 'admin_save_task':
-            db()->prepare("INSERT INTO tasks (title, url, seconds, reward) VALUES (?,?,?,?)")
-                ->execute([$_POST['title'], $_POST['url'], (int)$_POST['seconds'], (int)$_POST['reward']]);
-            flash('تمت إضافة المهمة.');
-            redirect('?page=admin&tab=tasks');
+        case 'admin_save_openrouter_key':
+            $apiKey = trim((string)($_POST['api_key'] ?? ''));
+            if ($apiKey !== '') {
+                $maxOrd = (int)db()->query("SELECT COALESCE(MAX(sort_order),0) m FROM openrouter_keys")->fetch()['m'];
+                db()->prepare("INSERT INTO openrouter_keys (label, api_key, sort_order) VALUES (?,?,?)")
+                    ->execute([trim((string)($_POST['label'] ?? '')) ?: null, $apiKey, $maxOrd + 1]);
+                flash('تمت إضافة المفتاح.');
+            }
+            redirect('?page=admin&tab=settings');
 
-        case 'admin_toggle_task':
-            db()->prepare("UPDATE tasks SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
-            redirect('?page=admin&tab=tasks');
+        case 'admin_toggle_openrouter_key':
+            db()->prepare("UPDATE openrouter_keys SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=settings');
+
+        case 'admin_delete_openrouter_key':
+            db()->prepare("DELETE FROM openrouter_keys WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=settings');
+
+        case 'admin_save_home_sections':
+            set_setting('home_sections_order', preg_replace('/[^a-z_,]/', '', $_POST['order'] ?? ''));
+            set_setting('home_sections_hidden', preg_replace('/[^a-z_,]/', '', $_POST['hidden'] ?? ''));
+            flash('تم حفظ تخطيط الصفحة الرئيسية.');
+            redirect('?page=admin&tab=homepage');
 
         case 'admin_save_banner':
-            db()->prepare("INSERT INTO banners (image, link, title, size_label) VALUES (?,?,?,?)")
-                ->execute([$_POST['image'], $_POST['link'] ?? '', $_POST['title'] ?? '', $_POST['size_label'] ?? '']);
+            db()->prepare("INSERT INTO banners (image, link) VALUES (?,?)")->execute([$_POST['image'], $_POST['link']]);
             redirect('?page=admin&tab=banners');
-
-        case 'admin_save_chat_group':
-            db()->prepare("INSERT INTO chat_groups (name, icon, link, members) VALUES (?,?,?,?)")
-                ->execute([$_POST['name'], $_POST['icon'] ?? '💬', $_POST['link'], $_POST['members'] ?? '']);
-            flash('تمت إضافة المجموعة.');
-            redirect('?page=admin&tab=chats');
-
-        case 'admin_delete_chat_group':
-            db()->prepare("DELETE FROM chat_groups WHERE id=?")->execute([(int)$_POST['id']]);
-            redirect('?page=admin&tab=chats');
-
-        case 'admin_openrouter_models':
-            header('Content-Type: application/json; charset=utf-8');
-            $r = openrouter_request('/models');
-            $models = [];
-            if ($r['ok'] && !empty($r['data']['data'])) {
-                foreach ($r['data']['data'] as $m) {
-                    $models[] = ['id' => $m['id'] ?? '', 'name' => $m['name'] ?? ($m['id'] ?? ''),
-                        'ctx' => $m['context_length'] ?? null,
-                        'prompt' => $m['pricing']['prompt'] ?? null, 'completion' => $m['pricing']['completion'] ?? null];
-                }
-            }
-            echo json_encode(['ok' => $r['ok'], 'error' => $r['error'], 'count' => count($models), 'models' => $models], JSON_UNESCAPED_UNICODE);
-            exit;
-
-        case 'admin_openrouter_test':
-            header('Content-Type: application/json; charset=utf-8');
-            $model = trim($_POST['model'] ?? '') ?: setting('openrouter_model', 'openai/gpt-4o-mini');
-            $prompt = trim($_POST['prompt'] ?? '') ?: 'قل "مرحباً" بكلمة واحدة فقط.';
-            $r = openrouter_request('/chat/completions', 'POST', [
-                'model' => $model,
-                'messages' => [['role' => 'user', 'content' => $prompt]],
-                'max_tokens' => 256,
-            ]);
-            $reply = $r['data']['choices'][0]['message']['content'] ?? '';
-            echo json_encode(['ok' => $r['ok'], 'error' => $r['error'], 'model' => $model, 'reply' => $reply], JSON_UNESCAPED_UNICODE);
-            exit;
 
         case 'admin_delete_banner':
             db()->prepare("DELETE FROM banners WHERE id=?")->execute([(int)$_POST['id']]);
             redirect('?page=admin&tab=banners');
 
+        case 'admin_save_ticker':
+            db()->prepare("INSERT INTO tickers (text, link) VALUES (?,?)")->execute([trim($_POST['text'] ?? ''), trim($_POST['link'] ?? '') ?: null]);
+            redirect('?page=admin&tab=banners');
+
+        case 'admin_toggle_ticker':
+            db()->prepare("UPDATE tickers SET active = 1 - active WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=banners');
+
+        case 'admin_delete_ticker':
+            db()->prepare("DELETE FROM tickers WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=banners');
+
+        case 'admin_suggestion_decision':
+            db()->prepare("UPDATE product_suggestions SET status=? WHERE id=?")->execute([$_POST['status'] === 'dismissed' ? 'dismissed' : 'reviewed', (int)$_POST['id']]);
+            redirect('?page=admin&tab=suggestions');
+
+        case 'admin_report_decision':
+            db()->prepare("UPDATE app_reports SET status='resolved' WHERE id=?")->execute([(int)$_POST['id']]);
+            redirect('?page=admin&tab=reports');
+
+        case 'admin_block_ip':
+            $blockIp = trim($_POST['ip'] ?? '');
+            if ($blockIp !== '' && filter_var($blockIp, FILTER_VALIDATE_IP)) {
+                $sqlBlock = DB_DRIVER === 'sqlite'
+                    ? "INSERT INTO blocked_ips (ip, reason) VALUES (?,?) ON CONFLICT(ip) DO UPDATE SET reason=excluded.reason"
+                    : "INSERT INTO blocked_ips (ip, reason) VALUES (?,?) ON DUPLICATE KEY UPDATE reason=VALUES(reason)";
+                db()->prepare($sqlBlock)->execute([$blockIp, trim($_POST['reason'] ?? '')]);
+                flash('تم حظر العنوان.');
+            }
+            redirect('?page=admin&tab=security');
+
+        case 'admin_unblock_ip':
+            db()->prepare("DELETE FROM blocked_ips WHERE id=?")->execute([(int)$_POST['id']]);
+            flash('تم إلغاء الحظر.');
+            redirect('?page=admin&tab=security');
+
+        case 'admin_bot_save':
+            $botId = (int)($_POST['id'] ?? 0);
+            $botName = trim($_POST['name'] ?? '');
+            $botDesc = trim($_POST['description'] ?? '');
+            $botCategory = in_array($_POST['category'] ?? '', ['telegram_bot', 'script', 'tool'], true) ? $_POST['category'] : 'script';
+            $botVersion = trim($_POST['version'] ?? '1.0');
+            if ($botName === '') { flash('الاسم مطلوب.', 'error'); redirect('?page=admin&tab=bots'); }
+
+            $filePath = null;
+            if (!empty($_FILES['file']) && $_FILES['file']['error'] === UPLOAD_ERR_OK) {
+                $f = $_FILES['file'];
+                $allowedExt = ['zip', 'php', 'py', 'js', 'txt', 'sh'];
+                $ext = strtolower(pathinfo($f['name'], PATHINFO_EXTENSION));
+                if (!in_array($ext, $allowedExt, true) || $f['size'] > 20 * 1024 * 1024) {
+                    flash('الملف يجب أن يكون من نوع (zip/php/py/js/txt/sh) وأصغر من 20MB.', 'error');
+                    redirect('?page=admin&tab=bots');
+                }
+                $destDir = __DIR__ . '/uploads/bots';
+                if (!is_dir($destDir)) mkdir($destDir, 0755, true);
+                $filename = bin2hex(random_bytes(8)) . '.' . $ext;
+                move_uploaded_file($f['tmp_name'], $destDir . '/' . $filename);
+                $filePath = 'uploads/bots/' . $filename;
+            }
+
+            if ($botId > 0) {
+                $st = db()->prepare("SELECT * FROM bot_scripts WHERE id=?"); $st->execute([$botId]); $existing = $st->fetch();
+                if (!$existing) { flash('العنصر غير موجود.', 'error'); redirect('?page=admin&tab=bots'); }
+                if ($filePath === null) $filePath = $existing['file_path'];
+                db()->prepare("UPDATE bot_scripts SET name=?, description=?, category=?, version=?, file_path=? WHERE id=?")
+                    ->execute([$botName, $botDesc, $botCategory, $botVersion, $filePath, $botId]);
+            } else {
+                db()->prepare("INSERT INTO bot_scripts (name, description, category, icon, file_path, version, is_template, status) VALUES (?,?,?,?,?,?,0,'active')")
+                    ->execute([$botName, $botDesc, $botCategory, 'terminal', $filePath, $botVersion]);
+            }
+            flash('تم الحفظ.');
+            redirect('?page=admin&tab=bots');
+
+        case 'admin_bot_toggle':
+            $st = db()->prepare("SELECT status FROM bot_scripts WHERE id=?"); $st->execute([(int)$_POST['id']]); $row = $st->fetch();
+            if ($row) {
+                $newStatus = $row['status'] === 'active' ? 'inactive' : 'active';
+                db()->prepare("UPDATE bot_scripts SET status=? WHERE id=?")->execute([$newStatus, (int)$_POST['id']]);
+            }
+            redirect('?page=admin&tab=bots');
+
+        case 'admin_bot_delete':
+            $st = db()->prepare("SELECT * FROM bot_scripts WHERE id=?"); $st->execute([(int)$_POST['id']]); $row = $st->fetch();
+            if ($row && !$row['is_template'] && $row['file_path'] && is_file(__DIR__ . '/' . $row['file_path'])) {
+                @unlink(__DIR__ . '/' . $row['file_path']);
+            }
+            if ($row && !$row['is_template']) {
+                db()->prepare("DELETE FROM bot_scripts WHERE id=?")->execute([(int)$_POST['id']]);
+                flash('تم الحذف.');
+            }
+            redirect('?page=admin&tab=bots');
+
+        case 'admin_bot_download':
+            $st = db()->prepare("SELECT * FROM bot_scripts WHERE id=?"); $st->execute([(int)($_GET['id'] ?? 0)]); $row = $st->fetch();
+            if (!$row || !$row['file_path'] || !is_file(__DIR__ . '/' . $row['file_path'])) { die('الملف غير متوفر.'); }
+            db()->prepare("UPDATE bot_scripts SET downloads = downloads + 1 WHERE id=?")->execute([$row['id']]);
+            header('Content-Type: application/octet-stream');
+            header('Content-Disposition: attachment; filename="' . basename($row['file_path']) . '"');
+            header('Content-Length: ' . filesize(__DIR__ . '/' . $row['file_path']));
+            readfile(__DIR__ . '/' . $row['file_path']);
+            exit;
+
         case 'admin_save_settings':
+            $redirectTab = preg_replace('/[^a-z_]/', '', $_POST['redirect_tab'] ?? 'settings') ?: 'settings';
             foreach ($_POST as $k => $v) {
-                if ($k === 'action' || $k === 'csrf') continue;
+                if ($k === 'action' || $k === 'csrf' || $k === 'redirect_tab') continue;
+                if ($k === 'bot_token' && $v === '') continue; // حقل التوكن لا يُفرَّغ إذا تُرك خالياً
+                if ($k === 'smtp_pass' && $v === '') continue; // كلمة مرور SMTP لا تُفرَّغ إذا تُركت خالية
                 set_setting($k, $v);
             }
+            if (array_key_exists('moneytag_sw_enabled', $_POST) || array_key_exists('moneytag_sw_content', $_POST)) {
+                write_moneytag_sw_file();
+            }
             flash('تم حفظ الإعدادات.');
-            redirect('?page=admin&tab=settings');
+            redirect('?page=admin&tab=' . $redirectTab);
 
         case 'admin_save_page':
+            $mTitle = trim($_POST['meta_title'] ?? '');
+            $mDesc = trim($_POST['meta_description'] ?? '');
             db()->prepare(DB_DRIVER === 'sqlite'
-                ? "INSERT INTO pages (slug, content) VALUES (?,?) ON CONFLICT(slug) DO UPDATE SET content=?"
-                : "INSERT INTO pages (slug, content) VALUES (?,?) ON DUPLICATE KEY UPDATE content=?")
-                ->execute([$_POST['slug'], $_POST['content'], $_POST['content']]);
+                ? "INSERT INTO pages (slug, content, meta_title, meta_description) VALUES (?,?,?,?) ON CONFLICT(slug) DO UPDATE SET content=excluded.content, meta_title=excluded.meta_title, meta_description=excluded.meta_description"
+                : "INSERT INTO pages (slug, content, meta_title, meta_description) VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE content=VALUES(content), meta_title=VALUES(meta_title), meta_description=VALUES(meta_description)")
+                ->execute([$_POST['slug'], $_POST['content'], $mTitle, $mDesc]);
             flash('تم حفظ الصفحة.');
             redirect('?page=admin&tab=pages');
 
@@ -840,8 +3303,27 @@ if ($action && str_starts_with($action, 'admin_')) {
             $uid = (int)$_POST['id'];
             if ($_POST['op'] === 'ban') db()->prepare("UPDATE users SET is_banned=1 WHERE id=?")->execute([$uid]);
             if ($_POST['op'] === 'unban') db()->prepare("UPDATE users SET is_banned=0 WHERE id=?")->execute([$uid]);
-            if ($_POST['op'] === 'addpoints') add_points($uid, (int)$_POST['points'], 'admin', 'إضافة يدوية من الإدارة');
             redirect('?page=admin&tab=users');
+
+        case 'admin_export_csv':
+            $exportSpecs = [
+                'apps' => ['apps', ['id', 'name', 'kind', 'version', 'category', 'downloads', 'views', 'rating_avg', 'status', 'created_at']],
+                'products' => ['products', ['id', 'name', 'price', 'old_price', 'status', 'created_at']],
+                'orders' => ['orders', ['id', 'user_id', 'product_id', 'price', 'status', 'created_at']],
+                'users' => ['users', ['id', 'name', 'username', 'email', 'role', 'is_banned', 'created_at']],
+            ];
+            $exportType = $_GET['type'] ?? '';
+            if (!isset($exportSpecs[$exportType])) { die('نوع تصدير غير معروف.'); }
+            [$exportTable, $exportCols] = $exportSpecs[$exportType];
+            $rows = db()->query("SELECT " . implode(',', $exportCols) . " FROM $exportTable ORDER BY id DESC")->fetchAll();
+            header('Content-Type: text/csv; charset=utf-8');
+            header('Content-Disposition: attachment; filename="' . $exportType . '_' . date('Y-m-d') . '.csv"');
+            $out = fopen('php://output', 'w');
+            fputs($out, "\xEF\xBB\xBF");
+            fputcsv($out, $exportCols);
+            foreach ($rows as $row) fputcsv($out, $row);
+            fclose($out);
+            exit;
 
         default:
             die('إجراء غير معروف.');
@@ -852,225 +3334,1100 @@ if ($action && str_starts_with($action, 'admin_')) {
    5) DATA FOR VIEWS
    ====================================================================== */
 $user = current_user();
+if ($page === 'login' && $user) { redirect('?'); }
 $siteName = setting('site_name');
 $logo = setting('logo_url');
+$activeWallets = db()->query("SELECT * FROM wallets WHERE active=1")->fetchAll();
+
+/* ---- SEO: per-page title / description / canonical / structured data ---- */
+$seoProduct = null;
+if ($page === 'product') {
+    $st = db()->prepare("SELECT * FROM products WHERE id=? AND status='active'");
+    $st->execute([(int)($_GET['id'] ?? 0)]);
+    $seoProduct = $st->fetch();
+    if (!$seoProduct) { http_response_code(404); }
+}
+$seoApp = null;
+if (in_array($page, ['app', 'app_download'], true)) {
+    $st = db()->prepare("SELECT * FROM apps WHERE id=? AND status='published'");
+    $st->execute([(int)($_GET['id'] ?? 0)]);
+    $seoApp = $st->fetch();
+    if (!$seoApp) { http_response_code(404); }
+}
+$pageLabels = ['home' => 'الرئيسية', 'favorites' => 'المفضّلة', 'orders' => 'طلباتي', 'privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'admin' => 'لوحة الإدارة', 'apps' => 'تطبيقات وألعاب', 'store' => 'المتجر', 'thankyou' => 'شكراً لزيارتك', 'about' => 'من نحن', 'faq' => 'الأسئلة الشائعة', 'contact' => 'تواصل معنا', 'guide' => 'دليل تحميل التطبيقات والألعاب أندرويد بأمان', 'top' => 'أفضل تطبيقات وألعاب أندرويد مهكرة ومجانية', 'article-charge-games' => 'دليل شحن الألعاب والتطبيقات عبر وسائل الدفع المحلية', 'article-pubg' => 'شحن ببجي موبايل UC — دليل شامل 2025', 'article-referral' => 'نظام الإحالة: اكسب نقاطاً بمشاركة رابطك', 'article-app-reviews' => 'مراجعات أفضل تطبيقات الأندرويد 2025', 'article-tutorials' => 'شروحات التطبيقات والبرامج خطوة بخطوة', 'article-payment-methods' => 'طرق الدفع المتاحة: الشام كاش وسيرياتيل وUSdt'];
+if ($seoApp) {
+    $seoTitle = ($seoApp['seo_title'] ?: $seoApp['name']) . ' — تحميل ' . ($seoApp['kind'] === 'game' ? 'لعبة' : 'تطبيق') . ' مجاناً — ' . e($siteName);
+    $seoDesc = $seoApp['seo_description'] ?: ($seoApp['short_description'] ?: mb_substr((string)$seoApp['description'], 0, 155));
+    $seoImage = $seoApp['icon'] ?: $logo;
+    $seoCanonical = app_canonical_url($seoApp);
+} elseif ($seoProduct) {
+    $seoTitle = $seoProduct['name'] . ' — ' . e($siteName);
+    $seoDesc = $seoProduct['meta_description'] ?: mb_substr((string)$seoProduct['description'], 0, 155);
+    $seoImage = $seoProduct['image'] ?: $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=product&id=' . (int)$seoProduct['id'];
+} elseif (in_array($page, ['privacy', 'terms', 'about', 'faq', 'contact', 'guide', 'top', 'article-charge-games', 'article-pubg', 'article-referral', 'article-app-reviews', 'article-tutorials', 'article-payment-methods'], true)) {
+    $pg = db()->prepare("SELECT * FROM pages WHERE slug=?"); $pg->execute([$page]); $pgRow = $pg->fetch();
+    $seoTitle = ($pgRow['meta_title'] ?? '') ?: ($pageLabels[$page] . ' — ' . $siteName);
+    $seoDesc = ($pgRow['meta_description'] ?? '') ?: mb_substr((string)($pgRow['content'] ?? ''), 0, 160) ?: setting('site_description');
+    $seoImage = $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=' . $page;
+} elseif ($page === 'home') {
+    $seoTitle = $siteName . ' — ' . setting('banner_subtitle');
+    $seoDesc = setting('site_description');
+    $seoImage = $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php';
+} else {
+    $seoTitle = ($pageLabels[$page] ?? $siteName) . ' — ' . $siteName;
+    $seoDesc = setting('site_description');
+    $seoImage = $logo;
+    $seoCanonical = rtrim(SITE_URL, '/') . '/index.php?page=' . e($page);
+}
 ?>
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
 <head>
 <meta charset="UTF-8">
-<title><?= e($siteName) ?> — <?= e(setting('banner_subtitle')) ?></title>
-<meta name="description" content="<?= e(setting('site_description')) ?>">
+<title><?= e($seoTitle) ?></title>
+<meta name="description" content="<?= e($seoDesc) ?>">
 <meta name="keywords" content="<?= e(setting('site_keywords')) ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta name="theme-color" content="#0f1320">
+<?php if ($page !== 'admin' && !$user): ?><meta name="robots" content="index, follow"><?php else: ?><meta name="robots" content="noindex, nofollow"><?php endif; ?>
+<?php if (setting('google_site_verification')): ?><meta name="google-site-verification" content="<?= e(setting('google_site_verification')) ?>"><?php endif; ?>
+<?php $_adsId = setting('adsense_client_id') ?: (defined('ADSENSE_CLIENT_ID') ? ADSENSE_CLIENT_ID : 'ca-pub-5506877998492189'); if ($_adsId): ?><meta name="google-adsense-account" content="<?= e($_adsId) ?>"><script async src="https://pagead2.googlesyndication.com/pagead/js/adsbygoogle.js?client=<?= e($_adsId) ?>" crossorigin="anonymous"></script><?php endif; ?>
+<meta property="og:type" content="<?= $seoApp ? 'website' : ($seoProduct ? 'product' : 'website') ?>">
+<meta property="og:title" content="<?= e($seoTitle) ?>">
+<meta property="og:description" content="<?= e($seoDesc) ?>">
+<?php if ($seoImage): ?><meta property="og:image" content="<?= e($seoImage) ?>"><?php endif; ?>
+<?php if ($logo): ?><link rel="icon" href="<?= e($logo) ?>"><link rel="apple-touch-icon" href="<?= e($logo) ?>"><?php endif; ?>
+<link rel="canonical" href="<?= e($seoCanonical) ?>">
+<link rel="manifest" href="?action=webmanifest">
+<meta name="theme-color" content="<?= e(setting('theme_accent_color', '#2563eb')) ?>">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
-<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<link rel="manifest" href="?action=manifest">
-<?php if (!$logo): ?><link rel="apple-touch-icon" href="?action=appicon"><?php endif; ?>
-<meta property="og:title" content="<?= e($siteName) ?>">
-<meta property="og:description" content="<?= e(setting('site_description')) ?>">
-<?php if ($logo): ?><meta property="og:image" content="<?= e($logo) ?>"><link rel="icon" href="<?= e($logo) ?>"><?php endif; ?>
-<link rel="canonical" href="<?= e(SITE_URL ?: '') ?>">
+<meta name="apple-mobile-web-app-title" content="<?= e(setting('site_name', 'الموقع')) ?>">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cairo:wght@400;500;600;700;800&display=swap">
+<?php if (setting('ad_enabled') === '1' && setting('ad_header_code')) echo setting('ad_header_code'); ?>
+<?php if ($seoApp): ?>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"SoftwareApplication","name":"<?= e($seoApp['name']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>","applicationCategory":"<?= $seoApp['kind'] === 'game' ? 'GameApplication' : 'MobileApplication' ?>","operatingSystem":"ANDROID"<?= $seoApp['version'] ? ',"softwareVersion":"' . e($seoApp['version']) . '"' : '' ?><?= $seoApp['rating_avg'] ? ',"aggregateRating":{"@type":"AggregateRating","ratingValue":"' . e($seoApp['rating_avg']) . '","ratingCount":"' . max(1, (int)$seoApp['downloads']) . '"}' : '' ?>,"offers":{"@type":"Offer","price":"0","priceCurrency":"USD"}}
+</script>
+<?php elseif ($seoProduct): ?>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"Product","name":"<?= e($seoProduct['name']) ?>","description":"<?= e($seoDesc) ?>","image":"<?= e($seoImage) ?>","offers":{"@type":"Offer","price":"<?= e($seoProduct['price']) ?>","priceCurrency":"USD","availability":"https://schema.org/InStock"}}
+</script>
+<?php else: ?>
+<script type="application/ld+json">
+{"@context":"https://schema.org","@type":"WebSite","name":"<?= e($siteName) ?>","url":"<?= e(SITE_URL) ?>"<?= $logo ? ',"image":"' . e($logo) . '"' : '' ?>}
+</script>
 <script type="application/ld+json">
 {"@context":"https://schema.org","@type":"Organization","name":"<?= e($siteName) ?>","url":"<?= e(SITE_URL) ?>"<?= $logo ? ',"logo":"' . e($logo) . '"' : '' ?>}
 </script>
+<?php endif; ?>
 <style>
-:root{--bg:#0f1320;--bg2:#161b2e;--card:#1b2138;--accent:#6c5ce7;--accent2:#00d2a0;--text:#eef0f7;--muted:#8a90ab;--danger:#ff5c5c;--radius:16px}
+:root{--bg:#0b1120;--bg2:#121b30;--card:#16213b;--card2:#1c2a48;--accent:#2563eb;--accent-d:#1d4ed8;--accent2:#06b6d4;--accent2-d:#0891b2;--gold:#ffc233;--text:#eef2ff;--muted:#8b9bbd;--danger:#ff5c5c;--radius:18px;--shadow:0 10px 30px rgba(0,0,0,.45);--glow:0 0 0 1px rgba(37,99,235,.3),0 8px 30px rgba(37,99,235,.2);--ease:cubic-bezier(.22,1,.36,1)}
 *{box-sizing:border-box;margin:0;padding:0}
-body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
+*::selection{background:var(--accent);color:#fff}
+html{scroll-behavior:smooth}
+body{font-family:'Cairo','Segoe UI',Tahoma,Arial,sans-serif;color:var(--text);min-height:100vh;background:var(--bg);background-image:radial-gradient(1200px 600px at 100% -10%,rgba(230,41,75,.10),transparent 60%),radial-gradient(1000px 600px at -10% 10%,rgba(255,77,77,.08),transparent 55%);background-attachment:fixed;animation:bodyFadeIn .5s var(--ease) both}
+@keyframes bodyFadeIn{from{opacity:0}to{opacity:1}}
+.ic{transition:transform .25s var(--ease)}
+a:hover>.ic,button:hover>.ic,.btn:hover .ic{transform:scale(1.12)}
 a{color:inherit;text-decoration:none}
-#preloader{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .4s}
+::-webkit-scrollbar{width:10px;height:10px}
+::-webkit-scrollbar-track{background:var(--bg)}
+::-webkit-scrollbar-thumb{background:#2a3350;border-radius:10px;border:2px solid var(--bg)}
+::-webkit-scrollbar-thumb:hover{background:var(--accent)}
+#preloader{position:fixed;inset:0;background:radial-gradient(900px 500px at 50% 0%,rgba(230,41,75,.14),transparent 60%),var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:18px;transition:opacity .4s}
+.pl-ring{position:relative;width:108px;height:108px;display:flex;align-items:center;justify-content:center}
+.pl-ring svg{width:108px;height:108px;transform:rotate(-90deg)}
+.pl-ring circle{fill:none;stroke-width:5}
+.pl-ring .pl-track{stroke:#28304a}
+.pl-ring .pl-bar{stroke:var(--accent);stroke-linecap:round;stroke-dasharray:301;stroke-dashoffset:301;transition:stroke-dashoffset .15s linear}
+.pl-ring img,.pl-ring .pl-fallback{position:absolute;width:62px;height:62px;border-radius:50%;object-fit:cover}
+.pl-pct{position:absolute;bottom:-30px;font-size:13px;font-weight:700;color:var(--accent2)}
+#preloader .pl-text{color:var(--muted);font-size:13px;margin-top:14px}
 #preloader img{width:64px;height:64px;border-radius:50%}
-.spinner{width:46px;height:46px;border:4px solid #2a2f49;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+.spinner{width:46px;height:46px;border:4px solid #2a3350;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;padding:12px 18px;background:rgba(20,24,40,.85);backdrop-filter:blur(10px);border-bottom:1px solid #262c47}
-.burger{cursor:pointer;font-size:22px;background:none;border:none;color:var(--text)}
-.brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:18px}
-.brand img{width:30px;height:30px;border-radius:8px}
+.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;padding:12px 18px;background:rgba(13,17,30,.88);backdrop-filter:blur(8px) saturate(130%);-webkit-backdrop-filter:blur(8px) saturate(130%);border-bottom:1px solid rgba(230,41,75,.15);box-shadow:0 4px 24px rgba(0,0,0,.25);will-change:transform}
+.burger{cursor:pointer;font-size:22px;background:#18223a;border:1px solid #2a3350;border-radius:12px;color:var(--text);width:42px;height:42px;display:flex;align-items:center;justify-content:center;transition:.2s var(--ease)}
+.burger:hover{background:var(--accent);transform:translateY(-1px);border-color:var(--accent)}
+.brand{display:flex;align-items:center;gap:10px;font-weight:800;font-size:18px;letter-spacing:.3px}
+.brand img{width:34px;height:34px;flex-shrink:0;object-fit:cover;border-radius:10px;box-shadow:0 4px 12px rgba(0,0,0,.3)}
+.brand .ic{filter:drop-shadow(0 2px 6px rgba(255,77,77,.5))}
 .topbar .grow{flex:1}
-.btn{padding:9px 16px;border-radius:10px;border:none;cursor:pointer;font-weight:600;font-size:14px;transition:.2s}
-.btn-primary{background:linear-gradient(135deg,var(--accent),#a08bff);color:#fff}
-.btn-primary:hover{filter:brightness(1.1)}
-.btn-ghost{background:#232a45;color:var(--text)}
-.btn-success{background:var(--accent2);color:#06251c}
-.btn-danger{background:var(--danger);color:#250505}
-.user-chip{display:flex;align-items:center;gap:8px;background:#232a45;padding:6px 10px;border-radius:30px}
-.user-chip img{width:26px;height:26px;border-radius:50%}
+.btn{position:relative;display:inline-flex;align-items:center;justify-content:center;padding:10px 18px;border-radius:12px;border:none;cursor:pointer;font-weight:700;font-size:14px;font-family:inherit;transition:transform .18s var(--ease),box-shadow .25s var(--ease),filter .2s,background .2s;overflow:hidden;-webkit-tap-highlight-color:transparent}
+.btn::after{content:"";position:absolute;top:0;left:-120%;width:60%;height:100%;background:linear-gradient(120deg,transparent,rgba(255,255,255,.28),transparent);transform:skewX(-20deg);transition:left .6s var(--ease)}
+.btn:hover::after{left:140%}
+.btn:active{transform:scale(.96)}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#38bdf8);color:#fff;box-shadow:0 6px 18px rgba(230,41,75,.35)}
+.btn-primary:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(230,41,75,.5)}
+.btn-ghost{background:#2e1920;color:var(--text)}
+.btn-ghost:hover{background:#391e26;transform:translateY(-1px)}
+.btn-success{background:linear-gradient(135deg,#22c55e,#16a34a);color:#06251c;box-shadow:0 6px 18px rgba(34,197,94,.3)}
+.btn-success:hover{transform:translateY(-2px);box-shadow:0 10px 26px rgba(34,197,94,.45)}
+.btn-danger{background:linear-gradient(135deg,var(--danger),#38bdf8);color:#250505}
+.btn-danger:hover{transform:translateY(-2px);box-shadow:0 8px 20px rgba(255,92,92,.4)}
+.btn:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+.btn:disabled::after{display:none}
+.ripple{position:absolute;border-radius:50%;background:rgba(255,255,255,.45);transform:scale(0);animation:rippleAnim .6s var(--ease);pointer-events:none}
+@keyframes rippleAnim{to{transform:scale(2.5);opacity:0}}
+.user-chip{display:flex;align-items:center;gap:8px;background:#28304a;padding:6px 10px;border-radius:30px}
+.user-chip img{width:26px;height:26px;flex-shrink:0;object-fit:cover;border-radius:50%}
+.topbar-profile{display:flex;flex-direction:column;align-items:center;gap:2px;padding:2px 6px;text-decoration:none;color:var(--text);min-width:60px}
+.tp-avatar{width:38px;height:38px;border-radius:50%;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:0 0 0 2px rgba(37,99,235,.35),0 4px 12px rgba(6,182,212,.35);position:relative}
+.tp-avatar img{width:100%;height:100%;object-fit:cover;border-radius:50%}
+.tp-avatar::after{content:"";position:absolute;bottom:-2px;right:-2px;width:10px;height:10px;border-radius:50%;background:#10b981;box-shadow:0 0 0 2px var(--bg)}
+.tp-name{font-size:10px;font-weight:700;color:var(--muted);line-height:1;text-align:center;max-width:64px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.topbar-profile:hover .tp-avatar{transform:scale(1.05);transition:transform .2s}
+.topbar-profile:hover .tp-name{color:var(--accent2)}
+/* زر المحفظة الاحترافي */
+.wallet-btn{display:flex;align-items:center;gap:10px;padding:8px 14px;border-radius:16px;background:linear-gradient(135deg,#0f766e,#059669);color:#fff;text-decoration:none;box-shadow:0 8px 20px rgba(16,185,129,.28),inset 0 1px 0 rgba(255,255,255,.15);border:1px solid rgba(16,185,129,.4);transition:transform .2s var(--ease),box-shadow .25s;position:relative;overflow:hidden}
+.wallet-btn::before{content:"";position:absolute;top:0;right:-100%;width:60%;height:100%;background:linear-gradient(120deg,transparent,rgba(255,255,255,.25),transparent);transform:skewX(-20deg);transition:right .8s var(--ease)}
+.wallet-btn:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(16,185,129,.45)}
+.wallet-btn:hover::before{right:200%}
+.wallet-btn .wb-icon{width:32px;height:32px;border-radius:12px;background:rgba(255,255,255,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0}
+.wallet-btn .wb-icon .ic{color:#fff;filter:drop-shadow(0 2px 4px rgba(0,0,0,.35))}
+.wallet-btn .wb-info{display:flex;flex-direction:column;line-height:1.1}
+.wallet-btn .wb-balance{font-weight:800;font-size:15px;color:#fff}
+.wallet-btn .wb-balance small{font-size:10px;margin-inline-start:2px;opacity:.85}
+.wallet-btn .wb-label{font-size:10px;color:rgba(255,255,255,.75);font-weight:600}
+@media (max-width:520px){
+  .wallet-btn{padding:6px 10px;gap:6px}
+  .wallet-btn .wb-icon{width:26px;height:26px}
+  .wallet-btn .wb-balance{font-size:13px}
+  .wallet-btn .wb-label{font-size:9px}
+  .topbar-profile{min-width:52px}
+  .tp-avatar{width:32px;height:32px}
+  .tp-name{max-width:56px;font-size:9px}
+}
+/* صفحة المحفظة الاحترافية */
+.wallet-hero{margin:16px 18px;padding:22px;border-radius:24px;background:linear-gradient(140deg,#052e2b 0%,#064e3b 60%,#065f46 100%);border:1px solid rgba(16,185,129,.3);box-shadow:0 20px 50px rgba(0,0,0,.4),inset 0 1px 0 rgba(255,255,255,.08);position:relative;overflow:hidden}
+.wallet-hero::before{content:"";position:absolute;inset:-40% -20% auto auto;width:320px;height:320px;background:radial-gradient(circle,rgba(16,185,129,.35),transparent 65%);pointer-events:none}
+.wallet-hero .wh-label{font-size:12px;color:rgba(255,255,255,.7);letter-spacing:.5px;position:relative}
+.wallet-hero .wh-balance{font-size:clamp(30px,7vw,42px);font-weight:900;color:#fff;margin:6px 0 12px;position:relative;text-shadow:0 4px 20px rgba(16,185,129,.5)}
+.wallet-hero .wh-balance small{font-size:.5em;color:#6ee7b7;margin-inline-start:8px}
+.wallet-hero .wh-actions{display:flex;gap:10px;flex-wrap:wrap;position:relative}
+.wh-btn{flex:1;min-width:120px;padding:12px 16px;border-radius:14px;border:1px solid rgba(255,255,255,.2);background:rgba(255,255,255,.08);color:#fff;font-weight:700;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.2s var(--ease);text-decoration:none;font-size:14px}
+.wh-btn:hover{background:rgba(255,255,255,.15);transform:translateY(-1px)}
+.wh-btn.primary{background:linear-gradient(135deg,#10b981,#059669);border-color:transparent;box-shadow:0 8px 20px rgba(16,185,129,.4)}
+/* خطوات الشحن */
+.topup-steps{display:flex;gap:8px;margin:20px 18px 0}
+.topup-steps .ts-item{flex:1;position:relative;padding:12px 8px;text-align:center;color:var(--muted);border-top:3px solid #1f2937;font-size:13px;font-weight:600;transition:.3s}
+.topup-steps .ts-item.active{color:#10b981;border-top-color:#10b981}
+.topup-steps .ts-item.done{color:#6ee7b7;border-top-color:#059669}
+.topup-steps .ts-item small{display:block;font-size:10px;opacity:.7}
+/* بطاقة QR وشحن */
+.topup-card{margin:16px 18px;padding:22px;border-radius:20px;background:linear-gradient(180deg,rgba(6,78,59,.35),rgba(6,95,70,.15));border:1px solid rgba(16,185,129,.25);box-shadow:0 12px 30px rgba(0,0,0,.3)}
+.topup-card h3{display:flex;align-items:center;gap:8px;color:#10b981;margin-bottom:6px;font-size:16px}
+.topup-card .tc-sub{color:var(--muted);font-size:12.5px;margin-bottom:16px}
+.qr-block{display:flex;flex-direction:column;align-items:center;gap:14px;padding:20px;background:rgba(0,0,0,.25);border-radius:16px;border:1px dashed rgba(16,185,129,.4)}
+.qr-block .qr-badge{width:64px;height:64px;border-radius:16px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 0 0 4px rgba(16,185,129,.25),0 10px 20px rgba(16,185,129,.35)}
+.qr-block .qr-label{color:#10b981;font-weight:700;font-size:14px}
+.qr-block img.qr-img{width:min(240px,60vw);height:auto;border-radius:14px;border:4px solid #fff;box-shadow:0 12px 30px rgba(0,0,0,.5);cursor:zoom-in}
+.addr-row{display:flex;align-items:center;gap:8px;background:rgba(0,0,0,.4);padding:10px 12px;border-radius:12px;border:1px solid rgba(16,185,129,.3);margin-top:12px;width:100%;max-width:400px}
+.addr-row code{flex:1;font-family:'Courier New',monospace;font-size:12.5px;color:#6ee7b7;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;direction:ltr;text-align:left}
+.addr-row .copy-btn{background:#10b981;color:#fff;border:none;padding:6px 10px;border-radius:8px;cursor:pointer;font-size:12px;font-weight:700;display:flex;align-items:center;gap:4px;transition:.2s}
+.addr-row .copy-btn:hover{background:#059669;transform:scale(1.05)}
+.addr-row .copy-btn.copied{background:#22c55e}
+/* اختيار المبلغ */
+.amount-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(84px,1fr));gap:8px;margin:14px 0}
+.amount-chip{padding:14px 8px;border-radius:12px;background:rgba(0,0,0,.3);border:2px solid rgba(16,185,129,.25);color:var(--text);font-weight:700;cursor:pointer;transition:.2s;font-size:15px;text-align:center}
+.amount-chip:hover{border-color:#10b981;background:rgba(16,185,129,.15)}
+.amount-chip.selected{border-color:#10b981;background:linear-gradient(135deg,rgba(16,185,129,.25),rgba(6,182,212,.15));box-shadow:0 6px 14px rgba(16,185,129,.3)}
+.amount-input{width:100%;padding:14px;border-radius:12px;background:rgba(0,0,0,.35);border:2px solid rgba(16,185,129,.3);color:#fff;font-size:20px;font-weight:800;text-align:center;font-family:inherit}
+.amount-input:focus{outline:none;border-color:#10b981;box-shadow:0 0 0 4px rgba(16,185,129,.2)}
+/* اختيار وسيلة الدفع */
+.wallet-methods{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:10px;margin:12px 0}
+.wallet-method{padding:14px;border-radius:14px;background:rgba(0,0,0,.28);border:2px solid rgba(16,185,129,.2);cursor:pointer;transition:.2s;display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;color:var(--text)}
+.wallet-method:hover{border-color:#10b981;transform:translateY(-2px)}
+.wallet-method.selected{border-color:#10b981;background:linear-gradient(135deg,rgba(16,185,129,.2),rgba(6,182,212,.1))}
+.wallet-method .wm-icon{width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#059669,#0891b2);display:flex;align-items:center;justify-content:center}
+.wallet-method .wm-icon .ic{color:#fff}
+.wallet-method .wm-name{font-size:13px;font-weight:700}
+/* اقسام مربعات النموذج */
+.tc-field{margin:14px 0}
+.tc-field label{display:block;font-size:13px;font-weight:700;color:#6ee7b7;margin-bottom:6px}
+.tc-field input,.tc-field textarea{width:100%;padding:12px 14px;border-radius:12px;background:rgba(0,0,0,.35);border:1px solid rgba(16,185,129,.3);color:#fff;font-family:inherit;font-size:14px}
+.tc-field input:focus,.tc-field textarea:focus{outline:none;border-color:#10b981;box-shadow:0 0 0 3px rgba(16,185,129,.2)}
+.receipt-box{border:2px dashed rgba(16,185,129,.4);border-radius:14px;padding:20px;text-align:center;cursor:pointer;background:rgba(0,0,0,.2);transition:.2s;color:var(--muted)}
+.receipt-box:hover{border-color:#10b981;background:rgba(16,185,129,.08);color:#10b981}
+.receipt-box.has-file{border-style:solid;border-color:#10b981;background:rgba(16,185,129,.1);color:#6ee7b7}
+.receipt-box .ic{width:36px;height:36px;margin-bottom:8px}
+/* أزرار الخطوات */
+.step-nav{display:flex;gap:10px;margin-top:20px}
+.step-nav button{flex:1;padding:14px;border-radius:14px;border:none;font-weight:800;font-family:inherit;font-size:15px;cursor:pointer;transition:.2s;display:flex;align-items:center;justify-content:center;gap:6px}
+.step-nav .btn-back{background:rgba(255,255,255,.08);color:var(--text);border:1px solid rgba(255,255,255,.15)}
+.step-nav .btn-back:hover{background:rgba(255,255,255,.15)}
+.step-nav .btn-next{background:linear-gradient(135deg,#10b981,#059669);color:#fff;box-shadow:0 10px 24px rgba(16,185,129,.4)}
+.step-nav .btn-next:hover{transform:translateY(-2px);box-shadow:0 14px 30px rgba(16,185,129,.55)}
+.step-nav .btn-next:disabled{opacity:.5;cursor:not-allowed;transform:none;box-shadow:none}
+/* شبكة الملخّص */
+.summary-row{display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px dashed rgba(16,185,129,.2);font-size:14px}
+.summary-row:last-child{border-bottom:none}
+.summary-row strong{color:#10b981;font-weight:800}
+/* توست خضراء */
+.wallet-toast{position:fixed;bottom:88px;left:50%;transform:translateX(-50%);background:linear-gradient(135deg,#10b981,#059669);color:#fff;padding:12px 22px;border-radius:12px;font-weight:700;box-shadow:0 12px 30px rgba(16,185,129,.4);z-index:9999;opacity:0;transition:opacity .3s,transform .3s;font-size:14px}
+.wallet-toast.show{opacity:1;transform:translateX(-50%) translateY(-8px)}
+/* صفحة الإعدادات الموسعة */
+.settings-tabs{display:flex;flex-wrap:wrap;gap:8px;padding:0 18px 12px;overflow-x:auto}
+.settings-tabs a{padding:10px 16px;border-radius:12px;background:#1c2a48;color:var(--text);text-decoration:none;font-weight:700;font-size:13px;display:flex;align-items:center;gap:6px;white-space:nowrap;transition:.2s}
+.settings-tabs a:hover{background:#243358}
+.settings-tabs a.active{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 6px 16px rgba(37,99,235,.35)}
+.settings-panel{margin:0 18px 18px;padding:20px;border-radius:18px;background:var(--card);border:1px solid #28304a}
+.settings-panel h3{display:flex;align-items:center;gap:8px;color:var(--accent2);margin-bottom:6px;font-size:16px}
+.settings-panel .sp-desc{color:var(--muted);font-size:12.5px;margin-bottom:14px}
+.setting-row{display:flex;justify-content:space-between;align-items:center;padding:14px 0;border-bottom:1px solid rgba(255,255,255,.06);gap:12px}
+.setting-row:last-child{border-bottom:none}
+.setting-row .sr-info{flex:1;min-width:0}
+.setting-row .sr-title{font-weight:700;font-size:14px;color:var(--text);margin-bottom:2px}
+.setting-row .sr-desc{color:var(--muted);font-size:12px}
+.setting-row .sr-control{flex-shrink:0}
+/* Toggle switch */
+.toggle-switch{position:relative;display:inline-block;width:48px;height:26px}
+.toggle-switch input{opacity:0;width:0;height:0}
+.toggle-switch .slider{position:absolute;cursor:pointer;inset:0;background:#374151;border-radius:26px;transition:.3s}
+.toggle-switch .slider::before{content:"";position:absolute;height:20px;width:20px;left:3px;bottom:3px;background:#fff;border-radius:50%;transition:.3s;box-shadow:0 2px 6px rgba(0,0,0,.35)}
+.toggle-switch input:checked + .slider{background:linear-gradient(135deg,#10b981,#059669)}
+.toggle-switch input:checked + .slider::before{transform:translateX(22px)}
+.setting-select{padding:8px 14px;border-radius:10px;background:#0f1523;border:1px solid #2a3350;color:var(--text);font-family:inherit;font-size:13px;font-weight:600;cursor:pointer}
 .sidebar{position:fixed;top:0;right:-300px;width:280px;height:100%;background:var(--bg2);z-index:60;transition:right .3s;overflow-y:auto;box-shadow:-10px 0 30px rgba(0,0,0,.3)}
 .sidebar.open{right:0}
-.sidebar .sb-head{padding:18px;border-bottom:1px solid #262c47;display:flex;justify-content:space-between;align-items:center}
-.sidebar nav a{display:flex;align-items:center;gap:10px;padding:14px 18px;color:var(--text);border-bottom:1px solid #1d2238;font-size:15px}
-.sidebar nav a:hover{background:#202746}
+.sidebar .sb-head{padding:18px;border-bottom:1px solid #3a1f26;display:flex;justify-content:space-between;align-items:center}
+.sidebar nav a{position:relative;display:flex;align-items:center;gap:12px;padding:15px 18px;color:var(--text);border-bottom:1px solid #2b151b;font-size:15px;font-weight:600;transition:background .2s,padding .2s var(--ease)}
+.sidebar nav a::before{content:"";position:absolute;right:0;top:0;bottom:0;width:4px;background:linear-gradient(var(--accent),var(--accent2));transform:scaleY(0);transition:transform .25s var(--ease)}
+.sidebar nav a:hover{background:#1c2a48;padding-right:24px}
+.sidebar nav a:hover::before{transform:scaleY(1)}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:55;display:none}
 .overlay.show{display:block}
-.banner{margin:18px;border-radius:var(--radius);background:linear-gradient(135deg,#3d2c8d,#6c5ce7 60%,#00d2a0);padding:42px 28px;position:relative;overflow:hidden}
-.banner h1{font-size:28px;margin-bottom:8px}
-.banner p{color:#e6e6ff;opacity:.9}
-.section-title{margin:26px 18px 10px;font-size:19px;display:flex;align-items:center;gap:8px}
-.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;padding:0 18px 30px}
-.card{background:var(--card);border-radius:var(--radius);padding:16px;position:relative;border:1px solid #232a45;transition:.2s}
-.card:hover{transform:translateY(-3px);border-color:var(--accent)}
-.card .tag{position:absolute;top:10px;left:10px;background:var(--accent2);color:#06251c;font-size:11px;padding:3px 8px;border-radius:8px;font-weight:700}
-.card .icon{font-size:38px;margin-bottom:8px}
-.card img.pimg{width:100%;height:120px;object-fit:cover;border-radius:10px;margin-bottom:8px;background:#11152200;lazyload}
-.card h3{font-size:15px;margin-bottom:6px;min-height:38px}
-.card .price{font-size:17px;font-weight:700;color:var(--accent2)}
+.banner{margin:18px 18px 0;border-radius:24px 24px 0 0;background:linear-gradient(135deg,#5a0e1a,#1d4ed8 55%,#06b6d4);padding:46px 28px;position:relative;overflow:hidden;box-shadow:0 14px 40px rgba(163,24,44,.35);animation:fadeUp .7s var(--ease) both;background-size:cover;background-position:center}
+.banner.has-bg::before,.banner.has-bg::after{display:none}
+.banner.has-bg{background-blend-mode:overlay}
+.banner.has-bg .banner-overlay{position:absolute;inset:0;background:linear-gradient(135deg,rgba(13,30,60,.72),rgba(13,30,60,.45))}
+.banner::before{content:"";position:absolute;width:260px;height:260px;border-radius:50%;background:radial-gradient(circle,rgba(255,255,255,.25),transparent 70%);top:-120px;right:-60px;animation:float 8s ease-in-out infinite}
+.banner::after{content:"";position:absolute;width:200px;height:200px;border-radius:50%;background:radial-gradient(circle,rgba(255,77,77,.35),transparent 70%);bottom:-110px;left:-40px;animation:float 10s ease-in-out infinite reverse}
+.banner h1{font-size:30px;margin-bottom:10px;position:relative;z-index:1;text-shadow:0 2px 12px rgba(0,0,0,.25)}
+.banner p{color:#f0f0ff;opacity:.95;position:relative;z-index:1;font-size:15px}
+@keyframes float{0%,100%{transform:translate(0,0) scale(1)}50%{transform:translate(-14px,16px) scale(1.08)}}
+
+.apk-promo-banner{display:block;margin:14px 18px 0;border-radius:18px;background:linear-gradient(135deg,#7c3aed,#2563eb 60%,#06b6d4);padding:16px 18px;position:relative;overflow:hidden;text-decoration:none;color:#fff;box-shadow:0 10px 28px rgba(37,99,235,.3);background-size:cover;background-position:center;transition:transform .25s var(--ease)}
+.apk-promo-banner:hover{transform:translateY(-2px)}
+.apk-promo-overlay{position:absolute;inset:0;background:linear-gradient(135deg,rgba(20,20,40,.65),rgba(20,20,40,.45))}
+.apk-promo-content{position:relative;z-index:1;display:flex;align-items:center;gap:14px}
+.apk-promo-logo{width:52px;height:52px;border-radius:14px;object-fit:cover;flex-shrink:0;background:#fff}
+.apk-promo-title{font-weight:700;font-size:16px}
+.apk-promo-sub{font-size:13px;opacity:.9;margin-top:2px}
+.apk-promo-btn{margin-right:auto;flex-shrink:0;white-space:nowrap}
+
+.ticker-bar{margin:0 18px 18px;background:#1d0d12;border:1px solid rgba(255,255,255,.12);border-radius:0 0 24px 24px;border-top:none;display:flex;align-items:center;gap:10px;padding:10px 16px;overflow:hidden;position:relative}
+.ticker-bar .ticker-badge{flex-shrink:0;display:flex;align-items:center;gap:6px;background:var(--accent2);color:#06251c;font-weight:700;font-size:12px;border-radius:20px;padding:5px 12px;z-index:2}
+.ticker-track{flex:1;overflow:hidden;position:relative;mask-image:linear-gradient(90deg,transparent,#000 6%,#000 94%,transparent)}
+.ticker-track-inner{display:flex;gap:48px;white-space:nowrap;animation:tickerScroll 28s linear infinite}
+.ticker-track-inner:hover{animation-play-state:paused}
+.ticker-item{display:inline-flex;align-items:center;gap:8px;font-size:13px;color:var(--text);font-weight:600}
+.ticker-item .ic{color:var(--accent2)}
+@keyframes tickerScroll{from{transform:translateX(0)}to{transform:translateX(-50%)}}
+.live-ticker .ticker-badge{background:var(--accent)}
+.section-title{margin:28px 18px 12px;font-size:20px;font-weight:800;display:flex;align-items:center;gap:10px;position:relative}
+.section-title::before{content:"";width:5px;height:22px;border-radius:6px;background:linear-gradient(var(--accent),var(--accent2))}
+.section-title .ic{color:var(--accent2)}
+.grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(165px,1fr));gap:12px;padding:0 18px 30px}
+.card{background:linear-gradient(180deg,var(--card),#1c2a48);border-radius:var(--radius);padding:12px;position:relative;border:1px solid #28304a;transition:transform .28s var(--ease),box-shadow .28s var(--ease),border-color .28s;overflow:hidden}
+.card::before{content:"";position:absolute;inset:0;border-radius:inherit;padding:1px;background:linear-gradient(135deg,rgba(230,41,75,.6),transparent 40%,rgba(255,77,77,.5));-webkit-mask:linear-gradient(#000 0 0) content-box,linear-gradient(#000 0 0);-webkit-mask-composite:xor;mask-composite:exclude;opacity:0;transition:opacity .3s}
+.card:hover{transform:translateY(-6px);box-shadow:0 16px 40px rgba(0,0,0,.45)}
+.card:hover::before{opacity:1}
+.card .tag{position:absolute;top:12px;left:12px;background:linear-gradient(135deg,var(--accent2),#38bdf8);color:#06251c;font-size:11px;padding:4px 10px;border-radius:20px;font-weight:800;z-index:2;box-shadow:0 4px 12px rgba(255,77,77,.4)}
+.card .icon{font-size:28px;margin-bottom:6px}
+.card img.pimg{width:100%;height:96px;object-fit:cover;border-radius:10px;margin-bottom:8px;transition:transform .4s var(--ease)}
+.card:hover img.pimg{transform:scale(1.07)}
+.card h3{font-size:14px;margin-bottom:5px;min-height:34px;transition:color .2s}
+.card:hover h3{color:var(--accent2)}
+.card .price{font-size:18px;font-weight:800;color:var(--accent2)}
 .card .old{color:var(--muted);text-decoration:line-through;font-size:13px;margin-right:6px}
 .card .desc{font-size:12px;color:var(--muted);margin:6px 0;max-height:36px;overflow:hidden}
-.card .buy{width:100%;margin-top:8px}
-.empty{padding:60px 20px;text-align:center;color:var(--muted)}
-.bottom-nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#141829;border-top:1px solid #262c47;z-index:40}
-.bottom-nav a{flex:1;text-align:center;padding:10px 4px;font-size:11px;color:var(--muted)}
+.card .buy{width:100%;margin-top:10px}
+.empty{padding:60px 20px;text-align:center;color:var(--muted);font-size:15px}
+.empty .ic{color:var(--accent);opacity:.7;margin-bottom:6px}
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:rgba(13,17,30,.92);backdrop-filter:blur(8px) saturate(130%);-webkit-backdrop-filter:blur(8px) saturate(130%);border-top:1px solid rgba(230,41,75,.15);z-index:40;box-shadow:0 -4px 24px rgba(0,0,0,.3)}
+.bottom-nav a{position:relative;flex:1;text-align:center;padding:11px 4px 9px;font-size:11px;font-weight:600;color:var(--muted);transition:color .25s var(--ease)}
+.bottom-nav a .ic{transition:transform .25s var(--ease)}
+.bottom-nav a:active .ic{transform:scale(.85)}
 .bottom-nav a.active{color:var(--accent2)}
+.bottom-nav a.active .ic{transform:translateY(-2px) scale(1.12);filter:drop-shadow(0 4px 8px rgba(255,77,77,.5))}
+.bottom-nav a.active::before{content:"";position:absolute;top:0;left:50%;transform:translateX(-50%);width:30px;height:3px;border-radius:0 0 6px 6px;background:linear-gradient(90deg,var(--accent),var(--accent2))}
 .bottom-nav .bi{font-size:18px;display:block;margin-bottom:2px}
+/* زر الإيداع البارز في الشريط السفلي (يظهر كفقاعة عائمة فوق الشريط) */
+.bottom-nav a.bn-deposit{position:relative;color:#10b981;font-weight:800}
+.bottom-nav a.bn-deposit .bn-deposit-bubble{position:absolute;top:-22px;left:50%;transform:translateX(-50%);width:52px;height:52px;border-radius:50%;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 10px 24px rgba(16,185,129,.55),inset 0 1px 0 rgba(255,255,255,.25);border:4px solid var(--bg);transition:transform .28s var(--ease),box-shadow .28s;animation:depositPulse 2.6s var(--ease) infinite}
+.bottom-nav a.bn-deposit .bn-deposit-bubble .ic{color:#fff;width:24px;height:24px;filter:drop-shadow(0 2px 6px rgba(0,0,0,.4))}
+.bottom-nav a.bn-deposit span{display:block;margin-top:32px;color:#10b981;font-weight:800;letter-spacing:.3px}
+.bottom-nav a.bn-deposit:hover .bn-deposit-bubble{transform:translateX(-50%) translateY(-3px) scale(1.06);box-shadow:0 14px 30px rgba(16,185,129,.7)}
+.bottom-nav a.bn-deposit.active{color:#10b981}
+.bottom-nav a.bn-deposit.active::before{background:linear-gradient(90deg,#10b981,#059669)}
+.bottom-nav a.bn-deposit.active .bn-deposit-bubble{transform:translateX(-50%) scale(1.08);box-shadow:0 16px 34px rgba(16,185,129,.75)}
+@keyframes depositPulse{
+  0%,100%{box-shadow:0 10px 24px rgba(16,185,129,.55),inset 0 1px 0 rgba(255,255,255,.25),0 0 0 0 rgba(16,185,129,.55)}
+  50%{box-shadow:0 10px 24px rgba(16,185,129,.55),inset 0 1px 0 rgba(255,255,255,.25),0 0 0 12px rgba(16,185,129,0)}
+}
 .container{max-width:1000px;margin:0 auto;padding-bottom:80px}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
-.modal{background:var(--card);border-radius:var(--radius);padding:22px;max-width:420px;width:100%;max-height:85vh;overflow:auto}
-.modal h2{margin-bottom:12px}
-.modal input,.modal textarea,.modal select{width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:var(--text);margin-bottom:10px}
-.toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#232a45;padding:12px 20px;border-radius:30px;z-index:300;display:none;font-size:14px}
+.modal-bg{animation:fadeIn .25s ease}
+.modal{background:linear-gradient(180deg,var(--card),#141d33);border-radius:22px;padding:24px;max-width:430px;width:100%;max-height:85vh;overflow:auto;border:1px solid #2a3350;box-shadow:0 24px 60px rgba(0,0,0,.5);animation:modalPop .35s var(--ease)}
+@keyframes modalPop{from{opacity:0;transform:translateY(24px) scale(.96)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes fadeIn{from{opacity:0}to{opacity:1}}
+.modal h2{margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.modal input,.modal textarea,.modal select{width:100%;padding:12px;border-radius:12px;border:1px solid #2a3350;background:#101a2e;color:var(--text);margin-bottom:10px;font-family:inherit;font-size:14px;transition:border-color .2s,box-shadow .2s}
+.modal input:focus,.modal textarea:focus,.modal select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(230,41,75,.2)}
+.toast{position:fixed;bottom:96px;left:50%;transform:translateX(-50%) translateY(20px);background:linear-gradient(135deg,#28304a,#28324e);padding:13px 22px;border-radius:30px;z-index:300;display:none;font-size:14px;font-weight:600;box-shadow:0 12px 30px rgba(0,0,0,.45);border:1px solid #4a2530}
+.toast.show{display:block;animation:toastIn .4s var(--ease) forwards}
+@keyframes toastIn{to{transform:translateX(-50%) translateY(0)}}
 .policy-modal{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:flex;align-items:center;justify-content:center;padding:16px}
 .policy-box{background:var(--card);border-radius:var(--radius);padding:24px;max-width:480px}
 .flash{margin:14px 18px;padding:12px 16px;border-radius:10px;background:#1d3b2e;border:1px solid var(--accent2)}
-.flash.error{background:#3b1d1d;border-color:var(--danger)}
+.flash.error{background:#243152;border-color:var(--danger)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-table th,table td{padding:8px;border-bottom:1px solid #232a45;text-align:right}
+table th,table td{padding:8px;border-bottom:1px solid #28304a;text-align:right}
+table tbody tr{transition:background .15s var(--ease)}
+table tbody tr:hover{background:rgba(37,99,235,.08)}
 .admin-tabs{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px}
-.admin-tabs a{padding:8px 14px;border-radius:10px;background:#232a45;font-size:13px}
+.admin-tabs a{padding:8px 14px;border-radius:10px;background:#28304a;font-size:13px}
+/* Admin sidebar drawer (mobile-first, 3-dot menu opens it) */
+.admin-sidebar-toggle{position:fixed;top:12px;right:12px;z-index:100;width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#10b981,#059669);border:none;color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;box-shadow:0 8px 20px rgba(16,185,129,.4);font-size:22px;font-weight:900}
+.admin-sidebar-toggle:hover{transform:scale(1.05)}
+.admin-sidebar-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:98;display:none}
+.admin-sidebar-backdrop.open{display:block}
+.admin-sidebar-drawer{position:fixed;top:0;bottom:0;right:-320px;width:290px;background:linear-gradient(180deg,#0d1a2f,#131f38);border-left:1px solid rgba(16,185,129,.35);z-index:99;transition:right .3s var(--ease);padding:24px 16px;overflow-y:auto;box-shadow:-20px 0 40px rgba(0,0,0,.5)}
+.admin-sidebar-drawer.open{right:0}
+.admin-sidebar-drawer h3{color:#10b981;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.admin-sidebar-drawer a{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:12px;color:var(--text);font-weight:600;font-size:13.5px;text-decoration:none;transition:.2s;margin-bottom:4px;background:transparent;border:1px solid transparent}
+.admin-sidebar-drawer a:hover{background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3)}
+.admin-sidebar-drawer a.active{background:linear-gradient(135deg,#10b981,#059669);color:#fff;box-shadow:0 6px 16px rgba(16,185,129,.4)}
+@media (max-width:820px){.admin-tabs{display:none}.admin-sidebar-toggle{display:flex}}
 .admin-tabs a.active{background:var(--accent)}
 .admin-box{background:var(--card);margin:0 18px 20px;border-radius:var(--radius);padding:18px;overflow-x:auto}
 .formrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px}
 .badge{padding:2px 8px;border-radius:8px;font-size:11px}
 .badge.pending{background:#5a4a1c}
 .badge.approved{background:#1d3b2e}
-.badge.rejected{background:#3b1d1d}
+.badge.rejected{background:#243152}
 footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
+.ic{width:18px;height:18px;display:inline-block;vertical-align:middle;flex-shrink:0}
+.ic-sm{width:14px;height:14px}
+.ic-lg{width:26px;height:26px}
+.ic-xl{width:38px;height:38px}
+.btn .ic{margin-inline-end:6px;margin-bottom:2px}
+.burger .ic{width:24px;height:24px}
+.sidebar nav a .ic{color:var(--accent2)}
+.bottom-nav a .ic{display:block;margin:0 auto 3px}
+.bottom-nav a.active .ic{color:var(--accent2)}
+.admin-tabs a{display:inline-flex;align-items:center;gap:6px}
+.card .icon-wrap{width:42px;height:42px;flex-shrink:0;border-radius:11px;background:#101a2e;display:flex;align-items:center;justify-content:center;margin-bottom:8px;color:var(--accent2)}
+.card .icon-wrap.emoji-icon{font-size:20px;line-height:1}
+/* Product icon tile — bright & professional (auto-emoji when no image) */
+.card .product-icon-tile{position:relative;width:100%;height:96px;border-radius:12px;margin-bottom:8px;background:linear-gradient(135deg,rgba(16,185,129,.18) 0%,rgba(6,182,212,.15) 60%,rgba(37,99,235,.12) 100%);border:1px solid rgba(16,185,129,.25);display:flex;align-items:center;justify-content:center;overflow:hidden;box-shadow:inset 0 1px 0 rgba(255,255,255,.08)}
+.card .product-icon-tile::before{content:"";position:absolute;inset:-30% -30% auto auto;width:180px;height:180px;background:radial-gradient(circle,rgba(16,185,129,.28),transparent 65%);pointer-events:none}
+.card .product-icon-tile::after{content:"";position:absolute;bottom:-20px;left:-20px;width:80px;height:80px;background:radial-gradient(circle,rgba(6,182,212,.22),transparent 60%);pointer-events:none}
+.card .product-icon-tile .pit-emoji{position:relative;font-size:46px;line-height:1;filter:drop-shadow(0 6px 14px rgba(0,0,0,.35))}
+.card:hover .product-icon-tile .pit-emoji{transform:scale(1.08) rotate(-4deg);transition:transform .3s var(--ease)}
+.wish-btn{position:absolute;top:10px;left:10px;z-index:2;width:32px;height:32px;border-radius:50%;background:rgba(0,0,0,.4);border:1px solid #2a3350;display:flex;align-items:center;justify-content:center;color:#fff;cursor:pointer;transition:.2s}
+.wish-btn .ic{fill:none;stroke:currentColor}
+.wish-btn.active{color:var(--accent2)}
+.wish-btn.active .ic{fill:var(--accent2)}
+.search-bar{display:flex;gap:8px;margin:0 18px 16px}
+.search-bar input{flex:1;padding:12px 14px;border-radius:12px;border:1px solid #2a3350;background:#101a2e;color:var(--text);font-size:14px}
+.search-bar button{width:44px;border-radius:12px;border:1px solid #2a3350;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;cursor:pointer}
+.star-rating{display:flex;gap:2px;color:var(--accent2)}
+.star-rating .ic{width:16px;height:16px}
+.profile-grid{display:grid;grid-template-columns:repeat(4,1fr);gap:10px}
+.profile-stat{display:flex;flex-direction:column;align-items:center;gap:6px;background:#101a2e;border:1px solid #28304a;border-radius:14px;padding:14px 8px;text-align:center}
+.profile-stat strong{font-size:18px}
+.profile-stat span{color:var(--muted);font-size:12px}
+.profile-info-row{display:flex;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #28304a;font-size:13px}
+.profile-info-row:last-child{border-bottom:none}
+.profile-info-row span{color:var(--muted)}
+.achv-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:10px}
+.achv-badge{display:flex;align-items:center;gap:8px;padding:10px 12px;border-radius:12px;background:#101a2e;border:1px solid #28304a;color:var(--muted);font-size:13px;opacity:.5}
+.achv-badge.on{opacity:1;color:var(--text);border-color:var(--accent);background:rgba(230,41,75,.1)}
+.achv-badge.on .ic{color:var(--accent2)}
+.balance-pill-sm{display:flex;align-items:center;gap:5px;background:#101a2e;border:1px solid #28304a;border-radius:20px;padding:6px 12px;font-size:13px;font-weight:700;color:var(--accent2)}
+@media (max-width:480px){.profile-grid{grid-template-columns:repeat(2,1fr)}.achv-grid{grid-template-columns:1fr}}
+.icon-wrap .ic{flex-shrink:0}
+.card img.pimg{display:block;flex-shrink:0}
+.brand .ic{color:var(--accent2)}
+.stat-card{background:#101a2e;border-radius:12px;padding:14px;display:flex;align-items:center;gap:12px}
+.stat-card .ic{color:var(--accent2);background:#1c2840;border-radius:10px;padding:8px;width:36px;height:36px}
+.stat-card .num{font-size:20px;font-weight:800}
+.stat-card .lbl{color:var(--muted);font-size:12px}
+.upload-row{display:flex;gap:8px;align-items:center;margin-bottom:10px;border:1px dashed transparent;border-radius:10px;transition:background .15s,border-color .15s}
+.upload-row.dragover{border-color:var(--accent,#2563eb);background:rgba(37,99,235,.08)}
+.bulk-dropzone{display:flex;flex-direction:column;align-items:center;gap:8px;text-align:center;padding:26px 16px;border:2px dashed #2a3350;border-radius:12px;color:var(--muted);font-size:13px;margin-top:6px;transition:background .15s,border-color .15s}
+.bulk-dropzone.dragover{border-color:var(--accent,#2563eb);background:rgba(37,99,235,.08);color:#fff}
+.upload-row input[type=text],.upload-row input:not([type]),.upload-row textarea{flex:1;margin-bottom:0}
+.upload-row textarea{align-self:stretch}
+.upload-row label.btn{margin:0;white-space:nowrap;cursor:pointer}
+.btn-ai{background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;width:100%;justify-content:center;margin-bottom:10px}
+.btn-ai-icon{flex-shrink:0;width:38px;height:38px;display:flex;align-items:center;justify-content:center;border-radius:10px;border:1px solid #28304a;background:linear-gradient(135deg,#7c3aed,#06b6d4);color:#fff;cursor:pointer}
+.btn-ai-icon:hover{filter:brightness(1.1)}
+.upload-row .preview{width:44px;height:44px;border-radius:8px;object-fit:cover;background:#101a2e}
+.icon-badge{display:inline-flex;align-items:center;justify-content:center;width:22px;height:22px;border-radius:6px}
+.icon-badge.ok{background:#1d3b2e;color:var(--accent2)}
+.icon-badge.no{background:#243152;color:var(--danger)}
 
-/* ===== شارة الرصيد في الشريط العلوي ===== */
-.coin-chip{display:flex;align-items:center;gap:6px;background:linear-gradient(135deg,#3a2f12,#5a4a1c);color:#ffd86b;padding:6px 12px;border-radius:30px;font-weight:700;font-size:13px;border:1px solid #6b5620;white-space:nowrap}
-.coin-chip small{color:#cdb98a;font-weight:600}
+.wallet-balance-card{background:linear-gradient(135deg,#1c2840,#3a1c30);border:1px solid #3f1f2c;border-radius:18px;padding:20px;margin:18px;position:relative;overflow:hidden;box-shadow:0 8px 24px rgba(0,0,0,.25)}
+.wallet-balance-card::before{content:"";position:absolute;inset:0;background:radial-gradient(circle at 100% 0%,rgba(230,41,75,.25),transparent 60%)}
+.wbc-top{display:flex;justify-content:space-between;align-items:center;font-size:13px;color:var(--muted);position:relative;z-index:1}
+.wbc-label{display:flex;align-items:center;gap:6px;color:#fff;font-weight:700}
+.wbc-amount{display:flex;align-items:center;gap:10px;margin:14px 0 2px;position:relative;z-index:1}
+.wbc-amount .ic-xl{color:var(--accent2)}
+.wbc-amount span{font-size:34px;font-weight:800}
+.wbc-amount small{color:var(--muted);font-size:14px}
+.wbc-usd{color:var(--muted);font-size:14px;position:relative;z-index:1}
+.wbc-usd strong{color:#fff;font-size:16px}
+.wbc-progress{margin-top:14px;position:relative;z-index:1}
+.wbc-progress-bar{height:8px;border-radius:6px;background:#101a2e;overflow:hidden}
+.wbc-progress-fill{height:100%;border-radius:6px;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .6s ease}
+.wbc-progress-txt{display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin-top:6px}
 
-/* ===== كاروسيل البنرات ===== */
-.bnr-wrap{margin:16px 18px;border-radius:var(--radius);overflow:hidden;position:relative}
-.bnr-track{display:flex;transition:transform .6s cubic-bezier(.4,0,.2,1)}
-.bnr-slide{min-width:100%;position:relative;aspect-ratio:3/1;background:linear-gradient(135deg,#3d2c8d,#6c5ce7 55%,#00d2a0);display:flex;align-items:center;justify-content:center}
-.bnr-slide img{width:100%;height:100%;object-fit:cover;display:block}
-.bnr-slide .bnr-cap{position:absolute;inset:auto 0 0 0;background:linear-gradient(transparent,rgba(0,0,0,.75));padding:30px 18px 14px;font-weight:700;font-size:16px}
-.bnr-ph{color:#fff;text-align:center;padding:10px}
-.bnr-ph .sz{font-size:12px;opacity:.85;margin-top:6px;background:rgba(0,0,0,.25);display:inline-block;padding:3px 10px;border-radius:20px}
-.bnr-dots{position:absolute;bottom:8px;left:0;right:0;display:flex;gap:6px;justify-content:center;z-index:3}
-.bnr-dots span{width:8px;height:8px;border-radius:50%;background:rgba(255,255,255,.45);cursor:pointer;transition:.2s}
-.bnr-dots span.on{background:#fff;width:22px;border-radius:5px}
+.topup-method{background:#101a2e;border-radius:10px;padding:12px;margin-bottom:8px;transition:transform .15s ease}
+.topup-method:hover{transform:translateY(-2px)}
+.topup-method-head strong{display:flex;align-items:center;gap:6px;font-size:14px}
+.topup-method-addr{display:flex;align-items:center;gap:8px;margin-top:6px}
+.topup-method-addr code{flex:1;font-family:monospace;word-break:break-all;color:var(--muted);font-size:12px}
+.cat-chips{display:flex;gap:10px;overflow-x:auto;padding:0 18px 14px;scrollbar-width:none}
+.cat-chips::-webkit-scrollbar{display:none}
+.cat-chip{display:flex;align-items:center;gap:6px;flex-shrink:0;background:#18223a;border:1px solid #28304a;border-radius:30px;padding:8px 16px;font-size:13px;font-weight:600;color:var(--text);transition:transform .2s var(--ease),border-color .2s}
+.cat-chip:hover{transform:translateY(-2px);border-color:var(--accent2)}
+.cat-chip.active{background:linear-gradient(135deg,var(--accent),var(--accent2));border-color:transparent;color:#fff}
+.cat-tiles{display:grid;grid-template-columns:repeat(auto-fill,minmax(140px,1fr));gap:12px;padding:0 18px 16px}
+.cat-tile{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:flex-end;aspect-ratio:1/1;border-radius:16px;overflow:hidden;background:linear-gradient(135deg,#1d4ed8,#06b6d4);box-shadow:0 6px 16px rgba(0,0,0,.25);transition:transform .2s var(--ease)}
+.cat-tile:hover{transform:translateY(-4px) scale(1.03)}
+.cat-tile img{position:absolute;inset:0;width:100%;height:100%;object-fit:cover}
+.cat-tile-icon{flex:1;display:flex;align-items:center;justify-content:center;color:#fff;opacity:.9}
+.cat-tile-label{position:relative;z-index:1;width:100%;text-align:center;background:rgba(0,0,0,.55);color:#fff;font-weight:800;font-size:13px;padding:8px 4px}
+.cat-tile-mini{width:60px;height:34px;border-radius:6px;overflow:hidden;position:relative}
+.cat-tile-mini img{width:100%;height:100%;object-fit:cover}
+.banner-carousel{position:relative;margin:0 18px 14px;border-radius:14px;overflow:hidden}
+.banner-carousel-track{display:flex;transition:transform .5s var(--ease)}
+.banner-carousel-slide{flex:0 0 100%;display:block}
+.banner-carousel-slide img{width:100%;height:var(--banner-h,160px);object-fit:cover;display:block}
+.banner-carousel-dots{position:absolute;bottom:10px;left:0;right:0;display:flex;justify-content:center;gap:6px}
+.bc-dot{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.45);cursor:pointer;transition:.2s}
+.bc-dot.active{background:#fff;width:18px;border-radius:4px}
+.soon-card{opacity:.85}
+.balance-pill{display:flex;align-items:center;gap:8px;background:linear-gradient(135deg,#1c2840,#2e161d);border:1px solid #2a3350;border-radius:30px;padding:10px 16px;margin-bottom:16px;font-size:14px;color:var(--muted)}
+.balance-pill strong{color:var(--accent2)}
+.buy-modal label{display:block;font-size:13px;color:var(--muted);margin-bottom:10px}
+/* ============ Policy modal professional ============ */
+.policy-modal-pro{position:fixed;inset:0;background:rgba(0,0,0,.85);backdrop-filter:blur(6px);-webkit-backdrop-filter:blur(6px);z-index:9999;display:flex;align-items:center;justify-content:center;padding:20px}
+.policy-box-pro{max-width:460px;width:100%;background:linear-gradient(180deg,#052e2b,#064e3b);border:1px solid rgba(16,185,129,.35);border-radius:24px;padding:0;overflow:hidden;box-shadow:0 30px 80px rgba(0,0,0,.7),0 0 0 1px rgba(16,185,129,.2)}
+.policy-hero{padding:32px 24px 20px;text-align:center;background:linear-gradient(180deg,rgba(16,185,129,.18),transparent);position:relative}
+.policy-hero-icon{width:80px;height:80px;margin:0 auto 16px;border-radius:24px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 14px 36px rgba(16,185,129,.5),inset 0 1px 0 rgba(255,255,255,.2);animation:policyPulse 2.5s ease-in-out infinite}
+.policy-hero-icon .ic{color:#fff;width:40px;height:40px}
+@keyframes policyPulse{0%,100%{box-shadow:0 14px 36px rgba(16,185,129,.5),inset 0 1px 0 rgba(255,255,255,.2),0 0 0 0 rgba(16,185,129,.5)}50%{box-shadow:0 14px 36px rgba(16,185,129,.5),inset 0 1px 0 rgba(255,255,255,.2),0 0 0 12px rgba(16,185,129,0)}}
+.policy-hero h2{font-size:22px;font-weight:900;color:#fff;margin:0 0 8px}
+.policy-hero p{font-size:13.5px;color:#a7f3d0;margin:0;line-height:1.6}
+.policy-checks{padding:16px 24px;display:flex;flex-direction:column;gap:12px}
+.policy-check{display:flex;align-items:center;gap:10px;cursor:pointer;padding:10px 12px;border-radius:12px;background:rgba(0,0,0,.28);border:1px solid rgba(16,185,129,.2);transition:.2s}
+.policy-check:hover{background:rgba(16,185,129,.1)}
+.policy-check input{opacity:0;width:0;height:0;position:absolute}
+.pc-box{flex-shrink:0;width:22px;height:22px;border:2px solid rgba(16,185,129,.4);border-radius:6px;transition:.2s;position:relative;background:rgba(0,0,0,.3)}
+.policy-check input:checked ~ .pc-box{background:linear-gradient(135deg,#10b981,#059669);border-color:#10b981}
+.policy-check input:checked ~ .pc-box::after{content:"✓";position:absolute;inset:0;display:flex;align-items:center;justify-content:center;color:#fff;font-weight:900;font-size:14px}
+.pc-text{font-size:13px;color:var(--text);flex:1}
+.pc-text a{color:#6ee7b7;text-decoration:underline;font-weight:700}
+.policy-actions{padding:16px 24px 24px;display:flex;flex-direction:column;gap:10px}
+.btn-policy-accept{padding:14px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;border:none;border-radius:14px;font-weight:800;font-family:inherit;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:6px;box-shadow:0 12px 28px rgba(16,185,129,.4);transition:.25s}
+.btn-policy-accept:hover{transform:translateY(-2px);box-shadow:0 16px 34px rgba(16,185,129,.55)}
+.btn-policy-reject{padding:12px;text-align:center;color:var(--muted);font-size:12.5px;text-decoration:none;border-radius:12px;background:rgba(255,255,255,.05);border:1px solid rgba(255,255,255,.1);transition:.2s}
+.btn-policy-reject:hover{background:rgba(255,255,255,.1);color:var(--text)}
+/* ============ Home Categories (SGC style, professional emerald) ============ */
+.home-cats{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:12px;padding:0 18px 6px}
+.home-cat-card{position:relative;display:flex;align-items:center;gap:12px;padding:14px 16px;border-radius:18px;background:linear-gradient(140deg,rgba(6,78,59,.5) 0%,rgba(6,95,70,.28) 60%,rgba(0,0,0,.55) 100%);border:1px solid rgba(16,185,129,.35);text-decoration:none;color:var(--text);box-shadow:0 12px 30px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.05);overflow:hidden;transition:transform .3s var(--ease),box-shadow .3s,border-color .3s}
+.home-cat-card::before{content:"";position:absolute;inset:-40% -20% auto auto;width:220px;height:220px;background:radial-gradient(circle,rgba(16,185,129,.3),transparent 65%);pointer-events:none;transition:transform .5s var(--ease)}
+.home-cat-card:hover{transform:translateY(-4px);box-shadow:0 20px 44px rgba(16,185,129,.35);border-color:#10b981}
+.home-cat-card:hover::before{transform:scale(1.15)}
+.hcc-icon{width:54px;height:54px;flex-shrink:0;border-radius:16px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 8px 18px rgba(16,185,129,.4),inset 0 1px 0 rgba(255,255,255,.25);position:relative}
+.hcc-emoji{font-size:28px;filter:drop-shadow(0 3px 6px rgba(0,0,0,.35))}
+.hcc-body{flex:1;min-width:0;position:relative}
+.hcc-body strong{display:block;font-size:15px;font-weight:800;color:#fff;line-height:1.3}
+.hcc-body small{display:block;font-size:11px;color:#a7f3d0;margin-top:2px;line-height:1.4}
+.hcc-arrow{width:20px;height:20px;color:#10b981;flex-shrink:0;transition:transform .3s var(--ease)}
+[dir="rtl"] .hcc-arrow{transform:scaleX(-1)}
+.home-cat-card:hover .hcc-arrow{transform:translateX(-4px) scaleX(-1)}
+/* ============ Category page hero ============ */
+.cat-hero{margin:16px 18px 18px;padding:26px 22px;border-radius:22px;background:linear-gradient(140deg,#052e2b 0%,#064e3b 60%,#065f46 100%);border:1px solid rgba(16,185,129,.35);box-shadow:0 20px 50px rgba(0,0,0,.4);position:relative;overflow:hidden;text-align:center}
+.cat-hero::before{content:"";position:absolute;inset:-30% -20% auto auto;width:280px;height:280px;background:radial-gradient(circle,rgba(16,185,129,.35),transparent 65%);pointer-events:none}
+.cat-hero-icon{width:78px;height:78px;margin:0 auto 12px;border-radius:22px;background:linear-gradient(135deg,#10b981,#059669);display:flex;align-items:center;justify-content:center;box-shadow:0 12px 30px rgba(16,185,129,.45);position:relative}
+.cat-hero-icon span{font-size:40px;filter:drop-shadow(0 4px 10px rgba(0,0,0,.4))}
+.cat-hero h1{position:relative;font-size:24px;font-weight:900;color:#fff;margin:0 0 6px}
+.cat-hero p{position:relative;color:#a7f3d0;font-size:13.5px;margin:0;line-height:1.6}
+/* ============ Product detail Pro (with packages) ============ */
+.product-detail-pro{padding:0 0 20px}
+.pdp-hero{display:flex;align-items:center;gap:14px;padding:16px 18px;background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(6,182,212,.08));border-bottom:1px solid rgba(16,185,129,.25)}
+.pdp-img{width:96px;height:96px;border-radius:20px;object-fit:cover;box-shadow:0 12px 24px rgba(0,0,0,.35),inset 0 1px 0 rgba(255,255,255,.1);flex-shrink:0}
+.pdp-emoji{display:flex;align-items:center;justify-content:center;font-size:56px;background:linear-gradient(135deg,#10b981,#059669)}
+.pdp-title h1{font-size:20px;font-weight:900;color:#fff;margin:0 0 4px;line-height:1.3}
+.pdp-title p{font-size:13px;color:var(--muted);margin:0;line-height:1.5}
+.pdp-section-title{margin:22px 18px 12px;font-size:15px;font-weight:800;color:var(--accent2);display:flex;align-items:center;gap:6px}
+.pdp-info{padding:16px 18px}
+/* ============ Packages grid ============ */
+.packages-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(150px,1fr));gap:10px;padding:0 18px}
+.pkg-card{position:relative;padding:16px 12px;border-radius:16px;background:linear-gradient(180deg,rgba(6,78,59,.3),rgba(0,0,0,.35));border:2px solid rgba(16,185,129,.25);cursor:pointer;transition:transform .25s var(--ease),border-color .3s,box-shadow .3s;text-align:center;color:var(--text);display:flex;flex-direction:column;align-items:center;gap:6px;overflow:hidden}
+.pkg-card::after{content:"";position:absolute;inset:-40% -20% auto auto;width:150px;height:150px;background:radial-gradient(circle,rgba(16,185,129,.2),transparent 60%);pointer-events:none;transition:.4s}
+.pkg-card:hover{transform:translateY(-3px);border-color:#10b981;box-shadow:0 14px 30px rgba(16,185,129,.35)}
+.pkg-card:hover::after{transform:scale(1.3)}
+.pkg-tag{position:absolute;top:8px;right:8px;background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:8px;box-shadow:0 4px 10px rgba(245,158,11,.4);z-index:1}
+.pkg-emoji{font-size:32px;line-height:1;filter:drop-shadow(0 4px 10px rgba(0,0,0,.35));margin-bottom:2px}
+.pkg-name{font-size:13px;font-weight:700;color:#fff;line-height:1.3}
+.pkg-qty{font-size:11px;color:#6ee7b7;font-weight:600}
+.pkg-price-wrap{margin-top:6px;display:flex;flex-direction:column;align-items:center;gap:2px}
+.pkg-old{font-size:11px;color:var(--muted);text-decoration:line-through}
+.pkg-price{font-size:18px;font-weight:900;color:#10b981;text-shadow:0 4px 10px rgba(16,185,129,.4)}
+/* Buy Modal Pro — احترافي جداً */
+.buy-modal-pro{max-width:460px;width:94%;padding:0;overflow:hidden;background:linear-gradient(180deg,#0d1a2f 0%,#131f38 100%);border:1px solid rgba(37,99,235,.35);border-radius:22px;box-shadow:0 30px 80px rgba(0,0,0,.7),inset 0 1px 0 rgba(255,255,255,.05);position:relative;max-height:92vh;overflow-y:auto}
+.buy-close{position:absolute;top:12px;left:12px;width:32px;height:32px;border-radius:50%;background:rgba(255,255,255,.1);border:none;color:#fff;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:10;transition:.2s}
+.buy-close:hover{background:rgba(239,68,68,.85);transform:rotate(90deg)}
+.buy-hero{padding:28px 20px 20px;text-align:center;background:linear-gradient(180deg,rgba(37,99,235,.15),transparent);position:relative}
+.buy-hero::before{content:"";position:absolute;top:-40px;left:50%;transform:translateX(-50%);width:200px;height:200px;background:radial-gradient(circle,rgba(6,182,212,.25),transparent 60%);pointer-events:none}
+.buy-hero-icon{width:76px;height:76px;margin:0 auto 14px;border-radius:22px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;box-shadow:0 12px 28px rgba(37,99,235,.45),inset 0 1px 0 rgba(255,255,255,.2);position:relative;overflow:hidden}
+.buy-hero-icon img{width:100%;height:100%;object-fit:cover;border-radius:22px}
+.buy-hero-icon .ic{color:#fff;width:38px;height:38px}
+.buy-hero h2{font-size:19px;font-weight:800;color:#fff;margin:0 0 6px;position:relative}
+.buy-hero-desc{color:var(--muted);font-size:13px;line-height:1.6;position:relative;margin:0;max-width:340px;margin:0 auto}
+.buy-price-card{margin:16px 18px;padding:14px 16px;border-radius:14px;background:rgba(0,0,0,.35);border:1px solid rgba(37,99,235,.25)}
+.bpc-row{display:flex;justify-content:space-between;align-items:center;padding:6px 0;font-size:14px;color:var(--muted)}
+.bpc-row strong{color:var(--text);font-weight:800}
+.bpc-total{display:flex;justify-content:space-between;align-items:center;padding:10px 0 4px;border-top:1px dashed rgba(37,99,235,.3);margin-top:6px;font-size:16px}
+.bpc-total span{color:var(--muted);font-weight:600}
+.bpc-total strong{color:var(--accent2);font-size:22px;font-weight:900;text-shadow:0 4px 12px rgba(6,182,212,.35)}
+.buy-balance-info{margin:0 18px 14px;padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,rgba(16,185,129,.12),rgba(6,182,212,.08));border:1px solid rgba(16,185,129,.3)}
+.bbi-row{display:flex;justify-content:space-between;align-items:center;padding:4px 0;font-size:13.5px}
+.bbi-label{display:flex;align-items:center;gap:6px;color:var(--muted);font-weight:600}
+.bbi-value{font-weight:800;color:#6ee7b7;font-size:15px}
+.buy-field-label{display:flex !important;align-items:center;gap:6px;color:var(--accent2) !important;font-weight:700 !important;font-size:14px !important;margin:0 18px 8px !important}
+.buy-input{width:calc(100% - 36px);margin:0 18px 6px;padding:14px 16px;background:rgba(0,0,0,.35);border:1px solid rgba(6,182,212,.35);border-radius:12px;color:#fff;font-family:inherit;font-size:15px;font-weight:700;transition:.2s}
+.buy-input:focus{outline:none;border-color:var(--accent2);box-shadow:0 0 0 3px rgba(6,182,212,.2);background:rgba(0,0,0,.5)}
+.buy-hint{margin:0 18px 12px;font-size:12px;color:var(--muted);line-height:1.5}
+#buyModal .buy-extra{margin:0 18px 12px;background:rgba(0,0,0,.3);border:1px solid rgba(6,182,212,.25)}
+.buy-insufficient{margin:0 18px 12px;padding:14px 16px;border-radius:14px;background:linear-gradient(135deg,rgba(239,68,68,.15),rgba(239,68,68,.05));border:1px solid rgba(239,68,68,.35);display:flex;gap:12px;align-items:flex-start;color:#fecaca}
+.buy-insufficient .ic{color:#ef4444;flex-shrink:0;margin-top:2px}
+.buy-insufficient strong{display:block;color:#fca5a5;font-size:14px;margin-bottom:4px}
+.buy-insufficient p{font-size:12.5px;color:#fecaca;margin:0 0 6px}
+.buy-insufficient span{color:#fef08a;font-weight:800}
+.buy-actions{display:flex;gap:10px;padding:16px 18px 20px;background:rgba(0,0,0,.25)}
+.btn-buy-confirm{flex:2;padding:15px;border:none;border-radius:14px;background:linear-gradient(135deg,#10b981,#059669);color:#fff;font-weight:800;font-family:inherit;font-size:14.5px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;box-shadow:0 10px 24px rgba(16,185,129,.4);transition:.25s var(--ease);text-shadow:0 1px 2px rgba(0,0,0,.25)}
+.btn-buy-confirm:hover:not(:disabled){transform:translateY(-2px);box-shadow:0 14px 30px rgba(16,185,129,.55)}
+.btn-buy-confirm:disabled{background:linear-gradient(135deg,#6b7280,#4b5563);cursor:not-allowed;box-shadow:none;opacity:.7}
+.btn-buy-cancel{flex:1;padding:15px;border:1px solid rgba(255,255,255,.2);border-radius:14px;background:rgba(255,255,255,.05);color:var(--text);font-weight:700;font-family:inherit;font-size:14px;cursor:pointer;transition:.2s}
+.btn-buy-cancel:hover{background:rgba(255,255,255,.12)}
+.buy-extra{background:#101a2e;border:1px solid #2a3350;border-radius:10px;margin-bottom:10px;overflow:hidden}
+.buy-extra summary{cursor:pointer;padding:10px 12px;font-size:13px;color:var(--muted);display:flex;align-items:center;gap:6px;list-style:none}
+.buy-extra summary::-webkit-details-marker{display:none}
+.buy-extra[open] summary{border-bottom:1px solid #2a3350}
+.buy-extra label,.buy-extra .topup-method{margin:10px 12px}
+.buy-extra .topup-method:last-of-type{margin-bottom:6px}
+.buy-extra a{margin:0 12px 10px}
+.upload-box{position:relative;border:2px dashed #2a3350;border-radius:var(--radius,12px);background:#101a2e;padding:18px 14px;text-align:center;cursor:pointer;transition:border-color .2s,background .2s;display:flex;flex-direction:column;align-items:center;gap:6px;margin-top:6px}
+.upload-box:hover,.upload-box.dragover{border-color:var(--accent2);background:#141d33}
+.upload-box input[type=file]{position:absolute;inset:0;opacity:0;cursor:pointer}
+.upload-box .ic{color:var(--accent2)}
+.upload-box-text{font-size:13px;color:var(--muted)}
+.upload-box-text strong{color:var(--text)}
+.upload-box-hint{font-size:11px;color:var(--muted);opacity:.7}
+.upload-box.has-file{border-color:var(--accent2);border-style:solid}
+.upload-box-preview{display:flex;align-items:center;gap:10px;width:100%}
+.upload-box-preview img{width:56px;height:56px;border-radius:8px;object-fit:cover;flex-shrink:0}
+.upload-box-preview-info{flex:1;text-align:right;overflow:hidden}
+.upload-box-preview-info span{display:block;font-size:12px;color:var(--text);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.upload-box-remove{background:#1c2840;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;flex-shrink:0;position:relative;z-index:2}
+.upload-box-remove:hover{color:var(--danger);background:#3b1d22}
+.btn-copy{background:#1c2840;border:none;color:var(--muted);border-radius:8px;padding:6px;cursor:pointer;display:flex;transition:color .2s,background .2s}
+.btn-copy:hover{color:#fff;background:#3a1c29}
+.btn-copy.copied{color:var(--accent2);background:#1d3b2e}
 
-/* ===== شريط الأخبار المتحرك ===== */
-.news-bar{margin:0 18px 16px;display:flex;align-items:stretch;background:linear-gradient(90deg,#1a1030,#241540);border:1px solid #3a2a5e;border-radius:12px;overflow:hidden;box-shadow:0 0 24px rgba(108,92,231,.25)}
-.news-live{display:flex;align-items:center;gap:6px;background:var(--danger);color:#fff;font-weight:800;font-size:12px;padding:0 12px;white-space:nowrap}
-.news-live .dot{width:8px;height:8px;border-radius:50%;background:#fff;animation:pulse 1s infinite}
-@keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
-.news-track-wrap{flex:1;overflow:hidden;position:relative}
-.news-track{display:inline-flex;white-space:nowrap;padding:10px 0;animation:news-scroll 22s linear infinite;will-change:transform}
-.news-track:hover{animation-play-state:paused}
-.news-track .item{display:inline-flex;align-items:center;gap:6px;padding:0 26px;font-size:14px;font-weight:600;color:#e9e4ff;position:relative}
-.news-track .item::after{content:"•";position:absolute;left:-3px;color:var(--accent)}
-@keyframes news-scroll{0%{transform:translateX(0)}100%{transform:translateX(-50%)}}
+.login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px 16px;background:radial-gradient(1100px 600px at 50% -10%,rgba(230,41,75,.16),transparent 60%),var(--bg)}
+.login-wrap{width:100%;max-width:440px}
+.login-top{display:flex;align-items:center;justify-content:space-between;margin-bottom:22px}
+.login-back{display:flex;align-items:center;gap:8px;background:#18223a;border:1px solid #28304a;border-radius:30px;padding:9px 16px;font-size:13px;font-weight:600;color:var(--text);transition:.2s var(--ease)}
+.login-back:hover{border-color:var(--accent)}
+.login-logo{display:flex;align-items:center;gap:8px;font-weight:800;font-size:18px}
+.login-logo img{width:34px;height:34px;border-radius:50%;object-fit:cover}
+.login-card{background:linear-gradient(180deg,var(--card),#141d33);border:1px solid #2a3350;border-radius:24px;padding:28px 24px;box-shadow:0 24px 60px rgba(0,0,0,.5)}
+.login-card h2{font-size:24px;margin-bottom:6px;color:var(--accent2)}
+.login-card .sub{color:var(--muted);font-size:13px;margin-bottom:20px}
+.login-tabs{display:flex;gap:10px;margin-bottom:20px}
+.login-tabs button{flex:1;padding:11px;border-radius:12px;border:1px solid #2a3350;background:transparent;color:var(--muted);font-weight:700;font-size:14px;cursor:pointer;transition:.2s var(--ease)}
+.login-tabs button.active{background:#fff;color:#16213b;border-color:#fff}
+.login-card label{display:block;font-size:13px;color:var(--text);font-weight:600;margin-bottom:8px}
+.login-card input{width:100%;padding:13px 14px;border-radius:12px;border:1px solid #2a3350;background:#101a2e;color:var(--text);margin-bottom:16px;font-size:14px}
+.login-remember{display:flex;align-items:center;justify-content:flex-end;gap:8px;font-size:13px;color:var(--muted);margin-bottom:18px}
+.login-submit{width:100%;padding:14px;border-radius:12px;border:none;background:#fff;color:#16213b;font-weight:800;font-size:15px;cursor:pointer;display:flex;align-items:center;justify-content:center;gap:8px;transition:.2s var(--ease)}
+.login-submit:hover{transform:translateY(-2px)}
+.login-forgot{display:block;text-align:center;color:var(--muted);font-size:13px;margin-top:16px}
+.login-divider{display:flex;align-items:center;gap:10px;margin:22px 0;color:var(--muted);font-size:13px}
+.login-divider::before,.login-divider::after{content:'';flex:1;height:1px;background:#2a3350}
+.social-grid{display:grid;grid-template-columns:repeat(3,1fr);gap:10px}
+.social-btn{position:relative;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:8px;padding:18px 6px;border-radius:14px;border:1px solid #2a3350;background:#141d33;color:var(--text);font-size:18px;transition:.2s var(--ease)}
+.social-btn:not(.soon):hover{border-color:var(--accent2);transform:translateY(-2px)}
+.social-btn.soon{opacity:.55;cursor:not-allowed;pointer-events:none}
+.social-btn .soon-tag{font-size:10px;color:var(--muted);font-weight:600}
 
-/* ===== مجموعة الأقسام (قائمة منسدلة) ===== */
-.group-box{margin:0 18px 8px}
-.group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--card);border:1px solid #2a3050;border-radius:12px;padding:12px 16px;cursor:pointer;font-weight:700}
-.group-head .chev{transition:.3s}
-.group-box.open .group-head .chev{transform:rotate(180deg)}
-.group-body{display:none;flex-wrap:wrap;gap:8px;padding:12px 2px 4px}
-.group-box.open .group-body{display:flex}
-.chip{background:#232a45;border:1px solid #2f3656;padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;transition:.2s}
-.chip:hover,.chip.on{background:var(--accent);border-color:var(--accent)}
+.tx-list{display:flex;flex-direction:column;gap:2px}
+.tx-row{display:flex;align-items:center;gap:10px;padding:10px 0;border-bottom:1px solid #28304a}
+.tx-row:last-child{border-bottom:none}
+.tx-icon{display:flex;align-items:center;justify-content:center;width:32px;height:32px;border-radius:9px;flex-shrink:0}
+.tx-icon.pos{background:#1d3b2e;color:var(--accent2)}
+.tx-icon.neg{background:#243152;color:var(--danger)}
+.tx-info{display:flex;flex-direction:column;flex:1;min-width:0}
+.tx-info strong{font-size:13px}
+.tx-info span{font-size:12px;color:var(--muted);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.tx-amount{font-weight:800;font-size:14px}
+.tx-amount.pos{color:var(--accent2)}
+.tx-amount.neg{color:var(--danger)}
 
-/* ===== تحسين كروت الشراء ===== */
-.card{background:linear-gradient(160deg,#1d2440,#161b2e);border:1px solid #2a3257}
-.card:hover{transform:translateY(-4px);border-color:var(--accent);box-shadow:0 12px 30px rgba(108,92,231,.25)}
-.card .pimg-wrap{width:100%;aspect-ratio:1/1;border-radius:12px;overflow:hidden;background:#11152a;display:flex;align-items:center;justify-content:center;margin-bottom:10px}
-.card .pimg-wrap img{width:100%;height:100%;object-fit:cover}
-.card .pimg-wrap .ph-icon{font-size:46px}
-.card h3{font-size:15px;margin:2px 0 8px;text-align:center;min-height:auto;font-weight:700}
-.card .price-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:4px}
-.card .price{font-size:18px;font-weight:800;background:linear-gradient(135deg,#00d2a0,#5fffd0);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.card .buy{background:linear-gradient(135deg,#6c5ce7,#00d2a0);color:#fff}
+.breadcrumb a{color:var(--accent2)}
+.product-detail{display:flex;flex-direction:column;gap:16px;margin:0 18px 24px;background:var(--card);border-radius:var(--radius);padding:18px;max-width:calc(100% - 36px)}
+@media(min-width:640px){.product-detail{flex-direction:row;align-items:flex-start}}
+.pd-img{width:100%;max-width:320px;border-radius:14px;object-fit:cover;color:var(--accent2);background:#101a2e;min-height:200px}
+.pd-info{flex:1}
+.pd-info h1{font-size:22px;margin-bottom:8px}
+.pd-price{margin-bottom:12px}
+.pd-desc{color:var(--muted);line-height:1.8;margin-bottom:16px}
+.apps-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
+.app-card{display:flex;flex-direction:column}
+.card-link-overlay{color:transparent!important}
+/* Features list */
+.app-features-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;padding:0 18px 12px}
+.feature-item{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:14px;background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(6,182,212,.05));border:1px solid rgba(16,185,129,.2)}
+.feature-item span{font-size:24px;flex-shrink:0;line-height:1}
+.feature-item div{flex:1;min-width:0}
+.feature-item strong{display:block;font-size:14px;color:#fff;font-weight:700;margin-bottom:2px}
+.feature-item small{font-size:12px;color:var(--muted);display:block;line-height:1.4}
+/* FAQ */
+.app-faq{padding:0 18px 12px;display:flex;flex-direction:column;gap:8px}
+.app-faq details{background:linear-gradient(135deg,rgba(6,78,59,.35),rgba(0,0,0,.28));border:1px solid rgba(16,185,129,.25);border-radius:12px;overflow:hidden;transition:.2s}
+.app-faq details[open]{border-color:#10b981;box-shadow:0 6px 16px rgba(16,185,129,.15)}
+.app-faq summary{cursor:pointer;padding:12px 14px;font-weight:700;color:#fff;font-size:13.5px;list-style:none;display:flex;justify-content:space-between;align-items:center}
+.app-faq summary::-webkit-details-marker{display:none}
+.app-faq summary::after{content:"+";color:#10b981;font-weight:900;font-size:18px;transition:.2s}
+.app-faq details[open] summary::after{transform:rotate(45deg)}
+.app-faq p{padding:0 14px 14px;color:var(--muted);font-size:13px;line-height:1.7;margin:0}
+.app-card .pimg.app-icon-img{width:64px;height:64px;border-radius:16px;margin:0 auto 8px;object-fit:cover}
+.app-kind-tag{background:linear-gradient(135deg,var(--accent),var(--accent2))}
+.app-stats{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:6px 0}
+.app-stats span{display:flex;align-items:center;gap:4px}
+.app-detail{margin:0 18px 24px;background:var(--card);border-radius:var(--radius);padding:18px}
+.app-detail-head{display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap}
+.app-detail-icon{width:88px;height:88px;border-radius:20px;object-fit:cover;flex-shrink:0}
+.app-detail-info{flex:1;min-width:200px}
+.app-detail-info h1{font-size:22px;margin-bottom:6px}
+.app-detail-meta{display:flex;gap:14px;color:var(--muted);font-size:13px;margin-bottom:8px;flex-wrap:wrap}
+.app-detail-stats{margin:8px 0 14px}
+.app-download-btn{display:inline-flex;width:100%;justify-content:center;margin-top:6px}
+.app-screens{display:flex;gap:10px;overflow-x:auto;margin:18px 0;scrollbar-width:none}
+.app-screens img{height:280px;border-radius:14px;flex-shrink:0}
+.app-short-desc{color:var(--muted);margin:14px 0;line-height:1.7}
+.app-desc{color:var(--text);line-height:1.8;margin-bottom:10px;white-space:pre-line}
+.app-permissions{margin:0 0 10px 0;padding-right:20px;color:var(--muted);line-height:1.8}
+.app-info-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-bottom:10px}
+.app-info-grid div{background:#18223a;border-radius:10px;padding:10px 12px;display:flex;flex-direction:column;gap:4px}
+.app-info-grid span{color:var(--muted);font-size:12px}
+.app-info-grid strong{font-size:13px;word-break:break-all}
+.app-stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin:18px 0}
+.app-stat-box{background:#18223a;border:1px solid #232f4d;border-radius:14px;padding:12px;text-align:center;display:flex;flex-direction:column;align-items:center;gap:4px}
+.app-stat-box .ic-sm{color:var(--accent)}
+.app-stat-box span{color:var(--muted);font-size:12px}
+.app-stat-box strong{font-size:14px}
+.app-popularity-bar{position:relative;background:#18223a;border-radius:30px;height:34px;overflow:hidden;margin-bottom:14px}
+.app-popularity-fill{position:absolute;inset:0 auto 0 0;background:linear-gradient(90deg,#16a34a,#22c55e);border-radius:30px}
+.app-popularity-bar span{position:relative;z-index:1;display:flex;height:100%;align-items:center;justify-content:center;font-size:13px;font-weight:700;color:#fff}
+.app-vote-row{display:flex;gap:10px;margin-bottom:14px}
+.app-vote-btn{flex:1;display:flex;align-items:center;justify-content:center;gap:8px;padding:12px;border-radius:14px;border:1px solid #232f4d;background:#18223a;color:var(--text);font-weight:700;cursor:pointer}
+.app-vote-btn.down{color:#f87171}
+.app-vote-btn.up{color:#4ade80}
+.app-vote-btn:disabled{opacity:.6;cursor:default}
+.app-action-buttons{display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
+.app-action-buttons .btn{width:100%;justify-content:center}
+.app-btn-download{background:linear-gradient(135deg,#06b6d4,#0ea5e9);color:#fff}
+.app-btn-telegram{background:#2563eb;color:#fff}
+.app-btn-notify{background:#16a34a;color:#fff}
+.download-page{display:flex;justify-content:center;padding:30px 18px 50px}
+.download-card{width:100%;max-width:440px;background:var(--card);border-radius:var(--radius);padding:30px 24px;text-align:center;box-shadow:var(--shadow);animation:fadeUp .55s var(--ease) both}
+.download-app-icon{transition:transform .3s var(--ease)}
+.download-card:hover .download-app-icon{transform:scale(1.05) rotate(-2deg)}
+.download-app-icon{width:90px;height:90px;border-radius:22px;object-fit:cover;margin:0 auto 14px}
+.download-card h1{font-size:20px;margin-bottom:6px}
+.download-sub{color:var(--muted);font-size:13px;margin-bottom:18px}
+.download-ad-slot{margin:14px auto;min-height:90px;max-width:100%;overflow:hidden;border-radius:10px;display:flex;align-items:center;justify-content:center;background:rgba(255,255,255,.03);contain:layout}
+.download-ad-slot img,.download-ad-slot iframe,.download-ad-slot ins,.download-ad-slot video,.download-ad-slot embed,.download-ad-slot object{max-width:100%!important;height:auto}
+.download-ad-slot iframe{width:100%}
+.download-countdown{margin:18px 0}
+.dl-progress{height:8px;border-radius:8px;background:#18223a;overflow:hidden;margin-bottom:10px}
+.dl-progress-fill{height:100%;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width 1s linear}
+.download-meta{display:flex;justify-content:center;gap:14px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:16px 0}
+.download-meta span{display:flex;align-items:center;gap:4px}
+.back-link{display:inline-flex;align-items:center;gap:6px;color:var(--muted);font-size:13px;margin-top:10px}
+.dl-fallback{margin-top:18px;padding:14px;border-radius:14px;background:rgba(255,194,51,.08);border:1px solid rgba(255,194,51,.35);animation:fadeUp .5s var(--ease) both,pulseBorder 2.4s ease-in-out infinite}
+.dl-fallback p{font-size:13px;color:var(--text);margin-bottom:10px}
+@keyframes pulseBorder{0%,100%{border-color:rgba(255,194,51,.35)}50%{border-color:rgba(255,194,51,.8)}}
 
-/* ===== الشبكة الميزات (أيقونات) ===== */
-.feature-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:12px;padding:0 18px 8px}
-.feature{background:linear-gradient(160deg,#1d2440,#161b2e);border:1px solid #2a3257;border-radius:16px;padding:14px 8px;text-align:center;transition:.2s}
-.feature:hover{transform:translateY(-3px);border-color:var(--accent)}
-.feature .fi{font-size:30px;display:block;margin-bottom:6px}
-.feature .fl{font-size:12px;color:var(--text);font-weight:600}
-.feature .fb{display:block;font-size:10px;color:var(--accent2);margin-top:3px}
+/* ===== Global polish, animations & micro-interactions ===== */
+@keyframes fadeUp{from{opacity:0;transform:translateY(20px)}to{opacity:1;transform:translateY(0)}}
+.reveal{opacity:0;transform:translateY(26px);transition:opacity .6s var(--ease),transform .6s var(--ease)}
+.reveal.in{opacity:1;transform:none}
+.grid .card{animation:fadeUp .5s var(--ease) both}
+.grid .card:nth-child(2){animation-delay:.05s}
+.grid .card:nth-child(3){animation-delay:.1s}
+.grid .card:nth-child(4){animation-delay:.15s}
+.grid .card:nth-child(5){animation-delay:.2s}
+.grid .card:nth-child(6){animation-delay:.25s}
 
-/* ===== عجلة الحظ ===== */
-.wheel-stage{display:flex;flex-direction:column;align-items:center;gap:18px;padding:10px}
-.wheel-outer{position:relative;width:300px;max-width:86vw;aspect-ratio:1/1}
-.wheel-outer::before{content:"";position:absolute;inset:-10px;border-radius:50%;background:conic-gradient(from 0deg,#6c5ce7,#00d2a0,#ffd86b,#ff5c5c,#6c5ce7);filter:blur(14px);opacity:.55;animation:spin 6s linear infinite;z-index:0}
-.wheel{position:relative;z-index:1;width:100%;height:100%;border-radius:50%;border:8px solid #ffd86b;box-shadow:0 0 40px rgba(255,216,107,.5),inset 0 0 30px rgba(0,0,0,.5);transition:transform 5s cubic-bezier(.17,.67,.12,1)}
-.wheel-pointer{position:absolute;top:-6px;left:50%;transform:translateX(-50%);z-index:3;font-size:34px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.6))}
-.wheel-hub{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;width:64px;height:64px;border-radius:50%;background:radial-gradient(circle,#ffd86b,#b8860b);display:flex;align-items:center;justify-content:center;font-weight:800;color:#3a2a00;border:4px solid #fff;box-shadow:0 0 20px rgba(255,216,107,.7)}
-.wheel-result{font-size:20px;font-weight:800;min-height:28px;text-align:center;background:linear-gradient(135deg,#ffd86b,#00d2a0);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.confetti{position:fixed;top:-10px;width:10px;height:14px;z-index:400;pointer-events:none;animation:fall linear forwards}
-@keyframes fall{to{transform:translateY(105vh) rotate(540deg);opacity:.2}}
+.user-chip{transition:transform .2s var(--ease),background .2s}
+.user-chip:hover{transform:translateY(-1px);background:#28324e}
 
-/* ===== مركز الإحالة + المتصدرين ===== */
-.ref-card{background:linear-gradient(135deg,#3d2c8d,#6c5ce7 60%,#00d2a0);border-radius:var(--radius);padding:20px;margin-bottom:14px}
-.ref-link{display:flex;gap:8px;margin-top:12px}
-.ref-link input{flex:1;padding:11px;border-radius:10px;border:none;background:rgba(0,0,0,.25);color:#fff;font-size:13px}
-.lb-row{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid #232a45}
-.lb-rank{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;background:#232a45;flex-shrink:0}
-.lb-rank.r1{background:linear-gradient(135deg,#ffd86b,#b8860b);color:#3a2a00}
-.lb-rank.r2{background:linear-gradient(135deg,#d8d8e8,#9a9ab0);color:#22232e}
-.lb-rank.r3{background:linear-gradient(135deg,#e0a479,#a9603a);color:#2a1408}
-.lb-row img{width:34px;height:34px;border-radius:50%}
+.admin-box{background:linear-gradient(180deg,var(--card),#1c2a48);margin:0 18px 20px;border-radius:var(--radius);padding:20px;overflow-x:auto;border:1px solid #28304a;box-shadow:var(--shadow);animation:fadeUp .5s var(--ease) both}
+.admin-box h2,.admin-box h3{display:flex;align-items:center;gap:8px;margin-bottom:8px}
+.admin-box h3 .ic,.admin-box h2 .ic{color:var(--accent2)}
+.admin-box input,.admin-box textarea,.admin-box select{width:100%;padding:11px;border-radius:11px;border:1px solid #2a3350;background:#101a2e;color:var(--text);font-family:inherit;font-size:14px;transition:border-color .2s,box-shadow .2s}
+.admin-box input:focus,.admin-box textarea:focus,.admin-box select:focus{outline:none;border-color:var(--accent);box-shadow:0 0 0 3px rgba(230,41,75,.2)}
+.admin-box label{display:flex;flex-direction:column;gap:6px;font-size:13px;color:var(--muted)}
+
+.admin-tabs a{transition:transform .18s var(--ease),background .2s,box-shadow .2s}
+.admin-tabs a:hover{transform:translateY(-2px);background:#28324e}
+.admin-tabs a.active{background:linear-gradient(135deg,var(--accent),#38bdf8);box-shadow:0 6px 16px rgba(230,41,75,.4);color:#fff}
+.admin-box{transition:box-shadow .25s var(--ease)}
+.admin-box:hover{box-shadow:0 14px 36px rgba(0,0,0,.5)}
+.page-content{line-height:1.9;font-size:15px}
+.page-content h1{font-size:clamp(20px,4vw,28px);font-weight:800;margin:0 0 16px;background:linear-gradient(135deg,var(--accent),var(--accent2));-webkit-background-clip:text;-webkit-text-fill-color:transparent;background-clip:text}
+.page-content h2{font-size:18px;font-weight:700;margin:22px 0 10px;color:var(--accent2)}
+.page-content h3{font-size:15px;font-weight:700;margin:16px 0 8px;color:var(--gold)}
+.page-content p{margin:0 0 12px;color:var(--text)}
+.page-content ul,.page-content ol{margin:0 0 14px;padding-right:22px}
+.page-content li{margin-bottom:6px}
+.page-content strong{color:var(--text);font-weight:700}
+.page-content table{width:100%;border-collapse:collapse;margin:14px 0;font-size:13px}
+.page-content th{background:rgba(37,99,235,.15);padding:10px;text-align:right;border:1px solid rgba(255,255,255,.1);font-weight:700}
+.page-content td{padding:8px 10px;border:1px solid rgba(255,255,255,.1)}
+.page-content .article-lead{font-size:16px;color:var(--accent2);margin-bottom:20px;line-height:1.7;font-weight:500}
+.page-content code{background:rgba(6,182,212,.15);padding:1px 6px;border-radius:5px;font-size:13px}
+.page-content s{opacity:.7}
+
+.stat-card{transition:transform .22s var(--ease),box-shadow .22s;border:1px solid #28304a}
+.stat-card:hover{transform:translateY(-4px);box-shadow:0 12px 28px rgba(0,0,0,.4);border-color:var(--accent)}
+
+.flash{animation:fadeUp .4s var(--ease) both;display:flex;align-items:center;gap:8px;box-shadow:var(--shadow)}
+.badge{font-weight:700;text-transform:capitalize}
+
+input,textarea,select{font-family:inherit}
+
+/* scroll to top */
+#scrollTop{position:fixed;bottom:92px;right:18px;width:46px;height:46px;border-radius:14px;background:linear-gradient(135deg,var(--accent),#38bdf8);color:#fff;border:none;cursor:pointer;display:flex;align-items:center;justify-content:center;z-index:45;opacity:0;visibility:hidden;transform:translateY(16px) scale(.8);transition:.3s var(--ease);box-shadow:0 8px 22px rgba(230,41,75,.45)}
+#scrollTop.show{opacity:1;visibility:visible;transform:none}
+#scrollTop:hover{transform:translateY(-2px) scale(1.05)}
+
+/* skeleton shimmer */
+.skeleton{background:linear-gradient(90deg,#18223a 25%,#28304a 37%,#18223a 63%);background-size:400% 100%;animation:shimmer 1.4s infinite}
+@keyframes shimmer{from{background-position:100% 0}to{background-position:-100% 0}}
+
+@media (prefers-reduced-motion:reduce){*{animation-duration:.001ms!important;transition-duration:.001ms!important}}
+@media (max-width:640px){
+  .admin-box{margin:0 8px 14px;padding:14px;border-radius:14px}
+  .admin-tabs{padding:10px 8px;gap:6px}
+  .admin-tabs a{padding:7px 10px;font-size:12px}
+  .formrow{grid-template-columns:1fr 1fr;gap:8px}
+  .formrow input,.formrow select,.formrow textarea{font-size:13px}
+  table{font-size:11.5px}
+  table th,table td{padding:6px 4px;white-space:nowrap}
+  .stat-card{padding:12px}
+  .stat-card .num{font-size:18px}
+  .section-title{padding:14px 10px 6px;font-size:16px}
+  .btn{padding:9px 14px;font-size:13px}
+  .user-chip span{display:none}
+  .balance-pill-sm{font-size:12px;padding:5px 9px}
+}
+@media (max-width:380px){.formrow{grid-template-columns:1fr}}
+.lb-list{display:flex;flex-direction:column;gap:8px;margin:0 18px 20px}
+.lb-row{display:flex;align-items:center;gap:12px;background:var(--card);border:1px solid #28304a;border-radius:14px;padding:12px 14px;animation:fadeUp .5s var(--ease) both}
+.lb-row.lb-rank-1{background:linear-gradient(90deg,rgba(255,194,51,.18),var(--card));border-color:#ffc233}
+.lb-row.lb-rank-2{background:linear-gradient(90deg,rgba(192,192,192,.14),var(--card));border-color:#bdbdbd}
+.lb-row.lb-rank-3{background:linear-gradient(90deg,rgba(205,127,50,.14),var(--card));border-color:#cd7f32}
+.lb-pos{font-size:20px;width:34px;text-align:center;font-weight:800}
+.lb-avatar{width:42px;height:42px;border-radius:50%;object-fit:cover;flex-shrink:0}
+.lb-avatar-ph{display:flex;align-items:center;justify-content:center;background:#28304a}
+.lb-name{flex:1;font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.lb-points{display:flex;align-items:center;gap:5px;color:var(--accent2);font-weight:800;flex-shrink:0}
+.coin-pkgs{display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:10px}
+.coin-pkg{display:flex;flex-direction:column;align-items:center;gap:3px;background:#101a2e;border:1px solid #28304a;border-radius:12px;padding:10px 4px;cursor:pointer;color:var(--text);transition:.2s var(--ease)}
+.coin-pkg:hover{border-color:var(--accent);transform:translateY(-2px)}
+.coin-pkg strong{font-size:14px}
+.coin-pkg span{font-size:10px;color:var(--muted)}
+@media (max-width:480px){.coin-pkgs{grid-template-columns:repeat(2,1fr)}}
+.btn-icon-only{padding:9px;aspect-ratio:1/1}
+.btn-withdraw-cta{display:flex;align-items:center;justify-content:center;gap:10px;width:100%;margin-top:10px;padding:16px;font-size:16px;font-weight:800;color:#06251c;background:linear-gradient(135deg,#4dd6a3,#2ecc8f);border-radius:14px;box-shadow:0 8px 22px rgba(46,204,143,.4);letter-spacing:.3px}
+.btn-withdraw-cta:hover{transform:translateY(-2px);box-shadow:0 12px 28px rgba(46,204,143,.55)}
+.btn-withdraw-cta:disabled{opacity:.5;cursor:not-allowed;transform:none}
+.verified-badge{display:inline-flex;align-items:center;justify-content:center;width:18px;height:18px;border-radius:50%;background:#1d9bf0;color:#fff;vertical-align:middle}
+.verified-badge svg{width:11px;height:11px}
+.profile-frame{position:relative;width:96px;height:96px;margin:0 auto;border-radius:50%;display:flex;align-items:center;justify-content:center}
+.profile-frame img,.profile-frame .ph{width:84px;height:84px;border-radius:50%;object-fit:cover;background:#28304a;display:flex;align-items:center;justify-content:center}
+.profile-frame::before{content:'';position:absolute;inset:0;border-radius:50%;border:3px solid var(--accent);animation:frameSpin 6s linear infinite}
+.profile-rank-bronze .profile-frame::before{border-color:#c97a3d}
+.profile-rank-silver .profile-frame::before{border-color:#c9d2da;box-shadow:0 0 12px rgba(201,210,218,.5)}
+.profile-rank-gold .profile-frame::before{border-color:#e6b800;box-shadow:0 0 14px rgba(230,184,0,.6)}
+.profile-rank-diamond .profile-frame::before{border-color:#36e0e0;box-shadow:0 0 16px rgba(54,224,224,.7)}
+.avatar-edit-btn{position:absolute;bottom:-2px;left:50%;transform:translateX(-50%);width:28px;height:28px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;border:2px solid var(--bg);cursor:pointer;z-index:2}
+.avatar-edit-btn svg{width:13px;height:13px}
+@keyframes frameSpin{from{transform:rotate(0deg) scale(1)}50%{transform:rotate(180deg) scale(1.04)}to{transform:rotate(360deg) scale(1)}}
+.spin-wheel-wrap{display:flex;flex-direction:column;align-items:center;gap:20px;padding:20px 0}
+.spin-wheel{width:240px;height:240px;border-radius:50%;position:relative;background:conic-gradient(#2563eb 0deg 45deg,#ff8a3d 45deg 90deg,#ffd23d 90deg 135deg,#4dd6a3 135deg 180deg,#3da5ff 180deg 225deg,#a36dff 225deg 270deg,#38bdf8 270deg 315deg,#6dffb0 315deg 360deg);transition:transform 2.4s cubic-bezier(.18,.9,.2,1);box-shadow:0 0 0 6px #101a2e,0 0 30px rgba(0,0,0,.5)}
+.spin-wheel-pointer{position:absolute;top:-14px;left:50%;transform:translateX(-50%);width:0;height:0;border-left:14px solid transparent;border-right:14px solid transparent;border-top:22px solid var(--accent);z-index:2}
+.card img.pimg{height:<?= (int)setting('product_image_height', 130) ?>px}
+.cat-tiles{grid-template-columns:repeat(auto-fill,minmax(<?= (int)setting('cat_tile_size', 140) ?>px,1fr))}
+.banner-carousel-slide img{height:<?= (int)setting('banner_height', 160) ?>px}
+<?php
+$themeAccent = setting('theme_accent_color', '#2563eb');
+$themeAccent2 = setting('theme_accent2_color', '#06b6d4');
+if (preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent) && preg_match('/^#[0-9a-fA-F]{3,6}$/', $themeAccent2)):
+?>
+:root{--accent:<?= e($themeAccent) ?>;--accent2:<?= e($themeAccent2) ?>}
+<?php endif; ?>
 </style>
+<?php if (setting('auto_translate_enabled', '1') === '1' && $page !== 'admin'): ?>
+<style>.goog-te-banner-frame,.skiptranslate>iframe{display:none!important}body{top:0!important}#google_translate_element{display:none}</style>
+<script>
+(function(){
+  try {
+    if (document.cookie.indexOf('googtrans=') === -1) {
+      var lang = ((navigator.language || navigator.userLanguage || 'ar').split('-')[0] || 'ar').toLowerCase();
+      if (lang && lang !== 'ar') document.cookie = 'googtrans=/ar/' + lang + ';path=/';
+    }
+  } catch (e) {}
+})();
+function googleTranslateElementInit(){
+  new google.translate.TranslateElement({ pageLanguage: 'ar', autoDisplay: false }, 'google_translate_element');
+}
+</script>
+<?php endif; ?>
 </head>
-<body>
+<body data-user-balance="<?= $user ? number_format((float)user_balance($user['id']), 2, '.', '') : '0' ?>">
+<?php if (setting('auto_translate_enabled', '1') === '1' && $page !== 'admin'): ?>
+<div id="google_translate_element"></div>
+<script src="https://translate.google.com/translate_a/element.js?cb=googleTranslateElementInit" async></script>
+<?php endif; ?>
 <div id="preloader">
-  <?php if ($logo): ?><img src="<?= e($logo) ?>" alt="logo" onerror="this.outerHTML='<?= addslashes(brand_logo_svg(64)) ?>'"><?php else: ?><?= brand_logo_svg(64) ?><?php endif; ?>
-  <div class="spinner"></div>
-  <div style="color:var(--muted);font-size:13px">جاري التحميل...</div>
+  <div class="pl-ring">
+    <svg viewBox="0 0 100 100"><circle class="pl-track" cx="50" cy="50" r="48"></circle><circle class="pl-bar" id="plBar" cx="50" cy="50" r="48"></circle></svg>
+    <?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><div class="pl-fallback"><?= icon('rocket', 'ic ic-lg') ?></div><?php endif; ?>
+    <div class="pl-pct" id="plPct">0%</div>
+  </div>
+  <div class="pl-text">لحظات ونبدأ...</div>
 </div>
 
+<?php if ($page === 'login' && !$user): ?>
+<div class="login-page">
+  <div class="login-wrap">
+    <div class="login-top">
+      <a href="?" class="login-back"><?= icon('chevron-right', 'ic-sm') ?>العودة للرئيسية</a>
+      <div class="login-logo"><?php if ($logo): ?><img src="<?= e($logo) ?>"><?php else: ?><?= icon('hat', 'ic') ?><?php endif; ?> <?= e($siteName) ?></div>
+    </div>
+    <div class="login-card">
+      <div class="login-tabs">
+        <button type="button" id="loginTabBtn" class="active" onclick="switchAuthTab('login')">تسجيل الدخول</button>
+        <button type="button" id="registerTabBtn" onclick="switchAuthTab('register')">حساب جديد</button>
+      </div>
+
+      <form id="loginForm" method="post" action="?action=login">
+        <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+        <h2>تسجيل الدخول</h2>
+        <div class="sub">أدخل بياناتك للوصول إلى حسابك</div>
+        <label>البريد الإلكتروني أو اسم المستخدم</label>
+        <input type="text" name="identity" placeholder="البريد، اسم المستخدم" required>
+        <label>كلمة المرور</label>
+        <input type="password" name="password" placeholder="أدخل كلمة المرور" required>
+        <div class="login-remember"><label style="margin:0">تذكرني</label><input type="checkbox" style="width:auto;margin:0" name="remember"></div>
+        <?= turnstile_widget() ?>
+        <button type="submit" class="login-submit"><?= icon('logout', 'ic-sm') ?>تسجيل الدخول</button>
+      </form>
+
+      <form id="registerForm" method="post" action="?action=register" style="display:none">
+        <input type="hidden" name="csrf" value="<?= e(csrf_token()) ?>">
+        <h2>حساب جديد</h2>
+        <div class="sub">أنشئ حساباً جديداً مجاناً وابدأ الآن</div>
+        <label>اسم المستخدم</label>
+        <input type="text" name="username" placeholder="إنجليزي بدون مسافات" required>
+        <label>البريد الإلكتروني</label>
+        <input type="email" name="email" placeholder="البريد الإلكتروني" required>
+        <label>كلمة المرور</label>
+        <input type="password" name="password" placeholder="6 أحرف فأكثر" required>
+        <?= turnstile_widget() ?>
+        <button type="submit" class="login-submit"><?= icon('gift', 'ic-sm') ?>إنشاء حساب</button>
+      </form>
+      <?php if (setting('turnstile_site_key')): ?><script src="https://challenges.cloudflare.com/turnstile/v0/api.js" async defer></script><?php endif; ?>
+
+      <a class="login-forgot" href="?page=contact">نسيت كلمة المرور؟ تواصل معنا</a>
+
+      <div class="login-divider">أو</div>
+      <div class="social-grid">
+        <?php if (GOOGLE_CLIENT_ID): ?>
+          <a href="<?= e(google_login_url()) ?>" class="social-btn"><?= icon('google', 'ic') ?></a>
+        <?php else: ?>
+          <div class="social-btn soon"><?= icon('google', 'ic') ?><span class="soon-tag">قريباً</span></div>
+        <?php endif; ?>
+        <?php if (setting('telegram_bot_username')): ?>
+          <div class="social-btn" id="tgLoginBtn" style="cursor:pointer" onclick="document.getElementById('tgWidgetReal').querySelector('iframe')?.click()"><?= icon('send', 'ic') ?>
+            <div id="tgWidgetReal" style="position:absolute;inset:0;opacity:0;overflow:hidden"></div>
+          </div>
+        <?php else: ?>
+          <div class="social-btn soon"><?= icon('send', 'ic') ?><span class="soon-tag">قريباً</span></div>
+        <?php endif; ?>
+        <div class="social-btn soon"><?= icon('user', 'ic') ?><span class="soon-tag">قريباً</span></div>
+      </div>
+      <?php if (setting('telegram_bot_username')): ?>
+      <script>
+      window.onTelegramAuth = function(user){
+        const f = document.createElement('form');
+        f.method = 'POST'; f.action = '?action=telegram_login';
+        Object.keys(user).forEach(k => {
+          const i = document.createElement('input');
+          i.type = 'hidden'; i.name = k; i.value = user[k];
+          f.appendChild(i);
+        });
+        document.body.appendChild(f);
+        f.submit();
+      };
+      (function(){
+        const s = document.createElement('script');
+        s.async = true;
+        s.src = 'https://telegram.org/js/telegram-widget.js?22';
+        s.setAttribute('data-telegram-login', '<?= e(setting('telegram_bot_username')) ?>');
+        s.setAttribute('data-size', 'large');
+        s.setAttribute('data-onauth', 'onTelegramAuth(user)');
+        s.setAttribute('data-request-access', 'write');
+        document.getElementById('tgWidgetReal').appendChild(s);
+      })();
+      </script>
+      <?php endif; ?>
+    </div>
+  </div>
+</div>
+<?php else: ?>
+
 <div class="topbar">
-  <button class="burger" onclick="toggleSidebar()">☰</button>
-  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" onerror="this.outerHTML='<?= addslashes(brand_logo_svg(30)) ?>'"><?php else: ?><?= brand_logo_svg(30) ?><?php endif; ?> <?= e($siteName) ?></a>
+  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><?= icon('rocket', 'ic ic-lg') ?><?php endif; ?> <?= e($siteName) ?></a>
+  <?php if ($user): ?>
+    <a href="?page=profile&tab=settings" class="btn btn-ghost btn-icon-only" title="الإعدادات"><?= icon('settings', 'ic ic-sm') ?></a>
+    <a href="?page=notifications" class="btn btn-ghost btn-icon-only" title="الإشعارات"><?= icon('bell', 'ic ic-sm') ?></a>
+  <?php endif; ?>
   <div class="grow"></div>
   <?php if ($user): ?>
-    <?php $u_usd = points_to_usd($user['points']); ?>
-    <a href="?page=wallet" class="coin-chip" title="رصيدك">🪙 <?= number_format((int)$user['points']) ?> <small>≈ <?= e($u_usd) ?>$</small></a>
-    <div class="user-chip">
-      <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>" onerror="this.style.display='none'"><?php endif; ?>
-      <span><?= e($user['name']) ?></span>
-    </div>
+    <a href="?page=wallet" class="wallet-btn" title="محفظتي">
+      <div class="wb-icon"><?= icon('wallet', 'ic') ?></div>
+      <div class="wb-info">
+        <?php if (setting('wallet_show_balance_in_topbar','1') === '1' && !((int)($user['privacy_hide_balance'] ?? 0))): ?>
+        <span class="wb-balance"><?= number_format((float)user_balance($user['id']), 2) ?><small><?= e(setting('wallet_currency_symbol', '$')) ?></small></span>
+        <?php endif; ?>
+        <span class="wb-label">المحفظة</span>
+      </div>
+    </a>
+    <a href="?page=profile" class="topbar-profile" title="ملفي الشخصي">
+      <div class="tp-avatar">
+        <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>" alt=""><?php else: ?><?= icon('user', 'ic') ?><?php endif; ?>
+      </div>
+      <span class="tp-name"><?= e(mb_strimwidth($user['name'] ?? $user['username'] ?? '', 0, 14, '…')) ?></span>
+    </a>
   <?php else: ?>
-    <a href="<?= e(google_login_url()) ?>" class="btn btn-primary">تسجيل الدخول بجوجل</a>
+    <a href="?page=login" class="btn btn-primary"><?= icon('user', 'ic ic-sm') ?>تسجيل الدخول</a>
   <?php endif; ?>
+  <button class="burger" onclick="toggleSidebar()" title="القائمة"><?= icon('menu', 'ic') ?></button>
 </div>
 
 <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
 <div class="sidebar" id="sidebar">
-  <div class="sb-head"><strong><?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()">✕</button></div>
+  <div class="sb-head"><strong><?= icon('hat', 'ic-sm') ?> <?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()"><?= icon('close', 'ic') ?></button></div>
   <nav>
-    <a href="?">🏠 الرئيسية</a>
-    <a href="?page=earn">🪙 اكسب عملات (كابتشا)</a>
-    <a href="?page=watch">📺 شاهد إعلان واربح</a>
-    <a href="?page=wheel">🎡 عجلة الحظ</a>
-    <a href="?page=tasks">📋 المهام اليومية</a>
-    <a href="?page=referral">🎁 مركز الإحالة</a>
-    <a href="?page=leaderboard">🏆 المتصدرون</a>
-    <a href="?page=chats">💬 مجموعات الدردشة</a>
-    <a href="?page=wallet">💳 محفظتي</a>
-    <a href="?page=orders">📦 طلباتي</a>
-    <a href="?page=privacy">🔒 سياسة الخصوصية</a>
-    <a href="?page=terms">📜 شروط الاستخدام</a>
-    <?php if (is_admin()): ?><a href="?page=admin">🎛️ لوحة الإدارة</a><?php endif; ?>
-    <?php if ($user): ?><a href="?action=logout" style="color:var(--danger)">🚪 تسجيل الخروج</a><?php endif; ?>
-    <div style="height:90px"></div>
+    <a href="?"><?= icon('home') ?> الرئيسية</a>
+    <?php if ($user): ?><a href="?page=wallet" style="background:linear-gradient(90deg,rgba(16,185,129,.15),transparent);border-right:3px solid #10b981;color:#6ee7b7"><?= icon('wallet') ?> محفظتي · <?= number_format((float)user_balance($user['id']), 2) ?><?= e(setting('wallet_currency_symbol', '$')) ?></a><?php endif; ?>
+    <a href="?page=apps&kind=app"><?= icon('android') ?> التطبيقات</a>
+    <a href="?page=store"><?= icon('cart') ?> المتجر (منتجات للبيع)</a>
+    <?php if ($user): ?><a href="?page=profile"><?= icon('user') ?> ملفي الشخصي</a><?php endif; ?>
+    <?php if ($user): ?><a href="?page=profile&tab=settings"><?= icon('settings') ?> الإعدادات</a><?php endif; ?>
+    <a href="?page=favorites"><?= icon('heart') ?> المفضّلة</a>
+    <a href="?page=orders"><?= icon('orders') ?> طلباتي</a>
+    <a href="?page=suggest"><?= icon('megaphone') ?> اقترح منتجاً</a>
+    <a href="?page=about"><?= icon('shield') ?> من نحن</a>
+    <a href="?page=guide"><?= icon('doc') ?> دليل التحميل</a>
+    <a href="?page=top"><?= icon('star') ?> أفضل التطبيقات</a>
+    <a href="?page=article-charge-games"><?= icon('coin') ?> شحن الألعاب والتطبيقات</a>
+    <a href="?page=article-pubg"><?= icon('rocket') ?> شحن ببجي موبايل</a>
+    <a href="?page=article-referral"><?= icon('gift') ?> نظام الإحالة</a>
+    <a href="?page=article-app-reviews"><?= icon('star') ?> مراجعات التطبيقات</a>
+    <a href="?page=article-tutorials"><?= icon('doc') ?> شروحات البرامج</a>
+    <a href="?page=article-payment-methods"><?= icon('wallet') ?> طرق الدفع</a>
+    <a href="?page=faq"><?= icon('doc') ?> الأسئلة الشائعة</a>
+    <a href="?page=contact"><?= icon('send') ?> تواصل معنا</a>
+    <a href="?page=privacy"><?= icon('lock') ?> سياسة الخصوصية</a>
+    <a href="?page=terms"><?= icon('doc') ?> شروط الاستخدام</a>
+    <?php if (is_admin()): ?><a href="?page=admin"><?= icon('hat') ?> لوحة الإدارة</a><?php endif; ?>
   </nav>
+</div>
+
+<div class="modal-bg" id="buyModal" style="display:none">
+  <div class="modal buy-modal buy-modal-pro">
+    <button type="button" class="buy-close" onclick="closeBuyModal()"><?= icon('x', 'ic-sm') ?></button>
+    <div class="buy-hero">
+      <div class="buy-hero-icon" id="buyProductIcon"><?= icon('cart', 'ic') ?></div>
+      <h2 id="buyProductName">تأكيد الطلب</h2>
+      <p class="buy-hero-desc" id="buyProductDesc"></p>
+    </div>
+
+    <div class="buy-price-card">
+      <div class="bpc-row"><span>سعر المنتج</span><strong id="buyOriginalPrice">0$</strong></div>
+      <div class="bpc-row" id="buyDiscountRow" style="display:none"><span>الخصم</span><strong style="color:#10b981" id="buyDiscount">-0$</strong></div>
+      <div class="bpc-total"><span>الإجمالي</span><strong id="buyFinalPrice">0$</strong></div>
+    </div>
+
+    <div class="buy-balance-info" id="buyBalanceInfo">
+      <div class="bbi-row">
+        <div class="bbi-label"><?= icon('wallet', 'ic-sm') ?> رصيدي الحالي</div>
+        <div class="bbi-value" id="buyMyBalance"><?= $user ? number_format((float)user_balance($user['id']), 2) : '0.00' ?><?= e(setting('wallet_currency_symbol','$')) ?></div>
+      </div>
+      <div class="bbi-row" id="buyAfterRow">
+        <div class="bbi-label">الرصيد بعد الشراء</div>
+        <div class="bbi-value" id="buyAfterBalance">—</div>
+      </div>
+    </div>
+
+    <div id="buyIdField" style="display:none">
+      <label class="buy-field-label" id="buyIdLabel"><?= icon('user','ic-sm') ?> <span>آيدي حسابك في اللعبة/التطبيق</span> <span style="color:var(--danger)">*</span></label>
+      <input type="text" id="buyAccountId" class="buy-input" placeholder="مثال: 5123456789">
+      <p class="buy-hint" id="buyIdHint">أدخل الآيدي الظاهر في التطبيق أو اللعبة لضمان وصول الشحن للحساب الصحيح.</p>
+    </div>
+
+    <details class="buy-extra">
+      <summary><?= icon('coins', 'ic-sm') ?> كود خصم (اختياري)</summary>
+      <div class="upload-row" style="margin-top:8px">
+        <input type="text" id="buyCouponCode" placeholder="أدخل كود الخصم">
+        <button type="button" class="btn btn-ghost" onclick="applyCoupon()">تطبيق</button>
+      </div>
+      <div id="buyCouponMsg" style="font-size:12px;margin-top:6px"></div>
+    </details>
+
+    <div id="buyInsufficient" class="buy-insufficient" style="display:none">
+      <?= icon('shield', 'ic-sm') ?>
+      <div>
+        <strong>رصيدك غير كافٍ لإتمام هذا الطلب</strong>
+        <p>ينقصك <span id="buyMissingAmt">0$</span> — اشحن محفظتك أولاً ثم عُد لإتمام الشراء.</p>
+        <a href="?page=wallet" class="btn btn-primary" style="margin-top:6px"><?= icon('plus','ic-sm') ?> شحن الرصيد الآن</a>
+      </div>
+    </div>
+
+    <div class="buy-actions">
+      <button type="button" class="btn-buy-confirm" id="buySubmitBtn" onclick="submitBuyRequest()"><?= icon('check', 'ic-sm') ?> ادفع من الرصيد</button>
+      <button type="button" class="btn-buy-cancel" onclick="closeBuyModal()">إلغاء</button>
+    </div>
+  </div>
 </div>
 
 <?php $f = flash(); if ($f): ?>
@@ -1082,329 +4439,987 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 /* ======================================================================
    6) PAGE VIEWS
    ====================================================================== */
+function category_icon_name(string $name): string
+{
+    $n = mb_strtolower($name);
+    if (str_contains($n, 'لعب') || str_contains($n, 'game')) return 'rocket';
+    if (str_contains($n, 'اشتراك') || str_contains($n, 'sub')) return 'star';
+    if (str_contains($n, 'تطبيق') || str_contains($n, 'app')) return 'globe';
+    return 'cart';
+}
+function render_product_card(array $p): void
+{
+    global $wishlistSet;
+    $isFav = !empty($wishlistSet[$p['id']]);
+    ?>
+    <?php $prodUrl = '?page=product&id=' . (int)$p['id']; ?>
+    <div class="card" style="position:relative;cursor:pointer" onclick="if(!event.target.closest('a,button')){window.location='<?= e($prodUrl) ?>'}">
+      <a href="<?= e($prodUrl) ?>" class="card-link-overlay" style="position:absolute;inset:0;z-index:1;text-indent:-9999px;overflow:hidden" aria-label="<?= e($p['name']) ?>"><?= e($p['name']) ?></a>
+      <?php if ($p['tag']): ?><span class="tag" style="z-index:3;position:absolute"><?= e($p['tag']) ?></span><?php endif; ?>
+      <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" style="z-index:3;position:absolute" onclick="event.stopPropagation();toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
+      <div style="position:relative;z-index:2;pointer-events:none">
+        <?php if ($p['image']): ?>
+          <img class="pimg" loading="lazy" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
+        <?php elseif (!empty($p['icon'])): ?>
+          <div class="product-icon-tile"><span class="pit-emoji"><?= e($p['icon']) ?></span></div>
+        <?php else: ?>
+          <div class="product-icon-tile"><span class="pit-emoji"><?= e(product_auto_emoji($p['name'] ?? '')) ?></span></div>
+        <?php endif; ?>
+        <h3><?= e($p['name']) ?></h3>
+      </div>
+      <?php if ($p['description']): ?><div class="desc"><?= e(mb_substr($p['description'], 0, 60)) ?></div><?php endif; ?>
+      <div>
+        <span class="price"><?= e($p['price']) ?>$</span>
+        <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
+      </div>
+      <?php $__needsId = product_needs_account_id($p['name'] ?? '', ''); ?>
+      <button class="btn btn-primary buy" onclick='buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>, <?= json_encode(['name'=>$p['name'],'desc'=>mb_substr((string)($p['description']??''),0,120),'image'=>$p['image']??'','icon'=>$p['icon']??'','needsId'=>$__needsId,'idLabel'=>$__needsId ? 'آيدي حسابك في '.$p['name'] : ''], JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'><?= icon('cart', 'ic ic-sm') ?><?= e(setting('buy_button_text', 'طلب شراء')) ?></button>
+    </div>
+    <?php
+}
+function render_app_card(array $a): void
+{
+    $kindLabel = $a['kind'] === 'game' ? 'لعبة' : 'تطبيق';
+    $appUrl = '?page=app&id=' . (int)$a['id'];
+    ?>
+    <div class="card app-card" style="position:relative;cursor:pointer" onclick="if(!event.target.closest('a,button')){window.location='<?= e($appUrl) ?>'}">
+      <a href="<?= e($appUrl) ?>" class="card-link-overlay" style="position:absolute;inset:0;z-index:1;text-indent:-9999px;overflow:hidden" aria-label="<?= e($a['name']) ?>"><?= e($a['name']) ?></a>
+      <span class="tag app-kind-tag" style="z-index:2;position:absolute"><?= e($kindLabel) ?></span>
+      <div style="position:relative;z-index:2;pointer-events:none">
+        <?php if ($a['icon']): ?>
+          <img class="pimg app-icon-img" loading="lazy" decoding="async" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
+        <?php else: ?>
+          <div class="icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
+        <?php endif; ?>
+        <h3><?= e($a['name']) ?></h3>
+        <?php if ($a['short_description']): ?><div class="desc"><?= e(mb_substr($a['short_description'], 0, 60)) ?></div><?php endif; ?>
+        <div class="app-stats">
+          <?php if ($a['rating_avg']): ?><span><?= icon('star', 'ic-sm') ?><?= e(number_format((float)$a['rating_avg'], 1)) ?></span><?php endif; ?>
+          <span><?= icon('eye', 'ic-sm') ?><?= number_format((int)$a['views']) ?></span>
+          <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads']) ?></span>
+        </div>
+      </div>
+      <a class="btn btn-primary buy" href="<?= e($appUrl) ?>" style="position:relative;z-index:2"><?= icon('download', 'ic ic-sm') ?>تحميل</a>
+    </div>
+    <?php
+}
 switch ($page) {
 
+case 'login':
+    redirect('?');
+    break;
+
 case 'home':
-    $banners = db()->query("SELECT * FROM banners WHERE active=1 ORDER BY sort_order, id")->fetchAll();
-    $products = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC")->fetchAll();
-    $cats = db()->query("SELECT * FROM categories ORDER BY sort_order, name")->fetchAll();
-    $sizeHint = setting('banner_size_hint', '1200×400');
-    // نضمن 3 شرائح كحد أدنى (placeholders تحمل القياس المطلوب)
-    $slides = $banners;
-    while (count($slides) < 3) {
-        $i = count($slides) + 1;
-        $slides[] = ['image' => '', 'link' => '', 'title' => "بنر إعلاني رقم $i", 'size_label' => $sizeHint, '_ph' => true];
+    $banners = db()->query("SELECT * FROM banners WHERE active=1 ORDER BY sort_order")->fetchAll();
+    $tickers = db()->query("SELECT * FROM tickers WHERE active=1 ORDER BY sort_order, id")->fetchAll();
+    $searchQ = trim($_GET['q'] ?? '');
+    if ($searchQ !== '') {
+        $st = db()->prepare("SELECT * FROM products WHERE status='active' AND name LIKE ? ORDER BY id DESC");
+        $st->execute(['%' . $searchQ . '%']);
+        $products = $st->fetchAll();
+    } else {
+        $products = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC")->fetchAll();
     }
-    $newsLines = array_values(array_filter(array_map('trim', preg_split('/\r\n|\r|\n/', setting('news_ticker', '')))));
+    $categories = db()->query("SELECT * FROM categories ORDER BY sort_order, id")->fetchAll();
+    $wishlistSet = [];
+    if ($user) {
+        $st = db()->prepare("SELECT product_id FROM wishlist WHERE user_id=?");
+        $st->execute([$user['id']]);
+        foreach ($st->fetchAll() as $w) $wishlistSet[$w['product_id']] = true;
+    }
+    $byCat = []; $uncategorized = [];
+    foreach ($products as $p) {
+        if ($p['category_id']) $byCat[$p['category_id']][] = $p;
+        else $uncategorized[] = $p;
+    }
     ?>
-    <!-- ===== كاروسيل البنرات الثلاثة (يتحرك كل 5 ثوانٍ) ===== -->
-    <div class="bnr-wrap" id="bnrWrap">
-      <div class="bnr-track" id="bnrTrack">
-        <?php foreach ($slides as $b): ?>
-          <a class="bnr-slide" href="<?= e($b['link'] ?: '#') ?>">
-            <?php if (!empty($b['image'])): ?>
-              <img src="<?= e($b['image']) ?>" loading="lazy" alt="<?= e($b['title'] ?? 'بنر') ?>" onerror="this.parentNode.classList.add('noimg');this.remove()">
-            <?php else: ?>
-              <div class="bnr-ph">
-                <div style="font-size:18px;font-weight:800"><?= e($b['title'] ?: 'بنر إعلاني / أخبار') ?></div>
-                <div class="sz">📐 القياس المطلوب: <?= e($b['size_label'] ?: $sizeHint) ?></div>
+    <?php
+    $tileCats = array_filter($categories, fn($c) => !empty($c['image']));
+    $homeCatsVisible = array_filter($categories, fn($c) => !empty($c['visible_on_home'] ?? 1));
+    $homeSections = [
+        'home_categories' => function () use ($homeCatsVisible) {
+            if (!$homeCatsVisible) return;
+            ?>
+            <div class="section-title" style="margin:22px 18px 12px;display:flex;align-items:center;gap:8px;font-size:17px;font-weight:800">
+              <span style="width:4px;height:20px;background:linear-gradient(180deg,#10b981,#059669);border-radius:4px"></span>
+              الأقسام الرئيسية
+            </div>
+            <div class="home-cats">
+              <?php foreach ($homeCatsVisible as $c):
+                  $emoji = $c['icon_svg'] ?: '📦';
+                  $slug = $c['slug'] ?: $c['id'];
+                  $link = '?page=category&slug=' . urlencode($slug);
+              ?>
+                <a href="<?= e($link) ?>" class="home-cat-card">
+                  <div class="hcc-icon"><span class="hcc-emoji"><?= e($emoji) ?></span></div>
+                  <div class="hcc-body">
+                    <strong><?= e($c['name']) ?></strong>
+                    <?php if (!empty($c['description'])): ?><small><?= e(mb_strimwidth($c['description'], 0, 60, '…')) ?></small><?php endif; ?>
+                  </div>
+                  <svg class="hcc-arrow" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5"><path d="M15 6l-6 6 6 6"/></svg>
+                </a>
+              <?php endforeach; ?>
+            </div>
+            <?php
+        },
+        'hero' => function () {
+            $bannerBg = setting('banner_bg_image'); ?>
+            <div class="banner<?= $bannerBg ? ' has-bg' : '' ?>"<?= $bannerBg ? ' style="background-image:url(\'' . e($bannerBg) . '\')"' : '' ?>>
+              <?php if ($bannerBg): ?><div class="banner-overlay"></div><?php endif; ?>
+              <h1 style="position:relative;z-index:1"><?= e(setting('banner_title')) ?></h1>
+              <p style="position:relative;z-index:1"><?= e(setting('banner_subtitle')) ?></p>
+            </div>
+            <?php
+        },
+        'search' => function () use ($searchQ) { ?>
+            <form method="get" action="?" class="search-bar">
+              <input type="hidden" name="page" value="home">
+              <input type="text" name="q" value="<?= e($searchQ) ?>" placeholder="ابحث عن منتج...">
+              <button type="submit"><?= icon('search', 'ic-sm') ?></button>
+            </form>
+            <?php
+        },
+        'apk_promo' => function () {
+            $apkUrl = setting('apk_download_url');
+            if (!$apkUrl) return;
+            $banner = setting('apk_banner_image');
+            $logo = setting('apk_logo_image');
+            ?>
+            <a href="<?= e($apkUrl) ?>" class="apk-promo-banner"<?= $banner ? ' style="background-image:url(\'' . e($banner) . '\')"' : '' ?> target="_blank" rel="noopener">
+              <?php if ($banner): ?><div class="apk-promo-overlay"></div><?php endif; ?>
+              <div class="apk-promo-content">
+                <?php if ($logo): ?><img src="<?= e($logo) ?>" alt="" class="apk-promo-logo" loading="lazy"><?php endif; ?>
+                <div>
+                  <div class="apk-promo-title"><?= e(setting('apk_promo_title')) ?></div>
+                  <div class="apk-promo-sub"><?= e(setting('apk_promo_subtitle')) ?></div>
+                </div>
+                <span class="btn btn-primary apk-promo-btn"><?= icon('download', 'ic-sm') ?>تحميل</span>
               </div>
-            <?php endif; ?>
-            <?php if (!empty($b['title']) && !empty($b['image'])): ?><div class="bnr-cap"><?= e($b['title']) ?></div><?php endif; ?>
-          </a>
-        <?php endforeach; ?>
-      </div>
-      <div class="bnr-dots" id="bnrDots">
-        <?php for ($i = 0; $i < count($slides); $i++): ?><span class="<?= $i === 0 ? 'on' : '' ?>" onclick="goSlide(<?= $i ?>)"></span><?php endfor; ?>
-      </div>
-    </div>
-
-    <!-- ===== شريط الأخبار المتحرك ===== -->
-    <?php if ($newsLines): ?>
-    <div class="news-bar">
-      <div class="news-live"><span class="dot"></span> مباشر</div>
-      <div class="news-track-wrap">
-        <div class="news-track">
-          <?php for ($r = 0; $r < 2; $r++): foreach ($newsLines as $n): ?><span class="item"><?= e($n) ?></span><?php endforeach; endfor; ?>
-        </div>
-      </div>
-    </div>
-    <?php endif; ?>
-
-    <!-- ===== شبكة الميزات (أيقونات) ===== -->
-    <div class="feature-grid">
-      <a class="feature" href="?page=wheel"><span class="fi">🎡</span><span class="fl">عجلة الحظ</span><span class="fb">جوائز ضخمة</span></a>
-      <a class="feature" href="?page=earn"><span class="fi">🪙</span><span class="fl">كابتشا</span><span class="fb">+<?= e(setting('captcha_reward')) ?></span></a>
-      <a class="feature" href="?page=watch"><span class="fi">📺</span><span class="fl">شاهد إعلان</span><span class="fb">+<?= e(setting('ad_watch_reward')) ?></span></a>
-      <a class="feature" href="?page=tasks"><span class="fi">📋</span><span class="fl">المهام</span><span class="fb">يومية</span></a>
-      <a class="feature" href="?page=referral"><span class="fi">🎁</span><span class="fl">ادعُ صديق</span><span class="fb">+<?= e(setting('referral_reward')) ?></span></a>
-      <a class="feature" href="?page=leaderboard"><span class="fi">🏆</span><span class="fl">المتصدرون</span></a>
-      <a class="feature" href="?page=chats"><span class="fi">💬</span><span class="fl">المجموعات</span></a>
-      <a class="feature" href="?page=wallet"><span class="fi">💳</span><span class="fl">محفظتي</span></a>
-    </div>
-
-    <!-- ===== مجموعة الأقسام (منسدلة) ===== -->
-    <?php if ($cats): ?>
-    <div class="group-box" id="catGroup">
-      <div class="group-head" onclick="document.getElementById('catGroup').classList.toggle('open')">
-        <span>🗂️ الأقسام</span><span class="chev">▾</span>
-      </div>
-      <div class="group-body">
-        <span class="chip on" onclick="filterCat(this,0)">الكل</span>
-        <?php foreach ($cats as $c): ?><span class="chip" onclick="filterCat(this,<?= (int)$c['id'] ?>)"><?= e($c['name']) ?></span><?php endforeach; ?>
-      </div>
-    </div>
-    <?php endif; ?>
-
-    <div class="section-title">🛍️ أحدث المنتجات</div>
-    <?php if (!$products): ?>
-      <div class="empty">لا توجد منتجات حالياً، تابعنا قريباً 🚀</div>
-    <?php else: ?>
-      <div class="grid" id="productGrid">
-        <?php foreach ($products as $p): ?>
-          <div class="card" data-cat="<?= (int)$p['category_id'] ?>">
-            <?php if ($p['tag']): ?><span class="tag"><?= e($p['tag']) ?></span><?php endif; ?>
-            <div class="pimg-wrap">
-              <?php if ($p['image']): ?>
-                <img loading="lazy" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>" onerror="this.parentNode.innerHTML='<span class=ph-icon><?= e($p['icon'] ?: '🛍️') ?></span>'">
-              <?php else: ?>
-                <span class="ph-icon"><?= e($p['icon'] ?: '🛍️') ?></span>
+            </a>
+            <?php
+        },
+        'cat_tiles' => function () use ($tileCats) {
+            if (!$tileCats) return; ?>
+            <div class="cat-tiles">
+              <?php foreach ($tileCats as $c): ?>
+                <a href="#cat-<?= (int)$c['id'] ?>" class="cat-tile" style="background:<?= e($c['color'] ?: '#18223a') ?>">
+                  <img src="<?= e($c['image']) ?>" alt="<?= e($c['name']) ?>" decoding="async">
+                  <span class="cat-tile-label"><?= e($c['name']) ?></span>
+                </a>
+              <?php endforeach; ?>
+            </div>
+            <?php
+        },
+        'cat_chips' => function () use ($categories) {
+            if (!$categories) return; ?>
+            <div class="cat-chips">
+              <?php foreach ($categories as $c): ?>
+                <a href="#cat-<?= (int)$c['id'] ?>" class="cat-chip"><?= icon(category_icon_name($c['name']), 'ic-sm') ?><?= e($c['name']) ?></a>
+              <?php endforeach; ?>
+            </div>
+            <?php
+        },
+        'carousel' => function () use ($banners) {
+            if (setting('banner_carousel_enabled', '1') !== '1') return;
+            if (!$banners) return; ?>
+            <div class="banner-carousel" id="bannerCarousel" data-interval="<?= (int)setting('banner_interval', 4000) ?>">
+              <div class="banner-carousel-track">
+                <?php foreach ($banners as $i => $b): ?>
+                  <a class="banner-carousel-slide" href="<?= e($b['link'] ?: '#') ?>"><img src="<?= e($b['image']) ?>" fetchpriority="<?= $i === 0 ? 'high' : 'auto' ?>" decoding="async" alt=""></a>
+                <?php endforeach; ?>
+              </div>
+              <?php if (count($banners) > 1): ?>
+              <div class="banner-carousel-dots">
+                <?php foreach ($banners as $i => $b): ?><span class="bc-dot<?= $i === 0 ? ' active' : '' ?>" onclick="bannerGoTo(<?= $i ?>)"></span><?php endforeach; ?>
+              </div>
               <?php endif; ?>
             </div>
-            <h3><?= e($p['name']) ?></h3>
-            <div class="price-row">
-              <span class="price"><?= e($p['price']) ?>$</span>
-              <?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?>
+            <?php
+        },
+        'ticker' => function () use ($tickers) {
+            if (setting('news_ticker_enabled', '1') !== '1') return;
+            if (!$tickers) return; ?>
+            <div class="ticker-bar">
+              <span class="ticker-badge"><?= icon('megaphone', 'ic-sm') ?>جديد</span>
+              <div class="ticker-track">
+                <div class="ticker-track-inner">
+                  <?php foreach (array_merge($tickers, $tickers) as $t): ?>
+                    <?php if ($t['link']): ?><a class="ticker-item" href="<?= e($t['link']) ?>"><?= icon('star', 'ic-sm') ?><?= e($t['text']) ?></a>
+                    <?php else: ?><span class="ticker-item"><?= icon('star', 'ic-sm') ?><?= e($t['text']) ?></span><?php endif; ?>
+                  <?php endforeach; ?>
+                </div>
+              </div>
             </div>
-            <button class="btn buy" onclick="buyProduct(<?= (int)$p['id'] ?>)">🛒 طلب شراء</button>
-          </div>
-        <?php endforeach; ?>
-      </div>
-    <?php endif; ?>
-    <?php
-    break;
-
-case 'earn':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لتبدأ بكسب العملات.</div>'; break; }
-    $day = date('Y-m-d');
-    $st = db()->prepare("SELECT count FROM captcha_logs WHERE user_id=? AND day=?");
-    $st->execute([$user['id'], $day]);
-    $done = $st->fetch()['count'] ?? 0;
-    $max = (int)setting('captcha_max_per_day', 40);
-    ?>
-    <div class="admin-box" style="margin-top:18px">
-      <h2>🪙 اكسب عملات Yassota</h2>
-      <p style="color:var(--muted);margin:10px 0">أدخل الرقم الظاهر بالأسفل بشكل صحيح لتحصل على <?= e(setting('captcha_reward')) ?> عملة. (<?= $done ?>/<?= $max ?> اليوم)</p>
-      <div id="captchaBox" style="font-size:32px;font-weight:800;letter-spacing:8px;background:#11152a;border-radius:12px;padding:18px;text-align:center;margin:14px 0">----</div>
-      <input type="text" id="captchaAnswer" placeholder="أدخل الرقم هنا" style="width:100%;padding:12px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff;text-align:center;font-size:18px">
-      <button class="btn btn-success" style="width:100%;margin-top:12px" onclick="submitCaptcha()">✅ تحقق واحصل على العملات</button>
-      <p style="color:var(--muted);font-size:12px;margin-top:10px">📺 يُعرض إعلان قصير (<?= (int)setting('captcha_ad_seconds', 5) ?> ثوانٍ) قبل التحقق لدعم استمرار المنصة.</p>
-    </div>
-    <?php
-    break;
-
-case 'watch':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لمشاهدة الإعلانات وكسب العملات.</div>'; break; }
-    $day = date('Y-m-d');
-    $st = db()->prepare("SELECT count FROM ad_watch_logs WHERE user_id=? AND day=?");
-    $st->execute([$user['id'], $day]);
-    $doneAds = $st->fetch()['count'] ?? 0;
-    $maxAds = (int)setting('ad_watch_max_per_day', 20);
-    $adReward = (int)setting('ad_watch_reward', 50);
-    $adSecs = (int)setting('ad_watch_seconds', 30);
-    ?>
-    <div class="admin-box" style="margin-top:18px;text-align:center">
-      <h2>📺 شاهد إعلان واربح المزيد</h2>
-      <p style="color:var(--muted);margin:10px 0">شاهد إعلاناً لمدة <?= $adSecs ?> ثانية واحصل على <strong style="color:var(--accent2)"><?= $adReward ?> عملة</strong>.</p>
-      <p style="color:var(--muted);font-size:13px">المتبقي اليوم: <?= max(0, $maxAds - $doneAds) ?>/<?= $maxAds ?></p>
-      <div style="font-size:64px;margin:18px 0">🎬</div>
-      <button class="btn btn-success" id="watchBtn" style="width:100%" onclick="watchAd(<?= $adSecs ?>)">▶️ ابدأ مشاهدة الإعلان</button>
-    </div>
-    <?php
-    break;
-
-case 'wheel':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لتدوير عجلة الحظ.</div>'; break; }
-    $prizes = array_values(array_filter(array_map('intval', explode(',', setting('wheel_prizes', '0,5,10,20,50,100')))));
-    if (!$prizes) $prizes = [0, 5, 10, 20, 50, 100];
-    $cost = (int)setting('wheel_cost', 20);
-    $n = count($prizes);
-    $seg = 360 / $n;
-    $cols = ['#6c5ce7', '#00d2a0', '#ffd86b', '#ff5c5c', '#a08bff', '#33c1ff', '#ff8fcf', '#ffd86b'];
-    $grad = [];
-    for ($i = 0; $i < $n; $i++) {
-        $c = $cols[$i % count($cols)];
-        $grad[] = "$c " . ($i * $seg) . "deg " . (($i + 1) * $seg) . "deg";
+            <?php
+        },
+        'live_ticker' => function () {
+            if (setting('live_ticker_enabled', '1') !== '1') return;
+            $recent = db()->query("SELECT name, kind FROM apps WHERE status='published' ORDER BY id DESC LIMIT 15")->fetchAll();
+            if (!$recent) return; ?>
+            <div class="ticker-bar live-ticker">
+              <span class="ticker-badge"><?= icon('rocket', 'ic-sm') ?>مباشر</span>
+              <div class="ticker-track">
+                <div class="ticker-track-inner">
+                  <?php foreach (array_merge($recent, $recent) as $r): ?>
+                    <span class="ticker-item"><?= icon($r['kind'] === 'game' ? 'rocket' : 'android', 'ic-sm') ?><?= e($r['name']) ?> <strong><?= $r['kind'] === 'game' ? 'لعبة جديدة' : 'تطبيق جديد' ?></strong></span>
+                  <?php endforeach; ?>
+                </div>
+              </div>
+            </div>
+            <?php
+        },
+        'products' => function () use ($products, $categories, $byCat, $uncategorized) {
+            if (!$products) { ?>
+              <div class="empty"><?= icon('rocket', 'ic ic-lg') ?><br><?= e(setting('empty_products_text', 'لا توجد منتجات حالياً، تابعنا قريباً')) ?></div>
+              <?php return;
+            } ?>
+            <?php foreach ($categories as $c): if (empty($byCat[$c['id']])) continue; ?>
+              <div class="section-title" id="cat-<?= (int)$c['id'] ?>"><?= icon(category_icon_name($c['name']), 'ic') ?><?= e($c['name']) ?></div>
+              <div class="grid">
+                <?php foreach ($byCat[$c['id']] as $p) render_product_card($p); ?>
+              </div>
+            <?php endforeach; ?>
+            <?php if ($uncategorized): ?>
+              <div class="section-title"><?= icon('cart', 'ic') ?>أحدث المنتجات</div>
+              <div class="grid">
+                <?php foreach ($uncategorized as $p) render_product_card($p); ?>
+              </div>
+            <?php endif; ?>
+            <?php
+        },
+        'latest_apps' => function () {
+            $apps = db()->query("SELECT * FROM apps WHERE status='published' ORDER BY id DESC LIMIT 7")->fetchAll();
+            if (!$apps) { ?>
+              <div class="empty"><?= icon('android', 'ic ic-lg') ?><br>لا توجد تطبيقات أو ألعاب منشورة حالياً، تابعنا قريباً</div>
+              <?php return;
+            } ?>
+            <div class="section-title"><?= icon('android', 'ic') ?>أحدث التطبيقات والألعاب</div>
+            <div class="grid apps-grid">
+              <?php foreach ($apps as $a): render_app_card($a); endforeach; ?>
+            </div>
+            <div style="text-align:center;margin:18px 0">
+              <a href="?page=apps" class="btn btn-ghost"><?= icon('android', 'ic-sm') ?>عرض كل التطبيقات والألعاب</a>
+            </div>
+            <?php
+        },
+        'trending_apps' => function () {
+            if (setting('trending_apps_enabled', '1') !== '1') return;
+            $apps = db()->query("SELECT * FROM apps WHERE status='published' ORDER BY downloads DESC, views DESC LIMIT 7")->fetchAll();
+            if (!$apps) return; ?>
+            <div class="section-title"><?= icon('rocket', 'ic') ?>الأكثر تحميلاً</div>
+            <div class="grid apps-grid">
+              <?php foreach ($apps as $a): render_app_card($a); endforeach; ?>
+            </div>
+            <?php
+        },
+        'soon' => function () { ?>
+            <div class="section-title"><?= icon('rocket', 'ic') ?>تطبيقات وألعاب — قريباً</div>
+            <div class="grid">
+              <?php foreach ([['تطبيقات معدّلة (مود)', 'globe'], ['ألعاب بقوائم غش', 'rocket'], ['اشتراكات مميزة', 'star']] as [$label, $ic]): ?>
+                <div class="card soon-card">
+                  <span class="tag" style="background:linear-gradient(135deg,#555,#333)">قريباً</span>
+                  <div class="icon-wrap"><?= icon($ic, 'ic ic-xl') ?></div>
+                  <h3><?= e($label) ?></h3>
+                  <div class="desc">هذا القسم قيد التحضير وسيتوفر قريباً، تابعنا للحصول على آخر التحديثات.</div>
+                  <button class="btn btn-ghost" disabled style="opacity:.6;cursor:not-allowed"><?= icon('clock', 'ic-sm') ?>قريباً</button>
+                </div>
+              <?php endforeach; ?>
+            </div>
+            <?php
+        },
+    ];
+    $homeOrder = array_filter(explode(',', setting('home_sections_order', '')));
+    $homeHidden = array_filter(explode(',', setting('home_sections_hidden', '')));
+    foreach ($homeOrder as $sKey) {
+        if (in_array($sKey, $homeHidden, true)) continue;
+        if (isset($homeSections[$sKey])) $homeSections[$sKey]();
     }
     ?>
-    <div class="section-title">🎡 عجلة الحظ</div>
-    <div class="admin-box wheel-stage">
-      <p style="color:var(--muted)">كل دورة تكلّف <strong style="color:#ffd86b"><?= $cost ?> عملة</strong> — العب بلا حدود!</p>
-      <div class="wheel-outer">
-        <div class="wheel-pointer">🔻</div>
-        <div class="wheel" id="wheel" style="background:conic-gradient(<?= implode(',', $grad) ?>)">
-          <?php for ($i = 0; $i < $n; $i++):
-            $ang = $i * $seg + $seg / 2; ?>
-            <div style="position:absolute;top:50%;left:50%;transform:translate(-50%,-50%) rotate(<?= $ang ?>deg);width:50%;height:0">
-              <span style="position:absolute;right:14px;top:-10px;transform:rotate(90deg);font-weight:800;font-size:15px;color:#10131f;text-shadow:0 1px 1px rgba(255,255,255,.4)"><?= $prizes[$i] ?></span>
-            </div>
-          <?php endfor; ?>
-        </div>
-        <div class="wheel-hub">SPIN</div>
+    <?php
+    break;
+
+case 'category':
+    $catSlug = $_GET['slug'] ?? '';
+    if ($catSlug === '') { echo '<div class="empty">القسم غير محدد</div>'; break; }
+    $cSt = db()->prepare("SELECT * FROM categories WHERE slug=? OR id=?");
+    $cSt->execute([$catSlug, (int)$catSlug]);
+    $cat = $cSt->fetch();
+    if (!$cat) { echo '<div class="empty">القسم غير موجود</div>'; break; }
+    $pStmt = db()->prepare("SELECT * FROM products WHERE category_id=? AND status='active' ORDER BY id DESC");
+    $pStmt->execute([$cat['id']]);
+    $catProducts = $pStmt->fetchAll();
+    $wishlistSet = [];
+    if ($user) {
+        $st = db()->prepare("SELECT product_id FROM wishlist WHERE user_id=?");
+        $st->execute([$user['id']]);
+        foreach ($st->fetchAll() as $w) $wishlistSet[$w['product_id']] = true;
+    }
+    ?>
+    <div class="cat-hero">
+      <div class="cat-hero-icon"><span><?= e($cat['icon_svg'] ?: '📦') ?></span></div>
+      <h1><?= e($cat['name']) ?></h1>
+      <?php if (!empty($cat['description'])): ?><p><?= e($cat['description']) ?></p><?php endif; ?>
+      <div style="margin-top:12px;font-size:13px;color:#6ee7b7"><?= count($catProducts) ?> منتج متاح</div>
+    </div>
+    <?php if (!$catProducts): ?>
+      <div class="empty" style="margin:24px 18px">لا توجد منتجات في هذا القسم بعد.</div>
+    <?php else: ?>
+      <div class="grid" style="padding:16px 18px 30px">
+        <?php foreach ($catProducts as $p) render_product_card($p); ?>
       </div>
-      <div class="wheel-result" id="wheelResult"></div>
-      <button class="btn btn-success" id="spinBtn" style="width:100%;font-size:16px" onclick="spinWheel()">🎯 أدِر العجلة (<?= $cost ?> 🪙)</button>
-      <p style="color:var(--muted);font-size:12px">رصيدك الحالي: <span id="wheelBal"><?= (int)$user['points'] ?></span> عملة</p>
-    </div>
-    <script>window.WHEEL_SEG = <?= $seg ?>; window.WHEEL_N = <?= $n ?>;</script>
-    <?php
-    break;
-
-case 'referral':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض رابط الإحالة.</div>'; break; }
-    $refUrl = (SITE_URL ?: '') . '/?ref=' . $user['ref_code'];
-    $invited = db()->prepare("SELECT COUNT(*) c FROM users WHERE referred_by=?");
-    $invited->execute([$user['id']]);
-    $invitedCount = $invited->fetch()['c'];
-    $refReward = (int)setting('referral_reward', 100);
-    ?>
-    <div class="section-title">🎁 مركز الإحالة</div>
-    <div style="padding:0 18px">
-      <div class="ref-card">
-        <div style="font-size:22px;font-weight:800">ادعُ أصدقاءك واربح <?= $refReward ?> عملة!</div>
-        <p style="opacity:.9;margin-top:6px">يحصل صديقك على مكافأة ترحيب أيضاً عند التسجيل عبر رابطك.</p>
-        <div class="ref-link">
-          <input id="refInput" value="<?= e($refUrl) ?>" readonly>
-          <button class="btn btn-success" onclick="copyRef()">📋 نسخ</button>
-        </div>
-        <button class="btn btn-ghost" style="margin-top:8px;width:100%" onclick="shareRef('<?= e($refUrl) ?>')">📤 مشاركة الرابط</button>
-      </div>
-      <div class="admin-box">
-        <div style="display:flex;justify-content:space-around;text-align:center">
-          <div><div style="font-size:26px;font-weight:800;color:var(--accent2)"><?= (int)$invitedCount ?></div><div style="color:var(--muted);font-size:13px">صديق مدعو</div></div>
-          <div><div style="font-size:26px;font-weight:800;color:#ffd86b"><?= (int)$invitedCount * $refReward ?></div><div style="color:var(--muted);font-size:13px">عملة مكتسبة</div></div>
-          <div><div style="font-size:26px;font-weight:800;color:var(--accent)"><?= e($user['ref_code']) ?></div><div style="color:var(--muted);font-size:13px">رمزك</div></div>
-        </div>
-      </div>
-    </div>
-    <?php
-    break;
-
-case 'leaderboard':
-    $top = db()->query("SELECT name, avatar, points FROM users WHERE is_banned=0 ORDER BY points DESC LIMIT 30")->fetchAll();
-    ?>
-    <div class="section-title">🏆 قائمة المتصدرين</div>
-    <div class="admin-box">
-      <?php if (!$top): ?><div class="empty">لا يوجد متصدرون بعد.</div><?php endif; ?>
-      <?php foreach ($top as $i => $t): $rank = $i + 1; ?>
-        <div class="lb-row">
-          <div class="lb-rank <?= $rank <= 3 ? 'r' . $rank : '' ?>"><?= $rank <= 3 ? ['🥇','🥈','🥉'][$rank-1] : $rank ?></div>
-          <?php if ($t['avatar']): ?><img src="<?= e($t['avatar']) ?>" onerror="this.style.display='none'"><?php endif; ?>
-          <div style="flex:1;font-weight:600"><?= e($t['name'] ?: 'مستخدم') ?></div>
-          <div style="color:#ffd86b;font-weight:800">🪙 <?= number_format((int)$t['points']) ?></div>
-        </div>
-      <?php endforeach; ?>
-    </div>
-    <?php
-    break;
-
-case 'chats':
-    $groups = db()->query("SELECT * FROM chat_groups WHERE active=1 ORDER BY sort_order, id")->fetchAll();
-    ?>
-    <div class="section-title">💬 مجموعات الدردشة</div>
-    <div class="admin-box">
-      <?php if (!$groups): ?><div class="empty">لا توجد مجموعات حالياً.</div><?php endif; ?>
-      <?php foreach ($groups as $g): ?>
-        <a href="<?= e($g['link']) ?>" target="_blank" class="lb-row" style="text-decoration:none">
-          <div class="lb-rank" style="font-size:20px"><?= e($g['icon'] ?: '💬') ?></div>
-          <div style="flex:1"><div style="font-weight:700"><?= e($g['name']) ?></div><?php if ($g['members']): ?><div style="color:var(--muted);font-size:12px">👥 <?= e($g['members']) ?> عضو</div><?php endif; ?></div>
-          <span class="btn btn-primary">انضمام</span>
-        </a>
-      <?php endforeach; ?>
-    </div>
-    <?php
-    break;
-
-case 'tasks':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض المهام.</div>'; break; }
-    $tasks = db()->query("SELECT * FROM tasks WHERE active=1")->fetchAll();
-    $day = date('Y-m-d');
-    ?>
-    <div class="section-title">📋 المهام اليومية</div>
-    <div class="admin-box">
-    <?php if (!$tasks): ?>
-      <div class="empty">لا توجد مهام حالياً.</div>
     <?php endif; ?>
-    <?php foreach ($tasks as $t):
-        $st = db()->prepare("SELECT * FROM task_completions WHERE user_id=? AND task_id=? AND day=?");
-        $st->execute([$user['id'], $t['id'], $day]);
-        $done = (bool)$st->fetch();
+    <?php
+    break;
+
+case 'product':
+    if (!$seoProduct) {
+        echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>المنتج غير موجود أو غير متاح.<br><a href="?" class="btn btn-primary" style="margin-top:14px;display:inline-block">عودة للرئيسية</a></div>';
+        break;
+    }
+    $p = $seoProduct;
+    $pkgSt = db()->prepare("SELECT * FROM packages WHERE product_id=? AND active=1 ORDER BY sort_order, price");
+    $pkgSt->execute([$p['id']]);
+    $packages = $pkgSt->fetchAll();
+    $hasPackages = count($packages) > 0;
+    $__needsId2 = product_needs_account_id($p['name'] ?? '', '');
     ?>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #232a45">
-        <div>
-          <strong><?= e($t['title']) ?></strong>
-          <div style="color:var(--muted);font-size:12px">⏱️ <?= (int)$t['seconds'] ?> ثانية · +<?= (int)$t['reward'] ?> عملة</div>
-        </div>
-        <?php if ($done): ?>
-          <span class="badge approved">✅ مكتملة</span>
+    <div class="breadcrumb" style="padding:14px 18px;font-size:13px;color:var(--muted)">
+      <a href="?">الرئيسية</a> / <span><?= e($p['name']) ?></span>
+    </div>
+    <div class="product-detail-pro">
+      <div class="pdp-hero">
+        <?php if ($p['image']): ?>
+          <img class="pdp-img" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
         <?php else: ?>
-          <button class="btn btn-primary" onclick="startTask(<?= (int)$t['id'] ?>, '<?= e($t['url']) ?>', <?= (int)$t['seconds'] ?>)">ابدأ</button>
+          <div class="pdp-img pdp-emoji"><?= e($p['icon'] ?: product_auto_emoji($p['name'] ?? '')) ?></div>
+        <?php endif; ?>
+        <div class="pdp-title">
+          <h1><?= e($p['name']) ?></h1>
+          <?php if ($p['description']): ?><p><?= e(mb_strimwidth($p['description'], 0, 140, '…')) ?></p><?php endif; ?>
+        </div>
+      </div>
+
+      <?php if ($hasPackages): ?>
+        <div class="pdp-section-title"><?= icon('star', 'ic-sm') ?> اختر الباقة المناسبة</div>
+        <div class="packages-grid">
+          <?php foreach ($packages as $pk):
+              $isCustom = (int)$pk['allow_custom_amount'];
+              $pkPrice = (float)$pk['price'];
+              $pkOldPrice = (float)($pk['old_price'] ?? 0);
+              $pkEmoji = $pk['icon'] ?: '💎';
+          ?>
+            <button type="button" class="pkg-card" onclick='pickPackage(<?= (int)$pk['id'] ?>, <?= json_encode(['name'=>$pk['name'],'price'=>$pkPrice,'productName'=>$p['name'],'productImage'=>$p['image'],'productIcon'=>$p['icon'] ?: product_auto_emoji($p['name']),'needsId'=>$__needsId2,'custom'=>(bool)$isCustom,'minAmt'=>(float)$pk['min_amount'],'maxAmt'=>(float)$pk['max_amount'],'emoji'=>$pkEmoji], JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'>
+              <?php if ($pk['tag']): ?><span class="pkg-tag"><?= e($pk['tag']) ?></span><?php endif; ?>
+              <div class="pkg-emoji"><?= e($pkEmoji) ?></div>
+              <div class="pkg-name"><?= e($pk['name']) ?></div>
+              <?php if ($pk['quantity']): ?><div class="pkg-qty"><?= (int)$pk['quantity'] ?> <?= e($pk['currency'] ?: '') ?></div><?php endif; ?>
+              <div class="pkg-price-wrap">
+                <?php if ($pkOldPrice > 0 && $pkOldPrice > $pkPrice): ?><span class="pkg-old"><?= number_format($pkOldPrice, 2) ?>$</span><?php endif; ?>
+                <span class="pkg-price"><?php if ($isCustom): ?>مخصّص<?php else: ?><?= number_format($pkPrice, 2) ?>$<?php endif; ?></span>
+              </div>
+            </button>
+          <?php endforeach; ?>
+        </div>
+      <?php else: ?>
+        <div class="pdp-info">
+          <?php if ($p['tag']): ?><span class="tag" style="position:static;display:inline-block;margin-bottom:8px"><?= e($p['tag']) ?></span><?php endif; ?>
+          <div class="pd-price"><span class="price"><?= e($p['price']) ?>$</span><?php if ($p['old_price']): ?><span class="old"><?= e($p['old_price']) ?>$</span><?php endif; ?></div>
+          <?php if ($p['description']): ?><p class="pd-desc"><?= nl2br(e($p['description'])) ?></p><?php endif; ?>
+          <button class="btn btn-primary buy" style="width:100%" onclick='buyProduct(<?= (int)$p['id'] ?>, <?= (float)$p['price'] ?>, <?= json_encode(['name'=>$p['name'],'desc'=>mb_substr((string)($p['description']??''),0,120),'image'=>$p['image']??'','icon'=>$p['icon']??'','needsId'=>$__needsId2,'idLabel'=>$__needsId2 ? 'آيدي حسابك في '.$p['name'] : ''], JSON_UNESCAPED_UNICODE|JSON_HEX_APOS|JSON_HEX_QUOT) ?>)'><?= icon('cart', 'ic-sm') ?>طلب شراء</button>
+        </div>
+      <?php endif; ?>
+    </div>
+
+    <!-- نافذة الباقة المنبثقة -->
+    <div class="modal-bg" id="pkgModal" style="display:none">
+      <div class="modal buy-modal buy-modal-pro">
+        <button type="button" class="buy-close" onclick="document.getElementById('pkgModal').style.display='none'"><?= icon('x', 'ic-sm') ?></button>
+        <div class="buy-hero">
+          <div class="buy-hero-icon" id="pkgIconEl"><span style="font-size:34px">💎</span></div>
+          <h2 id="pkgTitleEl">اختر الباقة</h2>
+          <p class="buy-hero-desc" id="pkgDescEl"></p>
+        </div>
+        <div class="buy-price-card">
+          <div class="bpc-total"><span>السعر</span><strong id="pkgPriceEl">0$</strong></div>
+        </div>
+        <div id="pkgCustomWrap" style="display:none;margin:0 18px 12px">
+          <label class="buy-field-label">💰 <span>حدّد المبلغ (نطاق مسموح: <span id="pkgMinMax">—</span>)</span></label>
+          <input type="number" class="buy-input" id="pkgCustomAmount" placeholder="أدخل المبلغ المطلوب">
+        </div>
+        <div id="pkgIdWrap" style="display:none">
+          <label class="buy-field-label"><?= icon('user','ic-sm') ?> <span id="pkgIdLbl">آيدي حسابك</span> *</label>
+          <input type="text" id="pkgAccountId" class="buy-input" placeholder="مثال: 5123456789">
+          <p class="buy-hint">أدخل الآيدي الظاهر في التطبيق/اللعبة لضمان وصول الشحن للحساب الصحيح.</p>
+        </div>
+        <div class="buy-balance-info">
+          <div class="bbi-row"><div class="bbi-label"><?= icon('wallet','ic-sm') ?> رصيدي</div><div class="bbi-value"><?= $user ? number_format((float)user_balance($user['id']), 2) : '0.00' ?><?= e(setting('wallet_currency_symbol','$')) ?></div></div>
+        </div>
+        <div class="buy-actions">
+          <button type="button" class="btn-buy-confirm" onclick="confirmPackage()"><?= icon('check','ic-sm') ?> تأكيد الشراء</button>
+          <button type="button" class="btn-buy-cancel" onclick="document.getElementById('pkgModal').style.display='none'">إلغاء</button>
+        </div>
+      </div>
+    </div>
+    <script>
+    let __pkgState = null;
+    function pickPackage(id, meta){
+      if (!LOGGED_IN) return requireLogin();
+      __pkgState = Object.assign({id: id}, meta);
+      document.getElementById('pkgTitleEl').textContent = meta.productName + ' — ' + meta.name;
+      document.getElementById('pkgDescEl').textContent = meta.custom ? 'اختر مبلغاً مخصّصاً' : (meta.name + ' — سعر ثابت');
+      document.getElementById('pkgIconEl').innerHTML = '<span style="font-size:34px">' + meta.emoji + '</span>';
+      document.getElementById('pkgPriceEl').textContent = (meta.custom ? 'مخصّص' : meta.price.toFixed(2) + '<?= e(setting('wallet_currency_symbol','$')) ?>');
+      document.getElementById('pkgCustomWrap').style.display = meta.custom ? 'block' : 'none';
+      if (meta.custom) {
+        document.getElementById('pkgMinMax').textContent = meta.minAmt + ' — ' + meta.maxAmt;
+        document.getElementById('pkgCustomAmount').value = '';
+      }
+      document.getElementById('pkgIdWrap').style.display = meta.needsId ? 'block' : 'none';
+      document.getElementById('pkgIdLbl').textContent = 'آيدي حسابك في ' + meta.productName;
+      document.getElementById('pkgAccountId').value = '';
+      document.getElementById('pkgModal').style.display = 'flex';
+    }
+    async function confirmPackage(){
+      if (!__pkgState) return;
+      const accId = document.getElementById('pkgAccountId').value.trim();
+      const customAmt = parseFloat(document.getElementById('pkgCustomAmount').value) || 0;
+      if (__pkgState.needsId && !accId) return toast('يجب إدخال الآيدي.');
+      if (__pkgState.custom && !customAmt) return toast('يجب إدخال المبلغ المخصّص.');
+      const fd = new FormData();
+      fd.append('csrf', CSRF);
+      fd.append('package_id', __pkgState.id);
+      fd.append('account_id', accId);
+      fd.append('custom_amount', customAmt);
+      const res = await post('api_buy_package', fd);
+      toast(res.msg);
+      if (res.ok) {
+        document.getElementById('pkgModal').style.display = 'none';
+        setTimeout(() => location.reload(), 1000);
+      }
+    }
+    </script>
+    <?php
+    $pReviews = db()->prepare("SELECT r.*, u.name uname FROM reviews r JOIN users u ON u.id=r.user_id WHERE r.product_id=? ORDER BY r.id DESC");
+    $pReviews->execute([(int)$p['id']]);
+    $pReviews = $pReviews->fetchAll();
+    $pAvgRating = $pReviews ? round(array_sum(array_column($pReviews, 'rating')) / count($pReviews), 1) : 0;
+    ?>
+    <div class="section-title"><?= icon('star', 'ic') ?>تقييمات المنتج<?php if ($pReviews): ?> (<?= $pAvgRating ?>/5 — <?= count($pReviews) ?> تقييم)<?php endif; ?></div>
+    <?php if ($user): ?>
+    <div class="admin-box" style="margin-bottom:14px">
+      <form id="reviewForm" class="formrow" onsubmit="return submitReview(event, <?= (int)$p['id'] ?>)">
+        <select name="rating" required>
+          <option value="">التقييم</option>
+          <?php for ($i = 5; $i >= 1; $i--): ?><option value="<?= $i ?>"><?= $i ?> ⭐</option><?php endfor; ?>
+        </select>
+        <input name="comment" placeholder="رأيك بالمنتج (اختياري)" maxlength="500">
+        <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>إرسال التقييم</button>
+      </form>
+      <div id="reviewMsg" style="font-size:13px;margin-top:6px"></div>
+    </div>
+    <?php endif; ?>
+    <?php if (!$pReviews): ?>
+      <div class="empty"><?= icon('star', 'ic ic-lg') ?><br>لا توجد تقييمات بعد.</div>
+    <?php else: foreach ($pReviews as $rv): ?>
+      <div class="admin-box" style="margin-bottom:8px;padding:12px 14px">
+        <div style="display:flex;justify-content:space-between;font-size:13px"><strong><?= e($rv['uname']) ?></strong><span><?= str_repeat('⭐', (int)$rv['rating']) ?></span></div>
+        <?php if ($rv['comment']): ?><p style="margin:6px 0 0;font-size:13px;color:var(--muted)"><?= nl2br(e($rv['comment'])) ?></p><?php endif; ?>
+      </div>
+    <?php endforeach; endif; ?>
+    <script>
+    function submitReview(ev, productId) {
+      ev.preventDefault();
+      const d = new FormData(ev.target);
+      d.append('product_id', productId);
+      post('api_submit_review', d).then(res => {
+        document.getElementById('reviewMsg').textContent = res.msg || '';
+        if (res.ok) setTimeout(() => location.reload(), 900);
+      });
+      return false;
+    }
+    </script>
+    <?php
+    break;
+
+case 'store':
+    $storeQ = trim($_GET['q'] ?? '');
+    if ($storeQ !== '') {
+        $st = db()->prepare("SELECT * FROM products WHERE status='active' AND name LIKE ? ORDER BY id DESC");
+        $st->execute(['%' . $storeQ . '%']);
+        $storeProducts = $st->fetchAll();
+    } else {
+        $storeProducts = db()->query("SELECT * FROM products WHERE status='active' ORDER BY id DESC")->fetchAll();
+    }
+    $storeCategories = db()->query("SELECT * FROM categories ORDER BY sort_order, id")->fetchAll();
+    $wishlistSet = [];
+    if ($user) {
+        $st = db()->prepare("SELECT product_id FROM wishlist WHERE user_id=?");
+        $st->execute([$user['id']]);
+        foreach ($st->fetchAll() as $w) $wishlistSet[$w['product_id']] = true;
+    }
+    $storeByCat = []; $storeUncategorized = [];
+    foreach ($storeProducts as $p) {
+        if ($p['category_id']) $storeByCat[$p['category_id']][] = $p;
+        else $storeUncategorized[] = $p;
+    }
+    ?>
+    <div class="section-title"><?= icon('cart', 'ic') ?>المتجر — منتجات للبيع</div>
+    <form method="get" action="?" class="search-bar">
+      <input type="hidden" name="page" value="store">
+      <input type="text" name="q" value="<?= e($storeQ) ?>" placeholder="ابحث عن منتج...">
+      <button type="submit"><?= icon('search', 'ic-sm') ?></button>
+    </form>
+    <?php if (!$storeProducts): ?>
+      <div class="empty"><?= icon('rocket', 'ic ic-lg') ?><br><?= e(setting('empty_products_text', 'لا توجد منتجات حالياً، تابعنا قريباً')) ?></div>
+    <?php else: ?>
+      <?php foreach ($storeCategories as $c): if (empty($storeByCat[$c['id']])) continue; ?>
+        <div class="section-title" id="cat-<?= (int)$c['id'] ?>"><?= icon(category_icon_name($c['name']), 'ic') ?><?= e($c['name']) ?></div>
+        <div class="grid">
+          <?php foreach ($storeByCat[$c['id']] as $p) render_product_card($p); ?>
+        </div>
+      <?php endforeach; ?>
+      <?php if ($storeUncategorized): ?>
+        <div class="section-title"><?= icon('cart', 'ic') ?>أحدث المنتجات</div>
+        <div class="grid">
+          <?php foreach ($storeUncategorized as $p) render_product_card($p); ?>
+        </div>
+      <?php endif; ?>
+    <?php endif; ?>
+    <?php
+    break;
+
+case 'apps':
+    $appsQ = trim($_GET['q'] ?? '');
+    $appsKind = $_GET['kind'] ?? '';
+    $appsSort = $_GET['sort'] ?? 'newest';
+    $sqlApps = "SELECT * FROM apps WHERE status='published'";
+    $argsApps = [];
+    if ($appsQ !== '') { $sqlApps .= " AND name LIKE ?"; $argsApps[] = '%' . $appsQ . '%'; }
+    if (in_array($appsKind, ['app', 'game'], true)) { $sqlApps .= " AND kind=?"; $argsApps[] = $appsKind; }
+    $sqlApps .= match ($appsSort) {
+        'downloads' => " ORDER BY downloads DESC",
+        'rating' => " ORDER BY rating_avg DESC",
+        'name' => " ORDER BY name ASC",
+        default => " ORDER BY id DESC",
+    };
+    $st = db()->prepare($sqlApps);
+    $st->execute($argsApps);
+    $appsList = $st->fetchAll();
+    ?>
+    <div class="section-title"><?= icon('android', 'ic') ?>تطبيقات وألعاب</div>
+    <form method="get" action="?" class="search-bar">
+      <input type="hidden" name="page" value="apps">
+      <?php if ($appsKind !== ''): ?><input type="hidden" name="kind" value="<?= e($appsKind) ?>"><?php endif; ?>
+      <?php if ($appsSort !== 'newest'): ?><input type="hidden" name="sort" value="<?= e($appsSort) ?>"><?php endif; ?>
+      <input type="text" name="q" value="<?= e($appsQ) ?>" placeholder="ابحث عن تطبيق أو لعبة...">
+      <button type="submit"><?= icon('search', 'ic-sm') ?></button>
+    </form>
+    <div class="cat-chips">
+      <a href="?page=apps&sort=<?= e($appsSort) ?><?= $appsQ !== '' ? '&q=' . urlencode($appsQ) : '' ?>" class="cat-chip<?= $appsKind === '' ? ' active' : '' ?>"><?= icon('android', 'ic-sm') ?>الكل</a>
+      <a href="?page=apps&kind=app&sort=<?= e($appsSort) ?><?= $appsQ !== '' ? '&q=' . urlencode($appsQ) : '' ?>" class="cat-chip<?= $appsKind === 'app' ? ' active' : '' ?>"><?= icon('android', 'ic-sm') ?>تطبيقات</a>
+      <a href="?page=apps&kind=game&sort=<?= e($appsSort) ?><?= $appsQ !== '' ? '&q=' . urlencode($appsQ) : '' ?>" class="cat-chip<?= $appsKind === 'game' ? ' active' : '' ?>"><?= icon('rocket', 'ic-sm') ?>ألعاب</a>
+    </div>
+    <div class="cat-chips" style="margin-top:6px">
+      <?php foreach (['newest' => 'الأحدث', 'downloads' => 'الأكثر تحميلاً', 'rating' => 'الأعلى تقييماً', 'name' => 'الاسم (أ-ي)'] as $sk => $sl): ?>
+        <a href="?page=apps&sort=<?= $sk ?><?= $appsKind !== '' ? '&kind=' . e($appsKind) : '' ?><?= $appsQ !== '' ? '&q=' . urlencode($appsQ) : '' ?>" class="cat-chip<?= $appsSort === $sk ? ' active' : '' ?>"><?= icon('chart', 'ic-sm') ?><?= $sl ?></a>
+      <?php endforeach; ?>
+    </div>
+    <?php if (!$appsList): ?>
+      <div class="empty"><?= icon('android', 'ic ic-lg') ?><br>لا توجد نتائج.</div>
+    <?php else: ?>
+      <div class="grid apps-grid">
+        <?php foreach ($appsList as $a) render_app_card($a); ?>
+      </div>
+    <?php endif; ?>
+    <?php
+    break;
+
+case 'app':
+    if (!$seoApp) {
+        echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>التطبيق غير موجود أو غير متاح.<br><a href="?page=apps" class="btn btn-primary" style="margin-top:14px;display:inline-block">عودة لقائمة التطبيقات</a></div>';
+        break;
+    }
+    $a = $seoApp;
+    db()->prepare("UPDATE apps SET views = views + 1 WHERE id=?")->execute([$a['id']]);
+    $screenshots = array_filter(explode(',', (string)$a['screenshots']));
+    $permissions = array_filter(explode(',', (string)$a['permissions']));
+    $likes = (int)$a['likes_count']; $dislikes = (int)$a['dislikes_count'];
+    $totalVotes = $likes + $dislikes;
+    $popularity = $totalVotes > 0 ? round($likes / $totalVotes * 100) : 99;
+    $hasVoted = isset($_SESSION['voted_apps'][$a['id']]);
+    ?>
+    <div class="breadcrumb" style="padding:14px 18px;font-size:13px;color:var(--muted)">
+      <a href="?">الرئيسية</a> / <a href="?page=apps"><?= $a['kind'] === 'game' ? 'ألعاب' : 'تطبيقات' ?></a> / <span><?= e($a['name']) ?></span>
+    </div>
+    <div class="app-detail">
+      <div class="app-detail-head">
+        <?php if ($a['icon']): ?>
+          <img class="app-detail-icon" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
+        <?php else: ?>
+          <div class="app-detail-icon icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
+        <?php endif; ?>
+        <div class="app-detail-info">
+          <h1><?= e($a['name']) ?></h1>
+          <div class="app-detail-meta">
+            <?php if ($a['developer_name']): ?><span><?= icon('users', 'ic-sm') ?><?= e($a['developer_name']) ?></span><?php endif; ?>
+          </div>
+        </div>
+      </div>
+
+      <div class="app-stat-grid">
+        <?php if ($a['version']): ?><div class="app-stat-box"><?= icon('rocket', 'ic-sm') ?><span>النسخة</span><strong><?= e($a['version']) ?></strong></div><?php endif; ?>
+        <div class="app-stat-box"><?= icon('history', 'ic-sm') ?><span>تحديث</span><strong><?= e(date('d/m/Y', strtotime((string)$a['created_at']))) ?></strong></div>
+        <?php if ($a['min_android']): ?><div class="app-stat-box"><?= icon('android', 'ic-sm') ?><span>المتطلبات</span><strong>أندرويد <?= e($a['min_android']) ?></strong></div><?php endif; ?>
+        <?php if ($a['size_label']): ?><div class="app-stat-box"><?= icon('download', 'ic-sm') ?><span>الحجم</span><strong><?= e($a['size_label']) ?></strong></div><?php endif; ?>
+        <?php if ($a['category']): ?><div class="app-stat-box"><?= icon('chart', 'ic-sm') ?><span>التصنيف</span><strong><?= e($a['category']) ?></strong></div><?php endif; ?>
+        <div class="app-stat-box"><?= icon('eye', 'ic-sm') ?><span>المشاهدات</span><strong><?= number_format((int)$a['views'] + 1) ?></strong></div>
+      </div>
+
+      <div class="app-popularity-bar"><div class="app-popularity-fill" style="width:<?= $popularity ?>%"></div><span><?= $popularity ?>% الشعبية</span></div>
+
+      <div class="app-vote-row">
+        <button type="button" class="app-vote-btn down" id="appVoteDown" onclick="appVote(<?= (int)$a['id'] ?>,'down')" <?= $hasVoted ? 'disabled' : '' ?>><?= icon('thumb-down', 'ic-sm') ?><span id="appDislikeCount"><?= number_format($dislikes) ?></span></button>
+        <button type="button" class="app-vote-btn up" id="appVoteUp" onclick="appVote(<?= (int)$a['id'] ?>,'up')" <?= $hasVoted ? 'disabled' : '' ?>><?= icon('thumb-up', 'ic-sm') ?><span id="appLikeCount"><?= number_format($likes) ?></span></button>
+      </div>
+
+      <div class="app-detail-stats" style="margin-bottom:14px">
+        <?php if ($a['rating_avg']): ?><span><?= icon('star', 'ic-sm') ?><?= e(number_format((float)$a['rating_avg'], 1)) ?></span><?php endif; ?>
+        <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads']) ?> تحميل</span>
+      </div>
+
+      <div class="app-action-buttons">
+        <a class="btn app-btn-download" href="?page=app_download&id=<?= (int)$a['id'] ?>"><?= icon('download', 'ic-sm') ?>تحميل الآن</a>
+        <?php if (setting('telegram_channel_url')): ?>
+          <a class="btn app-btn-telegram" href="<?= e(setting('telegram_channel_url')) ?>" target="_blank" rel="nofollow noopener"><?= icon('telegram', 'ic-sm') ?>اشترك في قناة تيليجرام</a>
+        <?php endif; ?>
+        <?php if (setting('app_notify_enabled', '1') === '1'): ?>
+          <button type="button" class="btn app-btn-notify" onclick="appNotifySubscribe(this)"><?= icon('bell', 'ic-sm') ?>اشترك في التحديثات</button>
         <?php endif; ?>
       </div>
-    <?php endforeach; ?>
+
+      <?php if ($screenshots): ?>
+      <div class="app-screens">
+        <?php foreach ($screenshots as $s): ?><img src="<?= e($s) ?>" loading="lazy" decoding="async" alt="لقطة شاشة"><?php endforeach; ?>
+      </div>
+      <?php endif; ?>
+
+      <?php if ($a['short_description']): ?><p class="app-short-desc"><?= e($a['short_description']) ?></p><?php endif; ?>
+      <?php if ($a['description']): ?>
+        <div class="section-title"><?= icon('check', 'ic') ?>الوصف</div>
+        <p class="app-desc"><?= nl2br(e($a['description'])) ?></p>
+      <?php endif; ?>
+      <?php if ($a['changelog']): ?>
+        <div class="section-title"><?= icon('history', 'ic') ?>سجل التحديثات</div>
+        <p class="app-desc"><?= nl2br(e($a['changelog'])) ?></p>
+      <?php endif; ?>
+      <?php if ($permissions): ?>
+        <div class="section-title"><?= icon('check', 'ic') ?>الصلاحيات المطلوبة</div>
+        <ul class="app-permissions">
+          <?php foreach ($permissions as $perm): ?><li><?= e(trim($perm)) ?></li><?php endforeach; ?>
+        </ul>
+      <?php endif; ?>
+      <div class="section-title"><?= icon('check', 'ic') ?>معلومات إضافية</div>
+      <div class="app-info-grid">
+        <?php if ($a['package_name']): ?>
+          <?php $gpUrl = 'https://play.google.com/store/apps/details?id=' . urlencode($a['package_name']); ?>
+          <div><span>اسم الحزمة</span><strong style="display:flex;align-items:center;gap:6px"><code style="background:#101a2e;padding:2px 6px;border-radius:5px;font-size:11px"><?= e($a['package_name']) ?></code><a href="<?= e($gpUrl) ?>" target="_blank" rel="nofollow noopener" title="عرض على جوجل بلاي" style="background:linear-gradient(135deg,#0f9d58,#0b8043);color:#fff;width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0" aria-label="Google Play"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3.6 1.9v20.2l11.2-10.1L3.6 1.9zm12.9 6.4L6.2 2.5l10 9zm3.1 3.7L22 12l-2.4-1.4-3 2.7 3 2.7zM6.2 21.5l10.3-5.8-2.1-1.9-8.2 7.7z"/></svg></a></strong></div>
+        <?php endif; ?>
+        <?php if ($a['min_android']): ?><div><span>أقل إصدار أندرويد</span><strong><?= e($a['min_android']) ?></strong></div><?php endif; ?>
+        <?php if ($a['category']): ?><div><span>التصنيف</span><strong><?= e($a['category']) ?></strong></div><?php endif; ?>
+        <?php if ($a['developer_website']): ?><div><span>موقع المطوّر</span><strong><a href="<?= e($a['developer_website']) ?>" target="_blank" rel="nofollow noopener" title="موقع المطوّر" style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;padding:4px 10px;border-radius:8px;font-size:11px;display:inline-flex;align-items:center;gap:4px">🌐 زيارة</a></strong></div><?php endif; ?>
+        <?php if ($a['privacy_policy_url']): ?><div><span>سياسة الخصوصية</span><strong><a href="<?= e($a['privacy_policy_url']) ?>" target="_blank" rel="nofollow noopener" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;padding:4px 10px;border-radius:8px;font-size:11px;display:inline-flex;align-items:center;gap:4px">🔒 عرض</a></strong></div><?php endif; ?>
+      </div>
+
+      <div class="app-share-row" style="display:flex;gap:10px;margin:16px 0">
+        <button type="button" class="btn btn-ghost" onclick="shareAppLink(this)" data-url="<?= e(app_canonical_url($a)) ?>"><?= icon('send', 'ic-sm') ?>مشاركة</button>
+      </div>
+
+      <!-- ==== قسم مميزات + FAQ + تثبيت + شروط لكل تطبيق (SEO Boost) ==== -->
+      <div class="section-title"><?= icon('star', 'ic') ?> مميزات <?= e($a['name']) ?></div>
+      <div class="app-features-list">
+        <div class="feature-item"><span>⚡</span><div><strong>سرعة عالية في التحميل</strong><small>روابط مباشرة بدون إعلانات مزعجة</small></div></div>
+        <div class="feature-item"><span>🔒</span><div><strong>آمن 100%</strong><small>مفحوص من الفيروسات والبرمجيات الخبيثة</small></div></div>
+        <div class="feature-item"><span>🆓</span><div><strong>مجاني بالكامل</strong><small>بدون رسوم خفية أو اشتراكات</small></div></div>
+        <div class="feature-item"><span>🔄</span><div><strong>محدّث باستمرار</strong><small>آخر إصدار متوفر دائماً</small></div></div>
+        <div class="feature-item"><span>📱</span><div><strong>يدعم أغلب الأجهزة</strong><small>يعمل على أندرويد <?= e($a['min_android'] ?: '5.0') ?>+</small></div></div>
+        <div class="feature-item"><span>🌍</span><div><strong>يدعم اللغة العربية</strong><small>واجهة سهلة ومفهومة</small></div></div>
+      </div>
+
+      <div class="section-title"><?= icon('doc', 'ic') ?> كيفية تثبيت <?= e($a['name']) ?></div>
+      <div class="admin-box" style="line-height:1.9">
+        <ol style="padding-inline-start:20px;color:var(--muted)">
+          <li>اضغط زر <strong>«تحميل الآن»</strong> في أعلى الصفحة.</li>
+          <li>انتظر بضع ثوانٍ حتى يظهر رابط التحميل المباشر.</li>
+          <li>ابدأ التحميل بحجم <strong><?= e($a['size_label'] ?: '—') ?></strong>.</li>
+          <li>افتح إعدادات هاتفك ← <strong>الأمان</strong> ← فعّل «مصادر غير معروفة».</li>
+          <li>افتح ملف APK وابدأ التثبيت.</li>
+          <li>افتح <?= e($a['name']) ?> واستمتع!</li>
+        </ol>
+      </div>
+
+      <div class="section-title"><?= icon('doc', 'ic') ?> الأسئلة الشائعة عن <?= e($a['name']) ?></div>
+      <div class="app-faq">
+        <details><summary>❓ هل <?= e($a['name']) ?> مجاني؟</summary><p>نعم، <?= e($a['name']) ?> متاح للتحميل مجاناً بالكامل من موقعنا بأحدث إصدار (<?= e($a['version'] ?: '1.0') ?>).</p></details>
+        <details><summary>❓ هل التطبيق آمن على هاتفي؟</summary><p>نعم، نفحص كل ملف APK قبل نشره على الموقع للتأكد من خلوّه من الفيروسات. ننصح دائماً بمسح إضافي عبر تطبيق حماية.</p></details>
+        <details><summary>❓ ما الحد الأدنى لإصدار أندرويد المطلوب؟</summary><p>يعمل <?= e($a['name']) ?> على أندرويد <?= e($a['min_android'] ?: '5.0') ?> وما فوق.</p></details>
+        <details><summary>❓ هل يحدّث التطبيق تلقائياً؟</summary><p>لا يحدّث تلقائياً من هذا الموقع. عُد إلى الصفحة لتحميل أحدث إصدار عند نشره.</p></details>
+        <details><summary>❓ هل يحتاج التطبيق روت (Root)؟</summary><p>لا يحتاج <?= e($a['name']) ?> إلى صلاحيات روت للعمل بشكل طبيعي.</p></details>
+        <details><summary>❓ لماذا فشل تثبيت التطبيق؟</summary><p>تأكد من: 1) توافق إصدار أندرويد. 2) وجود مساحة كافية. 3) تفعيل «مصادر غير معروفة» في الإعدادات.</p></details>
+      </div>
+
+      <div class="section-title"><?= icon('shield', 'ic') ?> سياسة الاستخدام</div>
+      <div class="admin-box" style="line-height:1.8;color:var(--muted);font-size:13.5px">
+        <p>تحميل <?= e($a['name']) ?> من موقعنا يخضع لسياسة الخصوصية العامة للموقع. لا نجمع أي بيانات شخصية عند تحميل التطبيق. الملف يُقدَّم كما هو، والتطبيق نفسه له سياسة خصوصية خاصة به من المطور. لأي مشكلة أو بلاغ راسلنا عبر <a href="?page=contact" style="color:var(--accent2)">تواصل معنا</a>. لمعلومات أكثر راجع <a href="?page=privacy" style="color:var(--accent2)">سياسة الخصوصية</a> و<a href="?page=terms" style="color:var(--accent2)">شروط الاستخدام</a>.</p>
+      </div>
+
+      <?php
+      $relatedSt = db()->prepare("SELECT * FROM apps WHERE status='published' AND id<>? AND (category=? OR kind=?) ORDER BY downloads DESC LIMIT 6");
+      $relatedSt->execute([$a['id'], $a['category'] ?: '__none__', $a['kind']]);
+      $relatedApps = $relatedSt->fetchAll();
+      if ($relatedApps):
+      ?>
+      <div class="section-title"><?= icon('rocket', 'ic') ?>تطبيقات مشابهة</div>
+      <div class="grid apps-grid">
+        <?php foreach ($relatedApps as $ra) render_app_card($ra); ?>
+      </div>
+      <?php endif; ?>
+
+      <?php
+      $mostDownloaded = db()->query("SELECT * FROM apps WHERE status='published' ORDER BY downloads DESC LIMIT 6")->fetchAll();
+      if ($mostDownloaded):
+      ?>
+      <div class="section-title"><?= icon('chart', 'ic') ?> الأكثر تحميلاً</div>
+      <div class="grid apps-grid">
+        <?php foreach ($mostDownloaded as $md) render_app_card($md); ?>
+      </div>
+      <?php endif; ?>
+    </div>
+    <script>
+    function shareAppLink(btn) {
+      var url = btn.getAttribute('data-url');
+      if (navigator.share) { navigator.share({ url: url }).catch(function(){}); return; }
+      if (navigator.clipboard) { navigator.clipboard.writeText(url).then(function(){ btn.textContent = 'تم نسخ الرابط'; }); }
+    }
+    </script>
+    <?php
+    break;
+
+case 'app_download':
+    if (!$seoApp) {
+        echo '<div class="empty" style="margin-top:30px">' . icon('x', 'ic ic-lg') . '<br>التطبيق غير موجود أو غير متاح.<br><a href="?page=apps" class="btn btn-primary" style="margin-top:14px;display:inline-block">عودة لقائمة التطبيقات</a></div>';
+        break;
+    }
+    $a = $seoApp;
+    db()->prepare("UPDATE apps SET downloads = downloads + 1 WHERE id=?")->execute([$a['id']]);
+    if ($user) db()->prepare("INSERT INTO user_downloads (user_id, app_id) VALUES (?,?)")->execute([$user['id'], $a['id']]);
+    $waitSeconds = max(0, (int)setting('app_download_wait_seconds', 5));
+    $moneytagScript = setting('moneytag_script');
+    ?>
+    <div class="download-page">
+      <div class="download-card">
+        <?php if ($a['icon']): ?>
+          <img class="download-app-icon" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
+        <?php else: ?>
+          <div class="download-app-icon icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
+        <?php endif; ?>
+        <h1><?= e($a['name']) ?></h1>
+        <p class="download-sub">يتم تحضير رابط التحميل الخاص بك...</p>
+
+        <?php if ($moneytagScript): ?>
+        <div class="download-ad-slot"><?= $moneytagScript ?></div>
+        <?php endif; ?>
+
+        <div class="download-countdown" id="dlCountdown" data-seconds="<?= $waitSeconds ?>" data-url="<?= e($a['download_url']) ?>">
+          <div class="dl-progress"><div class="dl-progress-fill" id="dlProgressFill"></div></div>
+          <span id="dlCountdownText"><?= $waitSeconds > 0 ? 'يرجى الانتظار ' . $waitSeconds . ' ثانية...' : '' ?></span>
+        </div>
+        <a id="dlRealBtn" class="btn btn-primary app-download-btn" style="display:none" href="<?= e($a['download_url']) ?>" target="_blank" rel="nofollow noopener" data-thanks-url="?page=thankyou&id=<?= (int)$a['id'] ?>"><?= icon('download', 'ic-sm') ?>تحميل <?= e($a['name']) ?> الآن</a>
+
+        <?php if (setting('telegram_channel_url')): ?>
+          <a class="btn app-btn-telegram" href="<?= e(setting('telegram_channel_url')) ?>" target="_blank" rel="nofollow noopener"><?= icon('telegram', 'ic-sm') ?>اشترك في قناة تيليجرام</a>
+        <?php endif; ?>
+
+        <div class="download-meta">
+          <?php if ($a['size_label']): ?><span><?= icon('check', 'ic-sm') ?><?= e($a['size_label']) ?></span><?php endif; ?>
+          <?php if ($a['version']): ?><span><?= icon('check', 'ic-sm') ?>الإصدار <?= e($a['version']) ?></span><?php endif; ?>
+          <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads'] + 1) ?> تحميل</span>
+        </div>
+        <a href="?page=app&id=<?= (int)$a['id'] ?>" class="back-link"><?= icon('check', 'ic-sm') ?>عودة لصفحة التطبيق</a>
+        <button type="button" class="back-link" style="border:0;background:none;cursor:pointer" onclick="reportBrokenLink(<?= (int)$a['id'] ?>,this)"><?= icon('megaphone', 'ic-sm') ?>الرابط لا يعمل؟ إبلاغ</button>
+      </div>
+    </div>
+    <script>
+    function reportBrokenLink(appId, btn) {
+      btn.disabled = true;
+      var fd = new FormData(); fd.append('app_id', appId);
+      fetch('?action=api_report_app', { method: 'POST', body: fd })
+        .then(function(r){ return r.json(); })
+        .then(function(d){ btn.textContent = d.ok ? 'تم إرسال البلاغ، شكراً لك' : 'حدث خطأ، حاول لاحقاً'; })
+        .catch(function(){ btn.textContent = 'حدث خطأ، حاول لاحقاً'; });
+    }
+    (function(){
+      var el = document.getElementById('dlCountdown');
+      if (!el) return;
+      var seconds = parseInt(el.dataset.seconds, 10) || 0;
+      var url = el.dataset.url;
+      var fill = document.getElementById('dlProgressFill');
+      var txt = document.getElementById('dlCountdownText');
+      var realBtn = document.getElementById('dlRealBtn');
+      var total = seconds;
+      function triggerRealDownload(dlUrl) {
+        try {
+          var ifr = document.createElement('iframe');
+          ifr.style.display = 'none';
+          ifr.src = dlUrl;
+          document.body.appendChild(ifr);
+        } catch (e) {}
+        try { window.open(dlUrl, '_blank'); } catch (e) {}
+      }
+      function reveal() {
+        el.style.display = 'none';
+        if (realBtn) {
+          realBtn.style.display = 'flex';
+          realBtn.addEventListener('click', function (ev) {
+            ev.preventDefault();
+            triggerRealDownload(url);
+            var thanksUrl = realBtn.dataset.thanksUrl;
+            if (thanksUrl) setTimeout(function () { window.location.href = thanksUrl; }, 700);
+          });
+        }
+      }
+      if (seconds <= 0) { reveal(); return; }
+      var tick = function () {
+        seconds--;
+        var pct = Math.max(0, Math.min(100, ((total - seconds) / total) * 100));
+        if (fill) fill.style.width = pct + '%';
+        if (txt) txt.textContent = seconds > 0 ? ('يرجى الانتظار ' + seconds + ' ثانية...') : 'جاهز!';
+        if (seconds <= 0) { clearInterval(timer); reveal(); }
+      };
+      var timer = setInterval(tick, 1000);
+    })();
+    </script>
+    <?php
+    break;
+
+case 'thankyou':
+    $taApp = null;
+    if ((int)($_GET['id'] ?? 0) > 0) {
+        $st = db()->prepare("SELECT * FROM apps WHERE id=? AND status='published'");
+        $st->execute([(int)$_GET['id']]);
+        $taApp = $st->fetch() ?: null;
+    }
+    $thanksAdsHtml = setting('thankyou_ads_html', '');
+    $thanksMoneytag = setting('moneytag_script', '');
+    ?>
+    <div class="download-page thankyou-page">
+      <div class="download-card">
+        <div class="icon-wrap" style="margin:0 auto 14px"><?= icon('check', 'ic ic-xl') ?></div>
+        <h1>شكراً لزيارتك<?= $taApp ? ' — ' . e($taApp['name']) : '' ?>!</h1>
+        <p class="download-sub">بدأ تحميل التطبيق الآن. تابعنا للمزيد من التطبيقات والألعاب الحصرية.</p>
+
+        <?php if ($taApp && $taApp['download_url']): ?>
+        <div class="dl-fallback" id="dlFallback" style="display:none">
+          <p><?= icon('megaphone', 'ic-sm') ?> هل لا يزال الملف لا يحمّل؟</p>
+          <a class="btn btn-success" style="width:100%;justify-content:center" href="<?= e($taApp['download_url']) ?>" target="_blank" rel="nofollow noopener"><?= icon('download', 'ic-sm') ?>اضغط هنا للتنزيل</a>
+        </div>
+        <script>setTimeout(function(){ var f=document.getElementById('dlFallback'); if (f) f.style.display='block'; }, <?= (int)setting('thankyou_retry_seconds', 4) * 1000 ?>);</script>
+        <?php endif; ?>
+
+        <?php if ($thanksMoneytag): ?><div class="download-ad-slot"><?= $thanksMoneytag ?></div><?php endif; ?>
+        <?php if ($thanksAdsHtml): ?><div class="download-ad-slot"><?= $thanksAdsHtml ?></div><?php endif; ?>
+
+        <?php if (setting('telegram_channel_url')): ?>
+          <a class="btn app-btn-telegram" href="<?= e(setting('telegram_channel_url')) ?>" target="_blank" rel="nofollow noopener"><?= icon('telegram', 'ic-sm') ?>اشترك في قناة تيليجرام</a>
+        <?php endif; ?>
+
+        <?php if ($thanksMoneytag): ?><div class="download-ad-slot"><?= $thanksMoneytag ?></div><?php endif; ?>
+
+        <div style="display:flex;gap:10px;flex-wrap:wrap;justify-content:center;margin-top:16px">
+          <a href="?page=apps&kind=app" class="btn btn-ghost"><?= icon('android', 'ic-sm') ?>تطبيقات أخرى</a>
+          <a href="?page=apps&kind=game" class="btn btn-ghost"><?= icon('rocket', 'ic-sm') ?>ألعاب أخرى</a>
+          <a href="?" class="btn btn-primary"><?= icon('check', 'ic-sm') ?>الصفحة الرئيسية</a>
+        </div>
+
+        <?php if ($thanksAdsHtml): ?><div class="download-ad-slot"><?= $thanksAdsHtml ?></div><?php endif; ?>
+      </div>
     </div>
     <?php
     break;
 
-case 'wallet':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض محفظتك.</div>'; break; }
-    $wallets = db()->query("SELECT * FROM wallets WHERE active=1")->fetchAll();
-    $usd = points_to_usd($user['points']);
-    $minw = setting('min_withdraw_usd', 25);
+case 'favorites':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض مكتبتك.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $favProducts = db()->prepare("SELECT p.* FROM wishlist w JOIN products p ON p.id=w.product_id WHERE w.user_id=? ORDER BY w.id DESC");
+    $favProducts->execute([$user['id']]);
+    $favProducts = $favProducts->fetchAll();
+    $myDownloads = db()->prepare("SELECT a.id, a.name, a.icon, a.kind, a.version, MAX(d.created_at) last_at, COUNT(*) times FROM user_downloads d JOIN apps a ON a.id=d.app_id WHERE d.user_id=? GROUP BY a.id ORDER BY last_at DESC LIMIT 20");
+    $myDownloads->execute([$user['id']]);
+    $myDownloads = $myDownloads->fetchAll();
+    $myOrders = db()->prepare("SELECT o.*, p.name, p.icon FROM orders o JOIN products p ON p.id=o.product_id WHERE o.user_id=? ORDER BY o.id DESC LIMIT 6");
+    $myOrders->execute([$user['id']]);
+    $myOrders = $myOrders->fetchAll();
     ?>
+    <div class="section-title"><?= icon('heart', 'ic') ?>المفضّلة ومكتبتي</div>
+
     <div class="admin-box">
-      <h2>💳 محفظتي</h2>
-      <p style="font-size:22px;margin:10px 0">💰 <?= (int)$user['points'] ?> عملة ≈ <strong><?= $usd ?>$</strong></p>
-      <p style="color:var(--muted)">الحد الأدنى للسحب: <?= e($minw) ?>$</p>
-      <hr style="border-color:#232a45;margin:14px 0">
-      <h3>🏦 طريقة السحب الخاصة بك</h3>
-      <select id="wType">
-        <option value="usdt" <?= $user['wallet_type'] === 'usdt' ? 'selected' : '' ?>>USDT (TRC20)</option>
-        <option value="sham" <?= $user['wallet_type'] === 'sham' ? 'selected' : '' ?>>الشام كاش</option>
-      </select>
-      <input id="wAddr" value="<?= e($user['wallet_address']) ?>" placeholder="عنوان المحفظة / رقم الحساب">
-      <button class="btn btn-primary" onclick="saveWallet()">حفظ المحفظة</button>
-      <button class="btn btn-success" style="margin-top:8px;width:100%" onclick="requestWithdraw()">💸 طلب سحب الرصيد كامل</button>
-    </div>
-    <div class="admin-box">
-      <h3>➕ شحن الرصيد</h3>
-      <p style="color:var(--muted);font-size:13px;margin-bottom:10px">حوّل المبلغ إلى إحدى المحافظ التالية ثم أرسل طلب التحقق:</p>
-      <?php foreach ($wallets as $w): ?>
-        <div style="background:#11152a;border-radius:10px;padding:10px;margin-bottom:8px">
-          <strong><?= $w['type'] === 'usdt' ? '💎 USDT' : '📱 الشام كاش' ?> — <?= e($w['label']) ?></strong>
-          <div style="font-family:monospace;word-break:break-all"><?= e($w['address']) ?></div>
+      <h3><?= icon('heart', 'ic') ?>المفضّلة</h3>
+      <?php if (!$favProducts): ?>
+        <div class="empty" style="padding:20px 0">لم تُضِف منتجات إلى المفضّلة بعد. اضغط <?= icon('heart', 'ic-sm') ?> على أي منتج لإضافته هنا.</div>
+      <?php else: ?>
+        <div class="grid">
+          <?php $wishlistSet = array_fill_keys(array_column($favProducts, 'id'), true); foreach ($favProducts as $p) render_product_card($p); ?>
         </div>
-      <?php endforeach; ?>
-      <select id="topupWallet"><?php foreach ($wallets as $w): ?><option value="<?= (int)$w['id'] ?>"><?= e($w['label']) ?></option><?php endforeach; ?></select>
-      <input id="topupAmount" type="number" placeholder="المبلغ بالدولار">
-      <input id="topupNote" placeholder="ملاحظة / رقم العملية (اختياري)">
-      <button class="btn btn-primary" onclick="requestTopup()">إرسال طلب الشحن</button>
+      <?php endif; ?>
+    </div>
+
+    <div class="admin-box">
+      <h3><?= icon('history', 'ic') ?>سجل التحميلات</h3>
+      <?php if (!$myDownloads): ?>
+        <div class="empty" style="padding:20px 0">لا توجد تطبيقات أو ألعاب محمّلة بعد.</div>
+      <?php else: ?>
+        <div class="tx-list">
+          <?php foreach ($myDownloads as $d): ?>
+            <a class="tx-row" href="?page=app&id=<?= (int)$d['id'] ?>" style="text-decoration:none;color:inherit">
+              <div class="tx-icon pos"><?= icon($d['kind'] === 'game' ? 'rocket' : 'android', 'ic-sm') ?></div>
+              <div class="tx-info">
+                <strong><?= e($d['name']) ?></strong>
+                <span><?= e($d['version'] ? 'إصدار ' . $d['version'] : '') ?> · آخر تحميل: <?= e(substr($d['last_at'] ?? '', 0, 10)) ?></span>
+              </div>
+              <div class="tx-amount pos"><?= (int)$d['times'] ?>×</div>
+            </a>
+          <?php endforeach; ?>
+        </div>
+      <?php endif; ?>
+    </div>
+
+    <div class="admin-box">
+      <h3><?= icon('cart', 'ic') ?>مشترياتي</h3>
+      <?php if (!$myOrders): ?>
+        <div class="empty" style="padding:20px 0">لا توجد مشتريات بعد.</div>
+      <?php else: ?>
+        <?php foreach ($myOrders as $o): ?>
+          <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #28304a">
+            <div style="display:flex;align-items:center;gap:8px"><?= icon('cart', 'ic-sm') ?><?= e($o['name']) ?> — <?= e($o['price']) ?>$</div>
+            <span class="badge <?= e($o['status']) ?>"><?= e($o['status']) ?></span>
+          </div>
+        <?php endforeach; ?>
+      <?php endif; ?>
+      <a href="?page=orders" class="btn btn-ghost" style="width:100%;justify-content:center;margin-top:10px"><?= icon('orders', 'ic-sm') ?>عرض كل طلباتي</a>
     </div>
     <?php
     break;
 
 case 'orders':
-    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض طلباتك.</div>'; break; }
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض طلباتك.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
     $st = db()->prepare("SELECT o.*, p.name, p.icon FROM orders o JOIN products p ON p.id=o.product_id WHERE o.user_id=? ORDER BY o.id DESC");
     $st->execute([$user['id']]);
     $orders = $st->fetchAll();
     ?>
-    <div class="section-title">📦 طلباتي</div>
+    <div class="section-title"><?= icon('orders', 'ic') ?>طلباتي</div>
     <div class="admin-box">
     <?php if (!$orders): ?><div class="empty">لا توجد طلبات بعد.</div><?php endif; ?>
     <?php foreach ($orders as $o): ?>
-      <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #232a45">
-        <div><?= e($o['icon']) ?> <?= e($o['name']) ?> — <?= e($o['price']) ?>$</div>
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:10px 0;border-bottom:1px solid #28304a">
+        <div style="display:flex;align-items:center;gap:8px"><?= icon('cart', 'ic-sm') ?><?= e($o['name']) ?> — <?= e($o['price']) ?>$</div>
         <span class="badge <?= e($o['status']) ?>"><?= e($o['status']) ?></span>
       </div>
     <?php endforeach; ?>
@@ -1412,157 +5427,956 @@ case 'orders':
     <?php
     break;
 
+case 'suggest':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لإرسال اقتراح منتج.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    ?>
+    <div class="section-title"><?= icon('megaphone', 'ic') ?>اقترح منتجاً</div>
+    <div class="admin-box">
+      <p style="color:var(--muted);font-size:13px;margin-bottom:10px">لم تجد ما تبحث عنه؟ أرسل اقتراحك وستراجعه الإدارة.</p>
+      <input id="sugTitle" placeholder="اسم المنتج المقترح">
+      <textarea id="sugDetails" rows="4" placeholder="تفاصيل إضافية (اختياري)" style="width:100%;margin-top:8px;background:#101a2e;border:1px solid #28304a;border-radius:10px;padding:10px;color:var(--text);font-family:inherit"></textarea>
+      <button class="btn btn-primary" style="margin-top:10px;width:100%" onclick="submitSuggestion()"><?= icon('send', 'ic-sm') ?>إرسال الاقتراح</button>
+    </div>
+    <?php
+    break;
+
+case 'wallet':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لاستخدام المحفظة.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $walletList = db()->query("SELECT * FROM wallets WHERE active=1 ORDER BY id ASC")->fetchAll();
+    $userBalance = user_balance($user['id']);
+    $currency = setting('wallet_currency_symbol', '$');
+    $quickAmounts = array_filter(array_map('trim', explode(',', setting('wallet_quick_amounts', '5,10,25,50,100,200'))));
+    $minAmt = (float)setting('wallet_min_topup', '5');
+    $maxAmt = (float)setting('wallet_max_topup', '500');
+    $recentTopups = db()->prepare("SELECT * FROM topup_requests WHERE user_id=? ORDER BY id DESC LIMIT 5");
+    $recentTopups->execute([$user['id']]);
+    $recentTopups = $recentTopups->fetchAll();
+    ?>
+    <div class="wallet-hero">
+      <div class="wh-label">رصيدك الحالي</div>
+      <div class="wh-balance"><?= number_format($userBalance, 2) ?><small><?= e($currency) ?></small></div>
+      <div class="wh-actions">
+        <a href="#topup" class="wh-btn primary" onclick="scrollToTopup(event)"><?= icon('plus', 'ic-sm') ?> شحن الرصيد</a>
+        <?php if (setting('wallet_withdraw_enabled','1') === '1'): ?>
+        <a href="#withdraw" class="wh-btn" onclick="openWithdrawModal(event)"><?= icon('send', 'ic-sm') ?> طلب سحب</a>
+        <?php endif; ?>
+        <a href="?page=orders" class="wh-btn"><?= icon('orders', 'ic-sm') ?> طلباتي</a>
+      </div>
+    </div>
+
+    <div id="topup">
+      <div class="topup-steps">
+        <div class="ts-item active" data-step="1"><small>الخطوة 1</small>المبلغ</div>
+        <div class="ts-item" data-step="2"><small>الخطوة 2</small>الدفع</div>
+        <div class="ts-item" data-step="3"><small>الخطوة 3</small>المراجعة</div>
+      </div>
+
+      <!-- الخطوة 1: اختيار المبلغ ووسيلة الدفع -->
+      <div class="topup-card" id="stepAmount">
+        <h3><?= icon('coin', 'ic') ?> اختر المبلغ ووسيلة الدفع</h3>
+        <p class="tc-sub"><?= e(setting('wallet_page_subheadline', 'اختر المبلغ، حوّل الدفعة، وفعّل رصيدك خلال دقائق')) ?></p>
+
+        <div class="tc-field">
+          <label>مبلغ الشحن (الحد الأدنى <?= (int)$minAmt ?><?= e($currency) ?>)</label>
+          <div class="amount-grid" id="amountGrid">
+            <?php foreach ($quickAmounts as $amt): ?>
+              <div class="amount-chip" data-amount="<?= (int)$amt ?>" onclick="pickAmount(this)"><?= (int)$amt ?><?= e($currency) ?></div>
+            <?php endforeach; ?>
+          </div>
+          <input type="number" class="amount-input" id="topupAmount" min="<?= (int)$minAmt ?>" max="<?= (int)$maxAmt ?>" placeholder="أو أدخل مبلغاً مخصّصاً" oninput="onAmountInput()">
+        </div>
+
+        <div class="tc-field">
+          <label>وسيلة الدفع</label>
+          <?php if (!$walletList): ?>
+            <p style="color:var(--danger);font-size:13px">لا توجد وسائل دفع متاحة حالياً. تواصل مع الدعم.</p>
+          <?php else: ?>
+          <div class="wallet-methods">
+            <?php foreach ($walletList as $w):
+                [$label, $ic] = wallet_type_label($w['type']);
+            ?>
+              <div class="wallet-method" data-wallet-id="<?= (int)$w['id'] ?>" data-address="<?= e($w['address']) ?>" data-label="<?= e($label) ?>" onclick="pickWallet(this)">
+                <div class="wm-icon"><?= icon($ic, 'ic') ?></div>
+                <div class="wm-name"><?= e($label) ?></div>
+              </div>
+            <?php endforeach; ?>
+          </div>
+          <?php endif; ?>
+        </div>
+
+        <div class="step-nav">
+          <button type="button" class="btn-next" onclick="goStep2()" disabled id="btnGoStep2"><?= icon('chevron-right', 'ic-sm') ?> متابعة إلى الدفع</button>
+        </div>
+      </div>
+
+      <!-- الخطوة 2: تفاصيل الدفع (QR + عنوان + رفع إيصال) -->
+      <div class="topup-card" id="stepPayment" style="display:none">
+        <h3><?= icon('qr', 'ic') ?> تفاصيل الدفع</h3>
+        <p class="tc-sub">اتبع التعليمات لإتمام الدفع، ثم أرسل إثبات التحويل.</p>
+
+        <div class="qr-block">
+          <div class="qr-badge"><?= icon('qr', 'ic') ?></div>
+          <div class="qr-label">صورة الباركود للدفع</div>
+          <img id="paymentQR" class="qr-img" src="" alt="QR" onclick="openQrPreview()">
+          <div class="addr-row">
+            <code id="walletAddress">—</code>
+            <button type="button" class="copy-btn" onclick="copyWalletAddr(this)"><?= icon('copy', 'ic-sm') ?> نسخ</button>
+          </div>
+          <p style="color:var(--muted);font-size:12px;text-align:center;margin:0">💡 اضغط على الصورة لتكبيرها</p>
+        </div>
+
+        <div class="tc-field" style="margin-top:20px">
+          <label>رقم عملية التحويل (اختياري إن رفعت الإيصال)</label>
+          <input type="text" id="txNumber" placeholder="مثال: TX1234567890">
+        </div>
+
+        <div class="tc-field">
+          <label>صورة الإيصال</label>
+          <div class="receipt-box" id="receiptBox" onclick="document.getElementById('receiptFile').click()">
+            <div class="rb-empty"><?= icon('upload', 'ic') ?><div>اضغط لرفع صورة الإيصال (JPG/PNG/WEBP)</div></div>
+            <div class="rb-preview" style="display:none"><img id="receiptPreview" style="max-height:200px;border-radius:10px"><div id="receiptFileName" style="margin-top:8px;font-size:12px"></div></div>
+          </div>
+          <input type="file" id="receiptFile" accept="image/*" style="display:none" onchange="onReceiptChange(this)">
+        </div>
+
+        <div class="tc-field">
+          <label>ملاحظة (اختياري)</label>
+          <textarea id="topupNote" rows="2" placeholder="أي معلومات إضافية للأدمن..."></textarea>
+        </div>
+
+        <div class="step-nav">
+          <button type="button" class="btn-back" onclick="goStep1()">← رجوع</button>
+          <button type="button" class="btn-next" onclick="goStep3()">مراجعة الطلب ←</button>
+        </div>
+      </div>
+
+      <!-- الخطوة 3: المراجعة وإرسال الطلب -->
+      <div class="topup-card" id="stepReview" style="display:none">
+        <h3><?= icon('check', 'ic') ?> مراجعة الطلب</h3>
+        <p class="tc-sub">تأكد من صحة البيانات ثم أرسل الطلب. سيصلك إشعار عند التفعيل.</p>
+        <div id="reviewSummary"></div>
+        <div class="step-nav">
+          <button type="button" class="btn-back" onclick="goStep2()">← رجوع</button>
+          <button type="button" class="btn-next" onclick="submitTopup()" id="btnSubmitTopup"><?= icon('send', 'ic-sm') ?> إرسال الطلب</button>
+        </div>
+      </div>
+    </div>
+
+    <?php if ($recentTopups): ?>
+    <div class="topup-card" style="margin-top:24px">
+      <h3><?= icon('history', 'ic') ?> آخر طلبات الشحن</h3>
+      <table style="width:100%;font-size:13px;color:var(--text)">
+        <tr style="opacity:.6"><th align="right">#</th><th align="right">المبلغ</th><th align="right">الحالة</th><th align="right">التاريخ</th></tr>
+        <?php foreach ($recentTopups as $t):
+            $badge = $t['status'] === 'approved' ? '#10b981' : ($t['status'] === 'rejected' ? '#ef4444' : '#f59e0b');
+            $statusText = $t['status'] === 'approved' ? 'مقبول' : ($t['status'] === 'rejected' ? 'مرفوض' : 'قيد المراجعة');
+        ?>
+        <tr>
+          <td>#<?= (int)$t['id'] ?></td>
+          <td><strong><?= number_format((float)$t['amount'], 2) ?><?= e($currency) ?></strong></td>
+          <td><span style="background:<?= $badge ?>;color:#fff;padding:3px 8px;border-radius:6px;font-size:11px;font-weight:700"><?= $statusText ?></span></td>
+          <td style="color:var(--muted);font-size:11px"><?= e(substr($t['created_at'], 0, 16)) ?></td>
+        </tr>
+        <?php endforeach; ?>
+      </table>
+    </div>
+    <?php endif; ?>
+
+    <div class="modal-bg" id="qrPreviewModal" style="display:none;background:rgba(0,0,0,.9);position:fixed;inset:0;z-index:9999;align-items:center;justify-content:center;cursor:zoom-out" onclick="this.style.display='none'">
+      <img id="qrPreviewImg" style="max-width:90vw;max-height:90vh;border-radius:16px;border:6px solid #fff;box-shadow:0 30px 80px rgba(16,185,129,.5)">
+    </div>
+
+    <div class="modal-bg" id="withdrawModal" style="display:none;background:rgba(0,0,0,.75);position:fixed;inset:0;z-index:9998;align-items:center;justify-content:center">
+      <div style="max-width:420px;width:92%;background:linear-gradient(180deg,#052e2b,#064e3b);border-radius:22px;padding:24px;border:1px solid rgba(16,185,129,.35);box-shadow:0 30px 80px rgba(0,0,0,.6)">
+        <h3 style="color:#10b981;display:flex;align-items:center;gap:8px;margin-bottom:12px"><?= icon('send', 'ic') ?> طلب سحب رصيد</h3>
+        <p style="color:var(--muted);font-size:13px;margin-bottom:14px">رصيدك الحالي: <strong style="color:#6ee7b7"><?= number_format($userBalance, 2) ?><?= e($currency) ?></strong></p>
+        <div class="tc-field"><label>المبلغ</label><input type="number" id="withdrawAmount" min="<?= (int)setting('wallet_min_withdraw','10') ?>" max="<?= (int)$userBalance ?>" placeholder="حد أدنى <?= (int)setting('wallet_min_withdraw','10') ?><?= e($currency) ?>"></div>
+        <div class="tc-field"><label>وسيلة الاستلام</label>
+          <select id="withdrawType" class="setting-select" style="width:100%">
+            <option value="usdt">USDT (TRC20)</option>
+            <option value="sham">الشام كاش</option>
+            <option value="syriatel_cash">سيرياتيل كاش</option>
+            <option value="binance">Binance Pay</option>
+            <option value="payeer">Payeer</option>
+          </select>
+        </div>
+        <div class="tc-field"><label>عنوان/رقم المحفظة</label><input type="text" id="withdrawAddress" placeholder="أدخل عنوان استلام السحب"></div>
+        <div class="step-nav">
+          <button type="button" class="btn-back" onclick="document.getElementById('withdrawModal').style.display='none'">إلغاء</button>
+          <button type="button" class="btn-next" onclick="submitWithdraw()"><?= icon('send', 'ic-sm') ?> إرسال</button>
+        </div>
+      </div>
+    </div>
+
+    <script>
+    const walletState = { amount: 0, walletId: 0, walletAddress: '', walletLabel: '', receiptFile: null };
+    function pickAmount(el){
+      document.querySelectorAll('.amount-chip').forEach(c => c.classList.remove('selected'));
+      el.classList.add('selected');
+      const amt = parseFloat(el.dataset.amount);
+      walletState.amount = amt;
+      document.getElementById('topupAmount').value = amt;
+      updateContinueBtn();
+    }
+    function onAmountInput(){
+      const v = parseFloat(document.getElementById('topupAmount').value) || 0;
+      walletState.amount = v;
+      document.querySelectorAll('.amount-chip').forEach(c => c.classList.toggle('selected', parseFloat(c.dataset.amount) === v));
+      updateContinueBtn();
+    }
+    function pickWallet(el){
+      document.querySelectorAll('.wallet-method').forEach(c => c.classList.remove('selected'));
+      el.classList.add('selected');
+      walletState.walletId = parseInt(el.dataset.walletId);
+      walletState.walletAddress = el.dataset.address;
+      walletState.walletLabel = el.dataset.label;
+      updateContinueBtn();
+    }
+    function updateContinueBtn(){
+      const b = document.getElementById('btnGoStep2');
+      const minAmt = <?= (int)$minAmt ?>;
+      b.disabled = !(walletState.amount >= minAmt && walletState.walletId > 0);
+    }
+    function updateStepUI(step){
+      document.querySelectorAll('.ts-item').forEach(el => {
+        const n = parseInt(el.dataset.step);
+        el.classList.remove('active','done');
+        if (n === step) el.classList.add('active');
+        else if (n < step) el.classList.add('done');
+      });
+    }
+    function goStep1(){ document.getElementById('stepAmount').style.display='block'; document.getElementById('stepPayment').style.display='none'; document.getElementById('stepReview').style.display='none'; updateStepUI(1); }
+    function goStep2(){
+      if (!walletState.walletAddress) return;
+      document.getElementById('walletAddress').textContent = walletState.walletAddress;
+      // QR generated via free public API (Google Chart-like)
+      const qr = 'https://api.qrserver.com/v1/create-qr-code/?size=280x280&data=' + encodeURIComponent(walletState.walletAddress);
+      document.getElementById('paymentQR').src = qr;
+      document.getElementById('stepAmount').style.display='none';
+      document.getElementById('stepPayment').style.display='block';
+      document.getElementById('stepReview').style.display='none';
+      updateStepUI(2);
+    }
+    function goStep3(){
+      const tx = document.getElementById('txNumber').value.trim();
+      const rf = walletState.receiptFile;
+      if (!tx && !rf) { toast('أدخل رقم العملية أو ارفع صورة الإيصال'); return; }
+      const summary = document.getElementById('reviewSummary');
+      summary.innerHTML = ''
+        + '<div class="summary-row"><span>المبلغ</span><strong>' + walletState.amount.toFixed(2) + '<?= e($currency) ?></strong></div>'
+        + '<div class="summary-row"><span>وسيلة الدفع</span><strong>' + walletState.walletLabel + '</strong></div>'
+        + '<div class="summary-row"><span>عنوان المحفظة</span><code style="font-size:11px">' + walletState.walletAddress + '</code></div>'
+        + (tx ? '<div class="summary-row"><span>رقم العملية</span><strong>' + tx + '</strong></div>' : '')
+        + (rf ? '<div class="summary-row"><span>الإيصال</span><strong>✓ مرفق</strong></div>' : '');
+      document.getElementById('stepPayment').style.display='none';
+      document.getElementById('stepReview').style.display='block';
+      updateStepUI(3);
+    }
+    function copyWalletAddr(btn){
+      navigator.clipboard.writeText(walletState.walletAddress).then(() => {
+        btn.classList.add('copied');
+        btn.innerHTML = '<?= icon('check', 'ic-sm') ?> تم النسخ';
+        toast('تم نسخ عنوان المحفظة');
+        setTimeout(() => { btn.classList.remove('copied'); btn.innerHTML = '<?= icon('copy', 'ic-sm') ?> نسخ'; }, 2000);
+      });
+    }
+    function openQrPreview(){
+      document.getElementById('qrPreviewImg').src = document.getElementById('paymentQR').src;
+      document.getElementById('qrPreviewModal').style.display = 'flex';
+    }
+    function onReceiptChange(input){
+      const box = document.getElementById('receiptBox');
+      if (input.files && input.files[0]) {
+        walletState.receiptFile = input.files[0];
+        const url = URL.createObjectURL(input.files[0]);
+        document.getElementById('receiptPreview').src = url;
+        document.getElementById('receiptFileName').textContent = input.files[0].name;
+        box.querySelector('.rb-empty').style.display = 'none';
+        box.querySelector('.rb-preview').style.display = 'block';
+        box.classList.add('has-file');
+      }
+    }
+    function submitTopup(){
+      const btn = document.getElementById('btnSubmitTopup');
+      btn.disabled = true; btn.innerHTML = '⏳ جاري الإرسال...';
+      const fd = new FormData();
+      fd.append('csrf', CSRF);
+      fd.append('amount', walletState.amount);
+      fd.append('wallet_id', walletState.walletId);
+      fd.append('tx_number', document.getElementById('txNumber').value.trim());
+      fd.append('note', document.getElementById('topupNote').value.trim());
+      if (walletState.receiptFile) fd.append('receipt', walletState.receiptFile);
+      fetch('?action=api_wallet_topup', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => {
+          if (res.ok) {
+            toast('✅ ' + res.msg);
+            setTimeout(() => window.location = '?page=wallet', 1200);
+          } else {
+            toast('❌ ' + res.msg);
+            btn.disabled = false; btn.innerHTML = '<?= icon('send', 'ic-sm') ?> إرسال الطلب';
+          }
+        }).catch(() => { toast('حدث خطأ في الإرسال'); btn.disabled = false; });
+    }
+    function openWithdrawModal(e){ e && e.preventDefault(); document.getElementById('withdrawModal').style.display = 'flex'; }
+    function submitWithdraw(){
+      const amt = parseFloat(document.getElementById('withdrawAmount').value) || 0;
+      const type = document.getElementById('withdrawType').value;
+      const addr = document.getElementById('withdrawAddress').value.trim();
+      const fd = new FormData();
+      fd.append('csrf', CSRF); fd.append('amount', amt); fd.append('wallet_type', type); fd.append('wallet_address', addr);
+      fetch('?action=api_wallet_withdraw', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => {
+          toast((res.ok ? '✅ ' : '❌ ') + res.msg);
+          if (res.ok) setTimeout(() => window.location = '?page=wallet', 1200);
+        });
+    }
+    function scrollToTopup(e){ e.preventDefault(); document.getElementById('topup').scrollIntoView({behavior:'smooth'}); }
+    </script>
+    <?php
+    break;
+
+case 'notifications':
+    ?>
+    <div class="section-title"><?= icon('bell', 'ic') ?> الإشعارات</div>
+    <div class="admin-box" style="text-align:center;padding:40px 20px">
+      <?= icon('bell', 'ic ic-lg') ?>
+      <p style="margin-top:14px;color:var(--muted)">لا توجد إشعارات جديدة حالياً.</p>
+    </div>
+    <?php
+    break;
+
+case 'profile':
+    if (!$user) { echo '<div class="empty">سجّل الدخول لعرض ملفك الشخصي.<br><button class="btn btn-primary" style="margin-top:14px" onclick="openAuthModal()">تسجيل الدخول</button></div>'; break; }
+    $st = db()->prepare("SELECT COUNT(*) c FROM orders WHERE user_id=? AND status='approved'"); $st->execute([$user['id']]); $pApprovedOrders = (int)$st->fetch()['c'];
+    $st = db()->prepare("SELECT COUNT(*) c FROM reviews WHERE user_id=?"); $st->execute([$user['id']]); $pReviewCount = (int)$st->fetch()['c'];
+    $st = db()->prepare("SELECT COUNT(*) c FROM wishlist WHERE user_id=?"); $st->execute([$user['id']]); $pFavCount = (int)$st->fetch()['c'];
+    $st = db()->prepare("SELECT COUNT(*) c FROM user_downloads WHERE user_id=?"); $st->execute([$user['id']]); $pDownloadCount = (int)$st->fetch()['c'];
+    $pAchievements = [];
+    $pAchievements[] = ['icon' => 'check', 'label' => 'عضو مسجّل', 'on' => true];
+    $pAchievements[] = ['icon' => 'cart', 'label' => 'أول عملية شراء', 'on' => $pApprovedOrders >= 1];
+    $pAchievements[] = ['icon' => 'android', 'label' => 'مستكشف نشط (5+ تحميلات)', 'on' => $pDownloadCount >= 5];
+    $pAchievements[] = ['icon' => 'heart', 'label' => 'لديه مفضّلة', 'on' => $pFavCount >= 1];
+    $pAchievements[] = ['icon' => 'star', 'label' => 'مُقيّم نشط', 'on' => $pReviewCount >= 1];
+    $profileTab = $_GET['tab'] ?? 'overview';
+    $userFresh = db()->prepare("SELECT * FROM users WHERE id=?");
+    $userFresh->execute([$user['id']]);
+    $userFresh = $userFresh->fetch() ?: $user;
+    $uXp = (int)($userFresh['xp'] ?? 0);
+    $uLevel = level_from_xp($uXp);
+    $uProgress = xp_progress_percent($uXp);
+    ?>
+    <div class="section-title"><?= icon('user', 'ic') ?>ملفي الشخصي</div>
+    <div class="admin-box" style="text-align:center;padding:28px 16px">
+      <div class="profile-frame">
+        <?php if ($user['avatar']): ?><img id="avatarPreview" src="<?= e($user['avatar']) ?>"><?php else: ?><div class="ph" id="avatarPreview"><?= icon('user', 'ic-lg') ?></div><?php endif; ?>
+        <button type="button" class="avatar-edit-btn" title="تغيير الصورة" onclick="document.getElementById('avatarFileInput').click()"><?= icon('edit', 'ic-sm') ?></button>
+        <input type="file" id="avatarFileInput" accept="image/*" style="display:none" onchange="uploadAvatar(this.files[0])">
+      </div>
+      <h2 style="margin-top:12px"><?= e($user['name'] ?: $user['username']) ?><?php if (is_admin()): ?> <span class="verified-badge" title="حساب موثّق"><?= icon('check', 'ic-sm') ?></span><?php endif; ?></h2>
+      <div style="color:var(--muted);font-size:13px">@<?= e($user['username']) ?></div>
+      <div style="margin-top:12px;display:inline-flex;align-items:center;gap:8px;padding:6px 12px;border-radius:20px;background:linear-gradient(135deg,rgba(37,99,235,.2),rgba(6,182,212,.15));border:1px solid rgba(6,182,212,.4);font-size:12px;font-weight:700"><?= icon('star', 'ic-sm') ?> المستوى <?= $uLevel ?> · <?= $uXp ?> XP</div>
+      <div style="margin:10px auto 0;max-width:220px;height:6px;background:#28304a;border-radius:6px;overflow:hidden"><div style="width:<?= $uProgress ?>%;height:100%;background:linear-gradient(90deg,var(--accent),var(--accent2))"></div></div>
+      <?php if ($user['bio']): ?><div style="margin-top:8px;font-size:13px;color:var(--muted)"><?= e($user['bio']) ?></div><?php endif; ?>
+    </div>
+
+    <div class="settings-tabs">
+      <?php foreach (['overview'=>['user','نظرة عامة'],'edit'=>['edit','تعديل الملف'],'settings'=>['settings','الإعدادات'],'privacy'=>['lock','الخصوصية'],'notifications'=>['bell','الإشعارات'],'security'=>['shield','الأمان'],'appearance'=>['palette','المظهر واللغة'],'danger'=>['x','منطقة الخطر']] as $tk => $tv): ?>
+        <a href="?page=profile&tab=<?= $tk ?>" class="<?= $profileTab === $tk ? 'active' : '' ?>"><?= icon($tv[0], 'ic-sm') ?><?= $tv[1] ?></a>
+      <?php endforeach; ?>
+    </div>
+
+    <?php if ($profileTab === 'privacy'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('lock', 'ic') ?> الخصوصية</h3>
+      <p class="sp-desc">تحكّم بمن يستطيع رؤية ملفك الشخصي وبياناتك.</p>
+      <form id="settingsFormPrivacy">
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">إخفاء رصيدي من الواجهة العلوية</div><div class="sr-desc">لن يظهر الرصيد في الشريط العلوي، وسيبقى ظاهراً فقط داخل صفحة المحفظة.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="privacy_hide_balance" value="1" <?= (int)($userFresh['privacy_hide_balance'] ?? 0) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">من يستطيع رؤية ملفي؟</div><div class="sr-desc">تحكّم بمن يستطيع الوصول لصفحة ملفك.</div></div>
+          <select name="privacy_profile_visibility" class="setting-select">
+            <option value="public" <?= ($userFresh['privacy_profile_visibility'] ?? 'public') === 'public' ? 'selected' : '' ?>>الجميع</option>
+            <option value="friends" <?= ($userFresh['privacy_profile_visibility'] ?? '') === 'friends' ? 'selected' : '' ?>>الأصدقاء فقط</option>
+            <option value="private" <?= ($userFresh['privacy_profile_visibility'] ?? '') === 'private' ? 'selected' : '' ?>>لا أحد (خاص)</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-primary" style="margin-top:14px" onclick="saveSettings('Privacy')"><?= icon('check','ic-sm') ?> حفظ التغييرات</button>
+      </form>
+    </div>
+    <?php elseif ($profileTab === 'notifications'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('bell', 'ic') ?> الإشعارات</h3>
+      <p class="sp-desc">اختر متى ترغب أن نتواصل معك عبر تيليجرام أو البريد الإلكتروني.</p>
+      <form id="settingsFormNotifications">
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">📱 إشعار تيليجرام: تحديثات الطلبات</div><div class="sr-desc">عند قبول/رفض/شحن أي طلب لك.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_telegram_orders" value="1" <?= (int)($userFresh['notify_telegram_orders'] ?? 1) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">💰 إشعار تيليجرام: عمليات المحفظة</div><div class="sr-desc">عند شحن/سحب/تحويل رصيد.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_telegram_wallet" value="1" <?= (int)($userFresh['notify_telegram_wallet'] ?? 1) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">📧 بريد: تحديثات الطلبات</div><div class="sr-desc">استلام تنبيهات الطلبات على بريدك.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_email_orders" value="1" <?= (int)($userFresh['notify_email_orders'] ?? 0) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">📧 بريد: عمليات المحفظة</div><div class="sr-desc">تنبيهات الشحن/السحب على البريد.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_email_wallet" value="1" <?= (int)($userFresh['notify_email_wallet'] ?? 0) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">🎁 بريد: العروض والتحديثات</div><div class="sr-desc">إشعارات دورية بالعروض والتخفيضات.</div></div>
+          <label class="toggle-switch"><input type="checkbox" name="notify_email_promotions" value="1" <?= (int)($userFresh['notify_email_promotions'] ?? 0) ? 'checked' : '' ?>><span class="slider"></span></label>
+        </div>
+        <button type="button" class="btn btn-primary" style="margin-top:14px" onclick="saveSettings('Notifications')"><?= icon('check','ic-sm') ?> حفظ التغييرات</button>
+      </form>
+    </div>
+    <?php elseif ($profileTab === 'security'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('shield', 'ic') ?> أمان الحساب</h3>
+      <p class="sp-desc">إدارة كلمة المرور والبريد وطبقات الحماية الإضافية.</p>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">🔑 تغيير كلمة المرور</div><div class="sr-desc">استخدم كلمة مرور قوية (8+ أحرف).</div></div>
+        <button type="button" class="setting-select" onclick="document.getElementById('pwdForm').style.display = document.getElementById('pwdForm').style.display === 'none' ? 'block' : 'none'">تغيير</button>
+      </div>
+      <div id="pwdForm" style="display:none;padding:12px 0">
+        <input type="password" id="currentPassword" placeholder="كلمة المرور الحالية" class="setting-select" style="width:100%;margin-bottom:8px">
+        <input type="password" id="newPassword" placeholder="كلمة المرور الجديدة" class="setting-select" style="width:100%;margin-bottom:8px">
+        <button type="button" class="btn btn-primary" onclick="changePassword()" style="width:100%"><?= icon('key', 'ic-sm') ?> تحديث كلمة المرور</button>
+      </div>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">📧 تغيير البريد الإلكتروني</div><div class="sr-desc">البريد الحالي: <?= e($userFresh['email']) ?></div></div>
+        <button type="button" class="setting-select" onclick="document.getElementById('emailForm').style.display = document.getElementById('emailForm').style.display === 'none' ? 'block' : 'none'">تغيير</button>
+      </div>
+      <div id="emailForm" style="display:none;padding:12px 0">
+        <input type="email" id="newEmail" placeholder="البريد الجديد" class="setting-select" style="width:100%;margin-bottom:8px">
+        <button type="button" class="btn btn-primary" onclick="changeEmail()" style="width:100%"><?= icon('send', 'ic-sm') ?> تحديث البريد</button>
+      </div>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">🔐 التحقق الثنائي (2FA)</div><div class="sr-desc">طبقة حماية إضافية مع تطبيقات مثل Google Authenticator.</div></div>
+        <label class="toggle-switch"><input type="checkbox" id="toggle2fa" <?= (int)($userFresh['two_factor_enabled'] ?? 0) ? 'checked' : '' ?> onchange="toggle2FA(this)"><span class="slider"></span></label>
+      </div>
+      <div id="secret2fa" style="display:<?= (int)($userFresh['two_factor_enabled'] ?? 0) && !empty($userFresh['two_factor_secret']) ? 'block' : 'none' ?>;padding:12px;background:rgba(37,99,235,.1);border-radius:10px;margin-top:10px;text-align:center">
+        <div style="font-size:12px;color:var(--muted);margin-bottom:6px">مفتاحك السري (احفظه في مكان آمن):</div>
+        <code style="font-size:13px;font-weight:700;color:var(--accent2);word-break:break-all"><?= e($userFresh['two_factor_secret'] ?? '') ?></code>
+      </div>
+    </div>
+    <?php elseif ($profileTab === 'appearance'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('palette', 'ic') ?> المظهر واللغة</h3>
+      <p class="sp-desc">اختر الثيم واللغة التي تفضّلها.</p>
+      <form id="settingsFormAppearance">
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">🌓 الثيم</div><div class="sr-desc">اختر بين الوضع الليلي والنهاري.</div></div>
+          <select name="ui_theme" class="setting-select">
+            <option value="dark" <?= ($userFresh['ui_theme'] ?? 'dark') === 'dark' ? 'selected' : '' ?>>🌙 داكن</option>
+            <option value="light" <?= ($userFresh['ui_theme'] ?? '') === 'light' ? 'selected' : '' ?>>☀️ فاتح</option>
+            <option value="auto" <?= ($userFresh['ui_theme'] ?? '') === 'auto' ? 'selected' : '' ?>>🔄 حسب النظام</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">🌐 اللغة</div><div class="sr-desc">لغة عرض الواجهة.</div></div>
+          <select name="ui_language" class="setting-select">
+            <option value="ar" <?= ($userFresh['ui_language'] ?? 'ar') === 'ar' ? 'selected' : '' ?>>🇸🇦 العربية</option>
+            <option value="en" <?= ($userFresh['ui_language'] ?? '') === 'en' ? 'selected' : '' ?>>🇬🇧 English</option>
+            <option value="tr" <?= ($userFresh['ui_language'] ?? '') === 'tr' ? 'selected' : '' ?>>🇹🇷 Türkçe</option>
+          </select>
+        </div>
+        <div class="setting-row">
+          <div class="sr-info"><div class="sr-title">🎨 لون التمييز</div><div class="sr-desc">اختر لون العناصر الرئيسية.</div></div>
+          <select name="ui_accent" class="setting-select">
+            <option value="">افتراضي (أزرق)</option>
+            <option value="#10b981" <?= ($userFresh['ui_accent'] ?? '') === '#10b981' ? 'selected' : '' ?>>🟢 أخضر</option>
+            <option value="#8b5cf6" <?= ($userFresh['ui_accent'] ?? '') === '#8b5cf6' ? 'selected' : '' ?>>🟣 بنفسجي</option>
+            <option value="#f59e0b" <?= ($userFresh['ui_accent'] ?? '') === '#f59e0b' ? 'selected' : '' ?>>🟠 برتقالي</option>
+            <option value="#ef4444" <?= ($userFresh['ui_accent'] ?? '') === '#ef4444' ? 'selected' : '' ?>>🔴 أحمر</option>
+          </select>
+        </div>
+        <button type="button" class="btn btn-primary" style="margin-top:14px" onclick="saveSettings('Appearance')"><?= icon('check','ic-sm') ?> حفظ التغييرات</button>
+      </form>
+    </div>
+    <?php elseif ($profileTab === 'danger'): ?>
+    <div class="settings-panel" style="border-color:rgba(239,68,68,.35)">
+      <h3 style="color:var(--danger)"><?= icon('x', 'ic') ?> منطقة الخطر</h3>
+      <p class="sp-desc">إجراءات لا يمكن التراجع عنها بسهولة.</p>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">تعطيل الحساب مؤقتاً (30 يوم)</div><div class="sr-desc">يُعاد تفعيل حسابك تلقائياً عند تسجيل الدخول التالي.</div></div>
+        <button class="btn" style="background:#f59e0b;color:#fff" onclick="if(confirm('تأكيد تعطيل الحساب 30 يوماً؟')) window.location='?action=disable_account'">تعطيل</button>
+      </div>
+      <div class="setting-row">
+        <div class="sr-info"><div class="sr-title">حذف حسابي نهائياً</div><div class="sr-desc" style="color:var(--danger)">سيتم حذف كل بياناتك بدون رجعة.</div></div>
+        <button class="btn" style="background:var(--danger);color:#fff" onclick="deleteAccount()">حذف نهائي</button>
+      </div>
+    </div>
+    <?php elseif ($profileTab === 'settings'): ?>
+    <div class="settings-panel">
+      <h3><?= icon('settings', 'ic') ?> الإعدادات العامة</h3>
+      <p class="sp-desc">جميع إعدادات حسابك في مكان واحد. اختر التبويب الفرعي من الأعلى للتحكم بكل قسم.</p>
+      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(180px,1fr));gap:10px;margin-top:8px">
+        <a href="?page=profile&tab=privacy" class="wh-btn" style="background:linear-gradient(135deg,#7c3aed,#6d28d9);color:#fff"><?= icon('lock','ic-sm') ?> الخصوصية</a>
+        <a href="?page=profile&tab=notifications" class="wh-btn" style="background:linear-gradient(135deg,#f59e0b,#d97706);color:#fff"><?= icon('bell','ic-sm') ?> الإشعارات</a>
+        <a href="?page=profile&tab=security" class="wh-btn" style="background:linear-gradient(135deg,#dc2626,#991b1b);color:#fff"><?= icon('shield','ic-sm') ?> الأمان</a>
+        <a href="?page=profile&tab=appearance" class="wh-btn" style="background:linear-gradient(135deg,#0891b2,#0e7490);color:#fff"><?= icon('palette','ic-sm') ?> المظهر</a>
+        <a href="?page=wallet" class="wh-btn" style="background:linear-gradient(135deg,#10b981,#059669);color:#fff"><?= icon('wallet','ic-sm') ?> المحفظة</a>
+        <a href="?page=profile&tab=danger" class="wh-btn" style="background:linear-gradient(135deg,#6b7280,#4b5563);color:#fff"><?= icon('x','ic-sm') ?> منطقة الخطر</a>
+      </div>
+    </div>
+    <?php elseif ($profileTab === 'edit'): ?>
+    <div class="admin-box">
+      <h3 style="margin-bottom:10px"><?= icon('edit', 'ic-sm') ?>تعديل الملف الشخصي</h3>
+      <input id="editName" value="<?= e($user['name']) ?>" placeholder="الاسم الظاهر">
+      <input id="editUsername" value="<?= e($user['username']) ?>" placeholder="اسم المستخدم">
+      <input id="editBio" value="<?= e($user['bio']) ?>" placeholder="نبذة عنك">
+      <button class="btn btn-primary" style="margin-top:8px;width:100%" onclick="saveProfile()"><?= icon('check', 'ic-sm') ?>حفظ التعديلات</button>
+    </div>
+    <?php else: /* overview */ ?>
+    <div class="admin-box">
+      <div class="profile-grid">
+        <div class="profile-stat"><?= icon('coin', 'ic-sm') ?><div><strong><?= number_format((float)user_balance($user['id']), 2) ?><?= e(setting('wallet_currency_symbol','$')) ?></strong><span>الرصيد</span></div></div>
+        <div class="profile-stat"><?= icon('cart', 'ic-sm') ?><div><strong><?= $pApprovedOrders ?></strong><span>طلب مكتمل</span></div></div>
+        <div class="profile-stat"><?= icon('android', 'ic-sm') ?><div><strong><?= $pDownloadCount ?></strong><span>تحميل</span></div></div>
+        <div class="profile-stat"><?= icon('heart', 'ic-sm') ?><div><strong><?= $pFavCount ?></strong><span>مفضّلة</span></div></div>
+        <div class="profile-stat"><?= icon('star', 'ic-sm') ?><div><strong><?= $pReviewCount ?></strong><span>تقييم</span></div></div>
+      </div>
+    </div>
+    <div class="admin-box">
+      <h3 style="margin-bottom:10px"><?= icon('shield', 'ic-sm') ?>المعلومات</h3>
+      <div class="profile-info-row"><span>البريد الإلكتروني</span><strong><?= e($user['email'] ?: '—') ?></strong></div>
+      <div class="profile-info-row"><span>آيدي الحساب</span><strong>#<?= (int)$user['id'] ?></strong></div>
+      <?php if (!empty($user['telegram_id'])): ?><div class="profile-info-row"><span>آيدي تيليجرام</span><strong><?= e($user['telegram_id']) ?></strong></div><?php endif; ?>
+      <div class="profile-info-row"><span>عضو منذ</span><strong><?= e(substr($user['created_at'] ?? '', 0, 10)) ?></strong></div>
+    </div>
+    <div class="admin-box">
+      <h3 style="margin-bottom:10px"><?= icon('gift', 'ic-sm') ?>الإنجازات</h3>
+      <div class="achv-grid">
+        <?php foreach ($pAchievements as $a): ?>
+          <div class="achv-badge<?= $a['on'] ? ' on' : '' ?>"><?= icon($a['icon'], 'ic-sm') ?><span><?= e($a['label']) ?></span></div>
+        <?php endforeach; ?>
+      </div>
+    </div>
+    <?php endif; ?>
+    <script>
+    function saveSettings(kind){
+      const form = document.getElementById('settingsForm' + kind);
+      const fd = new FormData(form);
+      fd.append('csrf', CSRF);
+      // Ensure unchecked boxes send 0
+      form.querySelectorAll('input[type="checkbox"]').forEach(cb => { if (!cb.checked) fd.append(cb.name, '0'); });
+      fetch('?action=api_save_user_settings', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => { toast((res.ok ? '✅ ' : '❌ ') + res.msg); });
+    }
+    function changePassword(){
+      const cur = document.getElementById('currentPassword').value;
+      const nw = document.getElementById('newPassword').value;
+      const fd = new FormData(); fd.append('csrf', CSRF); fd.append('current_password', cur); fd.append('new_password', nw);
+      fetch('?action=api_change_password', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => { toast((res.ok ? '✅ ' : '❌ ') + res.msg); if (res.ok) document.getElementById('pwdForm').style.display='none'; });
+    }
+    function changeEmail(){
+      const em = document.getElementById('newEmail').value;
+      const fd = new FormData(); fd.append('csrf', CSRF); fd.append('new_email', em);
+      fetch('?action=api_change_email', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => { toast((res.ok ? '✅ ' : '❌ ') + res.msg); if (res.ok) setTimeout(() => location.reload(), 800); });
+    }
+    function toggle2FA(cb){
+      const fd = new FormData(); fd.append('csrf', CSRF); fd.append('enable', cb.checked ? '1' : '0');
+      fetch('?action=api_toggle_2fa', { method: 'POST', body: fd })
+        .then(r => r.json()).then(res => {
+          toast((res.ok ? '✅ ' : '❌ ') + res.msg);
+          if (res.ok && res.secret) { setTimeout(() => location.reload(), 600); }
+        });
+    }
+    function deleteAccount(){ if (prompt('اكتب "حذف" لتأكيد حذف حسابك نهائياً:') === 'حذف') { window.location = '?action=delete_account&confirm=1'; } }
+    </script>
+    <?php
+    break;
+
 case 'privacy':
 case 'terms':
+case 'about':
+case 'contact':
+case 'faq':
+case 'guide':
+case 'top':
+case 'article-charge-games':
+case 'article-pubg':
+case 'article-referral':
+case 'article-app-reviews':
+case 'article-tutorials':
+case 'article-payment-methods':
     $st = db()->prepare("SELECT content FROM pages WHERE slug=?"); $st->execute([$page]); $c = $st->fetch();
-    echo '<div class="admin-box" style="margin-top:18px;line-height:1.8">' . nl2br(e($c['content'] ?? '')) . '</div>';
+    $_allPageTitles = ['privacy' => 'سياسة الخصوصية', 'terms' => 'شروط الاستخدام', 'about' => 'من نحن', 'contact' => 'تواصل معنا', 'faq' => 'الأسئلة الشائعة', 'guide' => 'دليل تحميل التطبيقات والألعاب', 'top' => 'أفضل تطبيقات وألعاب أندرويد'] + ($pageLabels ?? []);
+    $_content = $c['content'] ?? '';
+    $_isHtml = strlen($_content) > 0 && $_content[0] === '<';
+    echo '<div class="section-title">' . icon('doc', 'ic') . e($_allPageTitles[$page] ?? $page) . '</div>';
+    if ($_isHtml) {
+        echo '<div class="admin-box page-content" style="margin-top:18px">' . $_content . '</div>';
+    } else {
+        echo '<div class="admin-box" style="margin-top:18px;line-height:1.8">' . nl2br(e($_content)) . '</div>';
+    }
+    if ($page === 'contact' && setting('support_telegram')) {
+        echo '<div class="admin-box" style="margin-top:14px;text-align:center"><a href="https://t.me/' . e(ltrim(setting('support_telegram'), '@')) . '" target="_blank" class="btn btn-primary">' . icon('send', 'ic-sm') . 'تواصل معنا على تيليجرام ' . e(setting('support_telegram')) . '</a></div>';
+    }
     break;
 
 case 'admin':
     require_admin();
     $tab = $_GET['tab'] ?? 'dashboard';
+    $adminTabs = ['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'categories'=>['pages','📂 الأقسام'],'packages'=>['star','🎁 الباقات'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'wallet_config'=>['coin','⚙️ المحفظة'],'notifications_config'=>['bell','🔔 إشعارات'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'ads'=>['megaphone','📣 إعلانات'],'settings'=>['settings','الإعدادات']];
     ?>
+    <button class="admin-sidebar-toggle" onclick="toggleAdminDrawer()" title="القائمة الجانبية"><?= icon('menu', 'ic') ?></button>
+    <div class="admin-sidebar-backdrop" id="adminBackdrop" onclick="toggleAdminDrawer()"></div>
+    <aside class="admin-sidebar-drawer" id="adminDrawer">
+      <h3><?= icon('hat', 'ic') ?> لوحة الإدارة</h3>
+      <?php foreach ($adminTabs as $k => $t): ?>
+        <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
+      <?php endforeach; ?>
+    </aside>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
-        <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= $label ?></a>
+      <?php foreach ($adminTabs as $k => $t): ?>
+        <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
+    <script>
+    function toggleAdminDrawer(){
+      document.getElementById('adminDrawer').classList.toggle('open');
+      document.getElementById('adminBackdrop').classList.toggle('open');
+    }
+    </script>
 
     <?php if ($tab === 'dashboard'):
         $users_count = db()->query("SELECT COUNT(*) c FROM users")->fetch()['c'];
         $products_count = db()->query("SELECT COUNT(*) c FROM products")->fetch()['c'];
         $pending_orders = db()->query("SELECT COUNT(*) c FROM orders WHERE status='pending'")->fetch()['c'];
-        $pending_topups = db()->query("SELECT COUNT(*) c FROM topup_requests WHERE status='pending'")->fetch()['c'];
-        $pending_withdraws = db()->query("SELECT COUNT(*) c FROM withdraw_requests WHERE status='pending'")->fetch()['c'];
-        $points_total = db()->query("SELECT COALESCE(SUM(points),0) s FROM users")->fetch()['s'];
+        $apps_count = db()->query("SELECT COUNT(*) c FROM apps")->fetch()['c'];
+        $downloads_total = db()->query("SELECT COALESCE(SUM(downloads),0) s FROM apps")->fetch()['s'];
+        $views_total = db()->query("SELECT COALESCE(SUM(views),0) s FROM apps")->fetch()['s'];
+        $tg_users_count = (int)db()->query("SELECT COUNT(*) c FROM telegram_users")->fetch()['c'];
+        $revenue_total = (float)db()->query("SELECT COALESCE(SUM(price),0) s FROM orders WHERE status='completed'")->fetch()['s'];
+
+        $today = date('Y-m-d') . ' 00:00:00';
+        $weekAgo = date('Y-m-d', strtotime('-7 days')) . ' 00:00:00';
+        $monthAgo = date('Y-m-d', strtotime('-30 days')) . ' 00:00:00';
+        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE created_at >= ?"); $st->execute([$today]);
+        $users_today = (int)$st->fetch()['c'];
+        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE created_at >= ?"); $st->execute([$weekAgo]);
+        $users_week = (int)$st->fetch()['c'];
+        $st = db()->prepare("SELECT COUNT(*) c FROM users WHERE created_at >= ?"); $st->execute([$monthAgo]);
+        $users_month = (int)$st->fetch()['c'];
+
+        $top_apps = db()->query("SELECT id, name, kind, downloads, views, rating_avg FROM apps WHERE status='published' ORDER BY downloads DESC LIMIT 8")->fetchAll();
+        $recent_orders = db()->query("SELECT o.id, o.price, o.status, o.created_at, p.name AS product_name, u.name AS user_name
+            FROM orders o LEFT JOIN products p ON p.id=o.product_id LEFT JOIN users u ON u.id=o.user_id
+            ORDER BY o.id DESC LIMIT 8")->fetchAll();
+        $recent_activity = db()->query("SELECT * FROM activity_log ORDER BY id DESC LIMIT 15")->fetchAll();
+    ?>
+      <div class="formrow">
+        <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_count ?></div><div class="lbl">المستخدمون</div></div></div>
+        <div class="stat-card"><?= icon('android', 'ic') ?><div><div class="num"><?= $apps_count ?></div><div class="lbl">تطبيقات وألعاب</div></div></div>
+        <div class="stat-card"><?= icon('cart', 'ic') ?><div><div class="num"><?= $products_count ?></div><div class="lbl">المنتجات</div></div></div>
+        <div class="stat-card"><?= icon('orders', 'ic') ?><div><div class="num"><?= $pending_orders ?></div><div class="lbl">طلبات معلّقة</div></div></div>
+        <div class="stat-card"><?= icon('download', 'ic') ?><div><div class="num"><?= number_format($downloads_total) ?></div><div class="lbl">إجمالي التحميلات</div></div></div>
+        <div class="stat-card"><?= icon('eye', 'ic') ?><div><div class="num"><?= number_format($views_total) ?></div><div class="lbl">إجمالي المشاهدات</div></div></div>
+        <div class="stat-card"><?= icon('telegram', 'ic') ?><div><div class="num"><?= number_format($tg_users_count) ?></div><div class="lbl">مستخدمو بوت تيليجرام</div></div></div>
+        <div class="stat-card"><?= icon('cart', 'ic') ?><div><div class="num"><?= number_format($revenue_total, 2) ?>$</div><div class="lbl">إيرادات الطلبات المكتملة</div></div></div>
+      </div>
+      <div class="formrow">
+        <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_today ?></div><div class="lbl">مستخدمون جدد اليوم</div></div></div>
+        <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_week ?></div><div class="lbl">مستخدمون جدد آخر 7 أيام</div></div></div>
+        <div class="stat-card"><?= icon('users', 'ic') ?><div><div class="num"><?= $users_month ?></div><div class="lbl">مستخدمون جدد آخر 30 يوماً</div></div></div>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('rocket', 'ic') ?>الأكثر تحميلاً</h3>
+        <?php if (!$top_apps): ?>
+          <p style="color:var(--muted);font-size:13px">لا توجد تطبيقات منشورة حتى الآن.</p>
+        <?php else: ?>
+        <table>
+          <tr><th>الاسم</th><th>النوع</th><th>التحميلات</th><th>المشاهدات</th><th>التقييم</th></tr>
+          <?php foreach ($top_apps as $a): ?>
+          <tr>
+            <td><a href="?page=app&id=<?= (int)$a['id'] ?>" target="_blank"><?= e($a['name']) ?></a></td>
+            <td><?= $a['kind'] === 'game' ? 'لعبة' : 'تطبيق' ?></td>
+            <td><?= number_format($a['downloads']) ?></td>
+            <td><?= number_format($a['views']) ?></td>
+            <td><?= number_format((float)$a['rating_avg'], 1) ?></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php endif; ?>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('orders', 'ic') ?>آخر الطلبات</h3>
+        <?php if (!$recent_orders): ?>
+          <p style="color:var(--muted);font-size:13px">لا توجد طلبات حتى الآن.</p>
+        <?php else: ?>
+        <table>
+          <tr><th>المستخدم</th><th>المنتج</th><th>السعر</th><th>الحالة</th><th>الوقت</th></tr>
+          <?php foreach ($recent_orders as $o): ?>
+          <tr>
+            <td><?= e($o['user_name'] ?? '—') ?></td>
+            <td><?= e($o['product_name'] ?? '—') ?></td>
+            <td><?= number_format((float)$o['price'], 2) ?>$</td>
+            <td><?= e($o['status']) ?></td>
+            <td><?= e($o['created_at']) ?></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php endif; ?>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('terminal', 'ic') ?>سجل النشاط — آخر الملفات المرفوعة</h3>
+        <?php if (!$recent_activity): ?>
+          <p style="color:var(--muted);font-size:13px">لا يوجد نشاط رفع ملفات حتى الآن.</p>
+        <?php else: ?>
+        <table>
+          <tr><th>الأدمن</th><th>النوع</th><th>اسم الملف</th><th>الوقت</th><th></th></tr>
+          <?php foreach ($recent_activity as $a): ?>
+          <tr>
+            <td><?= e($a['admin_name']) ?></td>
+            <td><?= e($a['field']) ?></td>
+            <td><?= e($a['filename']) ?></td>
+            <td><?= e($a['created_at']) ?></td>
+            <td><a href="<?= e($a['url']) ?>" target="_blank" class="btn btn-ghost"><?= icon('image', 'ic-sm') ?>عرض</a></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php endif; ?>
+      </div>
+
+    <?php elseif ($tab === 'apps'):
+        $apps = db()->query("SELECT * FROM apps ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
-        <div class="formrow">
-          <div>👥 المستخدمون<br><strong style="font-size:22px"><?= $users_count ?></strong></div>
-          <div>🛍️ المنتجات<br><strong style="font-size:22px"><?= $products_count ?></strong></div>
-          <div>📦 طلبات معلّقة<br><strong style="font-size:22px"><?= $pending_orders ?></strong></div>
-          <div>💵 شحن معلّق<br><strong style="font-size:22px"><?= $pending_topups ?></strong></div>
-          <div>💸 سحب معلّق<br><strong style="font-size:22px"><?= $pending_withdraws ?></strong></div>
-          <div>🪙 عملات بالتداول<br><strong style="font-size:22px"><?= number_format($points_total) ?></strong></div>
-        </div>
-        <p style="color:var(--muted);font-size:13px">⚖️ نسبة الربح الحالية: <?= e(setting('profit_split_admin')) ?>% للإدارة / <?= e(setting('profit_split_user')) ?>% للمستخدم — عدّلها من تبويب الإعدادات بحسب عوائد MoneyTag الفعلية.</p>
+        <h3><?= icon('plus', 'ic') ?>نشر / تعديل تطبيق أو لعبة</h3>
+        <form method="post" action="?action=admin_save_app">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="id" id="apid">
+          <div class="formrow">
+            <input name="name" id="apname" placeholder="اسم التطبيق / اللعبة" required>
+            <select name="kind" id="apkind"><option value="app">تطبيق</option><option value="game">لعبة</option></select>
+            <input name="category" id="apcategory" placeholder="التصنيف (مثال: أدوات، أكشن)">
+            <input name="package_name" id="appackage" placeholder="اسم الحزمة com.example.app">
+            <input name="version" id="apversion" placeholder="رقم الإصدار مثل 2.4.1">
+            <input name="size_label" id="apsize" placeholder="حجم الملف مثل 45MB">
+            <input name="min_android" id="apminandroid" placeholder="أقل إصدار أندرويد مطلوب">
+            <input name="developer_name" id="apdev" placeholder="اسم المطوّر">
+            <input name="developer_website" id="apdevsite" placeholder="رابط موقع المطوّر">
+            <input name="privacy_policy_url" id="appolicy" placeholder="رابط سياسة الخصوصية">
+            <select name="status" id="apstatus"><option value="published">منشور</option><option value="pending">قيد المراجعة</option><option value="hidden">مخفي</option></select>
+          </div>
+          <button type="button" class="btn btn-ai" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?>توليد كل المحتوى من الاسم بالذكاء الاصطناعي (الوصف + التصنيف + SEO + الصلاحيات)</button>
+          <div class="upload-row">
+            <input type="text" name="icon" id="apicon" placeholder="رابط أيقونة التطبيق (أو ارفع ملفاً)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apicon')"></label>
+            <button type="button" class="btn-ai-icon" title="توليد أيقونة بالذكاء الاصطناعي" onclick="aiGenerateAppIcon()"><?= icon('rocket', 'ic-sm') ?></button>
+          </div>
+          <div class="upload-row">
+            <input type="text" name="banner_image" id="apbanner" placeholder="رابط صورة الغلاف">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apbanner')"></label>
+          </div>
+          <textarea name="screenshots" id="apscreens" placeholder="روابط صور لقطات الشاشة، كل رابط بسطر مستقل" rows="3"></textarea>
+          <input name="video_url" id="apvideo" placeholder="رابط فيديو عرض (يوتيوب، اختياري)">
+          <div class="upload-row"><input name="short_description" id="apshort" placeholder="وصف مختصر يظهر بالبطاقات" maxlength="300"><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><textarea name="description" id="apdesc" placeholder="الوصف الكامل للتطبيق" rows="4"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><textarea name="changelog" id="apchangelog" placeholder="ما الجديد في هذا الإصدار" rows="2"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><textarea name="permissions" id="appermissions" placeholder="الصلاحيات المطلوبة، كل صلاحية بسطر مستقل" rows="2"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row">
+            <input type="text" name="download_url" id="apdownload" placeholder="رابط ملف APK / التحميل المباشر" required>
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" style="display:none" onchange="uploadInto(this,'apdownload')"></label>
+          </div>
+          <button type="button" class="btn btn-ai" onclick="aiSeoBoost()"><?= icon('rocket', 'ic-sm') ?>تعزيز SEO بالذكاء الاصطناعي (عنوان قوي مختلف عن الاسم + محتوى كامل ٥٠٠+ سطر)</button>
+          <div class="upload-row"><input name="seo_title" id="apseotitle" placeholder="عنوان SEO لمحركات البحث (اختياري)"><button type="button" class="btn-ai-icon" title="توليد عنوان SEO بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><textarea name="seo_description" id="apseodesc" placeholder="وصف SEO لمحركات البحث (اختياري)" rows="2"></textarea><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <div class="upload-row"><input name="seo_keywords" id="apseokw" placeholder="كلمات مفتاحية SEO مفصولة بفواصل (اختياري)"><button type="button" class="btn-ai-icon" title="توليد بالذكاء الاصطناعي" onclick="aiGenerateApp()"><?= icon('rocket', 'ic-sm') ?></button></div>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ التطبيق</button>
+        </form>
       </div>
+      <div class="admin-box">
+        <div style="text-align:left;margin-bottom:10px"><a class="btn btn-ghost" href="?action=admin_export_csv&type=apps&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تصدير CSV</a></div>
+        <table>
+          <tr><th>الأيقونة</th><th>الاسم</th><th>النوع</th><th>الحالة</th><th>المشاهدات</th><th>التحميلات</th><th></th></tr>
+          <?php foreach ($apps as $a): ?>
+          <tr>
+            <td><?php if ($a['icon']): ?><img src="<?= e($a['icon']) ?>" style="width:32px;height:32px;border-radius:8px;object-fit:cover"><?php endif; ?></td>
+            <td><?= e($a['name']) ?></td>
+            <td><?= $a['kind'] === 'game' ? 'لعبة' : 'تطبيق' ?></td>
+            <td><span class="badge <?= $a['status'] === 'published' ? 'approved' : ($a['status'] === 'pending' ? 'pending' : 'rejected') ?>"><?= e($a['status']) ?></span></td>
+            <td><?= (int)$a['views'] ?></td>
+            <td><?= (int)$a['downloads'] ?></td>
+            <td style="display:flex;gap:6px">
+              <a class="btn btn-ghost" href="?page=app&id=<?= (int)$a['id'] ?>" target="_blank"><?= icon('eye', 'ic-sm') ?></a>
+              <button class="btn btn-ghost" type="button" onclick='fillAppForm(<?= json_encode($a, JSON_UNESCAPED_UNICODE) ?>)'><?= icon('edit', 'ic-sm') ?></button>
+              <form method="post" action="?action=admin_delete_app" style="display:inline">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="id" value="<?= (int)$a['id'] ?>">
+                <button class="btn btn-danger" onclick="return confirm('حذف التطبيق؟')"><?= icon('trash', 'ic-sm') ?></button>
+              </form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+      <script>
+      function fillAppForm(a) {
+        document.getElementById('apid').value = a.id;
+        document.getElementById('apname').value = a.name || '';
+        document.getElementById('apkind').value = a.kind || 'app';
+        document.getElementById('apcategory').value = a.category || '';
+        document.getElementById('appackage').value = a.package_name || '';
+        document.getElementById('apversion').value = a.version || '';
+        document.getElementById('apsize').value = a.size_label || '';
+        document.getElementById('apminandroid').value = a.min_android || '';
+        document.getElementById('apdev').value = a.developer_name || '';
+        document.getElementById('apdevsite').value = a.developer_website || '';
+        document.getElementById('appolicy').value = a.privacy_policy_url || '';
+        document.getElementById('apstatus').value = a.status || 'published';
+        document.getElementById('apicon').value = a.icon || '';
+        document.getElementById('apbanner').value = a.banner_image || '';
+        document.getElementById('apscreens').value = a.screenshots || '';
+        document.getElementById('apvideo').value = a.video_url || '';
+        document.getElementById('apshort').value = a.short_description || '';
+        document.getElementById('apdesc').value = a.description || '';
+        document.getElementById('apchangelog').value = a.changelog || '';
+        document.getElementById('appermissions').value = a.permissions || '';
+        document.getElementById('apdownload').value = a.download_url || '';
+        document.getElementById('apseotitle').value = a.seo_title || '';
+        document.getElementById('apseodesc').value = a.seo_description || '';
+        document.getElementById('apseokw').value = a.seo_keywords || '';
+        document.querySelector('.admin-box h3').scrollIntoView({behavior:'smooth'});
+      }
+      </script>
 
     <?php elseif ($tab === 'products'):
         $cats = db()->query("SELECT * FROM categories")->fetchAll();
         $products = db()->query("SELECT * FROM products ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
-        <h3>➕ إضافة / تعديل منتج</h3>
-        <form method="post" action="?action=admin_save_product">
+        <h3><?= icon('plus', 'ic') ?>إضافة / تعديل منتج</h3>
+        <form method="post" action="?action=admin_save_product" enctype="multipart/form-data">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <input type="hidden" name="id" id="pid">
           <div class="formrow">
             <input name="name" id="pname" placeholder="اسم المنتج" required>
-            <input name="icon" id="picon" placeholder="إيقونة (emoji) اختياري">
-            <input name="image" id="pimage" placeholder="رابط صورة (اختياري)">
             <input name="price" id="pprice" type="number" step="0.01" placeholder="السعر $" required>
             <input name="old_price" id="poldprice" type="number" step="0.01" placeholder="السعر قبل الخصم (اختياري)">
             <input name="tag" id="ptag" placeholder="وسم مثل: جديد / خصم">
+            <input name="icon" id="picon" placeholder="أيقونة إيموجي (مثل 🎮)" maxlength="10">
             <select name="category_id"><option value="">بدون قسم</option><?php foreach ($cats as $c): ?><option value="<?= (int)$c['id'] ?>"><?= e($c['name']) ?></option><?php endforeach; ?></select>
           </div>
+          <div class="upload-row">
+            <input type="text" name="image" id="pimage" placeholder="رابط صورة المنتج (أو ارفع ملفاً)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" name="image_file" accept="image/*" style="display:none" onchange="uploadInto(this,'pimage')"></label>
+          </div>
           <textarea name="description" id="pdesc" placeholder="الوصف" rows="3"></textarea>
-          <button class="btn btn-primary">💾 حفظ المنتج</button>
+          <textarea name="meta_description" id="pmeta" placeholder="وصف SEO مختصر للمحرّكات (اختياري)" rows="2"></textarea>
+          <button type="button" class="btn btn-ghost" onclick="aiGenerateProduct()"><?= icon('rocket', 'ic-sm') ?>توليد الوصف + الصورة + SEO بالذكاء الاصطناعي</button>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ المنتج</button>
         </form>
-        <form method="post" action="?action=admin_save_category" style="margin-top:10px;display:flex;gap:8px">
+        <form method="post" action="?action=admin_save_category" style="margin-top:10px">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input name="name" placeholder="اسم قسم جديد" style="flex:1">
-          <button class="btn btn-ghost">➕ قسم</button>
+          <div class="formrow">
+            <input name="name" placeholder="اسم القسم (مثال: الألعاب)" required>
+            <input name="color" type="color" value="#1d4ed8" title="لون بطاقة القسم" style="padding:4px;height:42px">
+          </div>
+          <div class="upload-row">
+            <input type="text" name="image" id="catimage" placeholder="صورة بطاقة القسم (شعارات/أيقونات مجمّعة، اختياري)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'catimage')"></label>
+          </div>
+          <button class="btn btn-ghost"><?= icon('plus', 'ic-sm') ?>حفظ القسم</button>
         </form>
-      </div>
-      <div class="admin-box">
-        <table>
-          <tr><th>المنتج</th><th>السعر</th><th>الوسم</th><th></th></tr>
-          <?php foreach ($products as $p): ?>
+        <table style="margin-top:14px">
+          <tr><th>القسم</th><th>البطاقة</th><th></th></tr>
+          <?php foreach ($cats as $c): ?>
           <tr>
-            <td><?= e($p['icon']) ?> <?= e($p['name']) ?></td>
-            <td><?= e($p['price']) ?>$</td>
-            <td><?= e($p['tag']) ?></td>
+            <td><?= e($c['name']) ?></td>
             <td>
-              <form method="post" action="?action=admin_delete_product" style="display:inline">
+              <div class="cat-tile-mini" style="background:<?= e($c['color'] ?: '#18223a') ?>">
+                <?php if (!empty($c['image'])): ?><img src="<?= e($c['image']) ?>"><?php endif; ?>
+              </div>
+            </td>
+            <td>
+              <form method="post" action="?action=admin_delete_category" style="display:inline">
                 <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-                <input type="hidden" name="id" value="<?= (int)$p['id'] ?>">
-                <button class="btn btn-danger" onclick="return confirm('حذف المنتج؟')">🗑️</button>
+                <input type="hidden" name="id" value="<?= (int)$c['id'] ?>">
+                <button class="btn btn-danger" onclick="return confirm('حذف القسم؟')"><?= icon('trash', 'ic-sm') ?></button>
               </form>
             </td>
           </tr>
           <?php endforeach; ?>
         </table>
       </div>
+      <div class="admin-box">
+        <h3><?= icon('cart', 'ic') ?>مزامنة Satofill</h3>
+        <p style="opacity:.7;font-size:13px">يجلب كتالوج المنتجات من Satofill ويضيف نسبة ربح <?= e(setting('satofill_markup_percent', 15)) ?>% على السعر، قابلة للتعديل من تبويب الإعدادات.</p>
+        <form method="post" action="?action=admin_satofill_sync">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <button class="btn btn-primary"><?= icon('refresh', 'ic-sm') ?>مزامنة الآن</button>
+        </form>
+      </div>
+      <div class="admin-box">
+        <div style="text-align:left;margin-bottom:10px"><a class="btn btn-ghost" href="?action=admin_export_csv&type=products&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تصدير CSV</a></div>
+        <table>
+          <tr><th>الأيقونة</th><th>المنتج</th><th>السعر</th><th>الوسم</th><th></th></tr>
+          <?php foreach ($products as $p): ?>
+          <tr>
+            <td><?= e($p['icon']) ?></td>
+            <td><?= e($p['name']) ?></td>
+            <td><?= e($p['price']) ?>$</td>
+            <td><?= e($p['tag']) ?></td>
+            <td style="display:flex;gap:6px">
+              <button class="btn btn-ghost" type="button" onclick='fillProductForm(<?= json_encode($p, JSON_UNESCAPED_UNICODE) ?>)'><?= icon('edit', 'ic-sm') ?></button>
+              <form method="post" action="?action=admin_delete_product" style="display:inline">
+                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+                <input type="hidden" name="id" value="<?= (int)$p['id'] ?>">
+                <button class="btn btn-danger" onclick="return confirm('حذف المنتج؟')"><?= icon('trash', 'ic-sm') ?></button>
+              </form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+      <script>
+      function fillProductForm(p) {
+        document.getElementById('pid').value = p.id;
+        document.getElementById('pname').value = p.name || '';
+        document.getElementById('pprice').value = p.price || '';
+        document.getElementById('poldprice').value = p.old_price || '';
+        document.getElementById('ptag').value = p.tag || '';
+        document.getElementById('picon').value = p.icon || '';
+        document.getElementById('pimage').value = p.image || '';
+        document.getElementById('pdesc').value = p.description || '';
+        document.getElementById('pmeta').value = p.meta_description || '';
+        document.querySelector('select[name="category_id"]').value = p.category_id || '';
+        document.querySelector('.admin-box h3').scrollIntoView({behavior:'smooth'});
+      }
+      </script>
 
     <?php elseif ($tab === 'orders'):
         $orders = db()->query("SELECT o.*, u.name uname, p.name pname FROM orders o JOIN users u ON u.id=o.user_id JOIN products p ON p.id=o.product_id ORDER BY o.id DESC")->fetchAll();
     ?>
       <div class="admin-box">
+        <div style="text-align:left;margin-bottom:10px"><a class="btn btn-ghost" href="?action=admin_export_csv&type=orders&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تصدير CSV</a></div>
         <table>
-          <tr><th>المستخدم</th><th>المنتج</th><th>السعر</th><th>الحالة</th><th>إجراء</th></tr>
+          <tr><th>المستخدم</th><th>المنتج</th><th>السعر</th><th>الآيدي</th><th>الإيصال</th><th>رقم العملية</th><th>الحالة</th><th>إجراء</th></tr>
           <?php foreach ($orders as $o): ?>
           <tr>
             <td><?= e($o['uname']) ?></td><td><?= e($o['pname']) ?></td><td><?= e($o['price']) ?>$</td>
+            <td><?= e($o['account_id'] ?? '') ?></td>
+            <td><?php if (!empty($o['receipt_image'])): ?><a href="<?= e($o['receipt_image']) ?>" target="_blank" class="btn btn-ghost" style="padding:4px 8px"><?= icon('image', 'ic-sm') ?>عرض</a><?php endif; ?></td>
+            <td><?= e($o['tx_note'] ?? '') ?></td>
             <td><span class="badge <?= e($o['status']) ?>"><?= e($o['status']) ?></span></td>
             <td>
               <?php if ($o['status'] === 'pending'): ?>
               <form method="post" action="?action=admin_order_decision" style="display:flex;gap:4px">
                 <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
                 <input type="hidden" name="id" value="<?= (int)$o['id'] ?>">
-                <button name="decision" value="approve" class="btn btn-success">✅</button>
-                <button name="decision" value="reject" class="btn btn-danger">❌</button>
-              </form>
-              <?php endif; ?>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-        </table>
-      </div>
-
-    <?php elseif ($tab === 'topups'):
-        $rows = db()->query("SELECT t.*, u.name uname, w.label wlabel FROM topup_requests t JOIN users u ON u.id=t.user_id LEFT JOIN wallets w ON w.id=t.wallet_id ORDER BY t.id DESC")->fetchAll();
-    ?>
-      <div class="admin-box">
-        <table>
-          <tr><th>المستخدم</th><th>المحفظة</th><th>المبلغ</th><th>ملاحظة</th><th>الحالة</th><th>إجراء</th></tr>
-          <?php foreach ($rows as $r): ?>
-          <tr>
-            <td><?= e($r['uname']) ?></td><td><?= e($r['wlabel']) ?></td><td><?= e($r['amount']) ?>$</td><td><?= e($r['note']) ?></td>
-            <td><span class="badge <?= e($r['status']) ?>"><?= e($r['status']) ?></span></td>
-            <td>
-              <?php if ($r['status'] === 'pending'): ?>
-              <form method="post" action="?action=admin_topup_decision" style="display:flex;gap:4px">
-                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-                <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <button name="decision" value="approve" class="btn btn-success">✅</button>
-                <button name="decision" value="reject" class="btn btn-danger">❌</button>
-              </form>
-              <?php endif; ?>
-            </td>
-          </tr>
-          <?php endforeach; ?>
-        </table>
-      </div>
-
-    <?php elseif ($tab === 'withdraws'):
-        $rows = db()->query("SELECT w.*, u.name uname FROM withdraw_requests w JOIN users u ON u.id=w.user_id ORDER BY w.id DESC")->fetchAll();
-    ?>
-      <div class="admin-box">
-        <table>
-          <tr><th>المستخدم</th><th>المبلغ</th><th>الطريقة</th><th>العنوان</th><th>الحالة</th><th>إجراء</th></tr>
-          <?php foreach ($rows as $r): ?>
-          <tr>
-            <td><?= e($r['uname']) ?></td><td><?= e($r['amount_usd']) ?>$</td><td><?= e($r['wallet_type']) ?></td>
-            <td style="font-family:monospace"><?= e($r['wallet_address']) ?></td>
-            <td><span class="badge <?= e($r['status']) ?>"><?= e($r['status']) ?></span></td>
-            <td>
-              <?php if ($r['status'] === 'pending'): ?>
-              <form method="post" action="?action=admin_withdraw_decision" style="display:flex;gap:4px">
-                <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-                <input type="hidden" name="id" value="<?= (int)$r['id'] ?>">
-                <button name="decision" value="approve" class="btn btn-success">✅</button>
-                <button name="decision" value="reject" class="btn btn-danger">❌</button>
+                <button name="decision" value="approve" class="btn btn-success"><?= icon('check', 'ic-sm') ?></button>
+                <button name="decision" value="reject" class="btn btn-danger"><?= icon('x', 'ic-sm') ?></button>
               </form>
               <?php endif; ?>
             </td>
@@ -1575,10 +6389,10 @@ case 'admin':
         $wallets = db()->query("SELECT * FROM wallets ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
-        <h3>➕ إضافة محفظة استقبال</h3>
+        <h3><?= icon('plus', 'ic') ?>إضافة محفظة استقبال</h3>
         <form method="post" action="?action=admin_save_wallet" class="formrow">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <select name="type"><option value="usdt">USDT (TRC20)</option><option value="sham">الشام كاش</option></select>
+          <select name="type"><option value="usdt">USDT (TRC20)</option><option value="sham">الشام كاش</option><option value="binance">Binance Pay</option><option value="payeer">Payeer</option><option value="syriatel_cash">سيرياتيل كاش</option><option value="mtn_cash">MTN كاش</option><option value="bank_transfer">حوالة بنكية</option><option value="western_union">ويسترن يونيون</option><option value="crypto">عملات مشفرة أخرى</option></select>
           <input name="label" placeholder="اسم/وصف">
           <input name="address" placeholder="العنوان / رقم المحفظة">
           <button class="btn btn-primary">حفظ</button>
@@ -1589,40 +6403,14 @@ case 'admin':
           <tr><th>النوع</th><th>الاسم</th><th>العنوان</th><th>الحالة</th><th></th></tr>
           <?php foreach ($wallets as $w): ?>
           <tr>
-            <td><?= $w['type'] === 'usdt' ? '💎 USDT' : '📱 شام كاش' ?></td><td><?= e($w['label']) ?></td>
+            <?php [$wTypeLbl, $wTypeIcon] = wallet_type_label($w['type']); ?>
+            <td><?= icon($wTypeIcon, 'ic-sm') ?><?= e($wTypeLbl) ?></td><td><?= e($w['label']) ?></td>
             <td style="font-family:monospace"><?= e($w['address']) ?></td>
-            <td><?= $w['active'] ? '🟢' : '⏸️' ?></td>
+            <td><span class="icon-badge <?= $w['active'] ? 'ok' : 'no' ?>"><?= icon($w['active'] ? 'check' : 'x', 'ic-sm') ?></span></td>
             <td>
-              <form method="post" action="?action=admin_toggle_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-ghost">تبديل</button></form>
-              <form method="post" action="?action=admin_delete_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-danger">🗑️</button></form>
+              <form method="post" action="?action=admin_toggle_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form>
+              <form method="post" action="?action=admin_delete_wallet" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$w['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
             </td>
-          </tr>
-          <?php endforeach; ?>
-        </table>
-      </div>
-
-    <?php elseif ($tab === 'tasks'):
-        $tasks = db()->query("SELECT * FROM tasks ORDER BY id DESC")->fetchAll();
-    ?>
-      <div class="admin-box">
-        <h3>➕ إضافة مهمة (مثل: زيارة رابط لمدة معينة)</h3>
-        <form method="post" action="?action=admin_save_task" class="formrow">
-          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input name="title" placeholder="عنوان المهمة" required>
-          <input name="url" placeholder="الرابط" required>
-          <input name="seconds" type="number" value="15" placeholder="مدة الانتظار بالثواني">
-          <input name="reward" type="number" value="50" placeholder="عدد العملات">
-          <button class="btn btn-primary">حفظ</button>
-        </form>
-      </div>
-      <div class="admin-box">
-        <table>
-          <tr><th>العنوان</th><th>المدة</th><th>المكافأة</th><th>الحالة</th><th></th></tr>
-          <?php foreach ($tasks as $t): ?>
-          <tr>
-            <td><?= e($t['title']) ?></td><td><?= (int)$t['seconds'] ?>s</td><td><?= (int)$t['reward'] ?></td>
-            <td><?= $t['active'] ? '🟢' : '⏸️' ?></td>
-            <td><form method="post" action="?action=admin_toggle_task" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$t['id'] ?>"><button class="btn btn-ghost">تبديل</button></form></td>
           </tr>
           <?php endforeach; ?>
         </table>
@@ -1630,100 +6418,194 @@ case 'admin':
 
     <?php elseif ($tab === 'banners'):
         $banners = db()->query("SELECT * FROM banners ORDER BY id DESC")->fetchAll();
+        $tickers = db()->query("SELECT * FROM tickers ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
-        <p style="color:var(--muted);font-size:13px;margin-bottom:10px">📐 القياس الموصى به للبنرات الثلاثة: <strong><?= e(setting('banner_size_hint')) ?></strong>. تتحرك تلقائياً كل 5 ثوانٍ في الصفحة الرئيسية.</p>
-        <form method="post" action="?action=admin_save_banner" class="formrow">
+        <h3><?= icon('image', 'ic') ?>البنر الرئيسي (العنوان والخلفية)</h3>
+        <form method="post" action="?action=admin_save_settings" class="formrow" enctype="multipart/form-data">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input name="image" placeholder="رابط صورة البنر" required>
-          <input name="title" placeholder="عنوان/نص البنر (اختياري)">
-          <input name="link" placeholder="رابط عند الضغط (اختياري)">
-          <input name="size_label" placeholder="القياس مثل 1200×400" value="<?= e(setting('banner_size_hint')) ?>">
-          <button class="btn btn-primary">إضافة بنر</button>
+          <input type="hidden" name="redirect_tab" value="banners">
+          <input name="banner_title" value="<?= e(setting('banner_title')) ?>" placeholder="عنوان البنر">
+          <input name="banner_subtitle" value="<?= e(setting('banner_subtitle')) ?>" placeholder="وصف البنر">
+          <div class="upload-row" style="grid-column:1/-1">
+            <input type="text" name="banner_bg_image" id="bbgimage" value="<?= e(setting('banner_bg_image')) ?>" placeholder="رابط صورة خلفية مخصصة للبنر (اختياري — يبقى التدرج الافتراضي إذا تركته فارغاً)">
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'bbgimage')"></label>
+          </div>
+          <button class="btn btn-primary" style="grid-column:1/-1"><?= icon('check', 'ic-sm') ?>حفظ البنر الرئيسي</button>
         </form>
-      </div>
-      <div class="admin-box">
-        <?php foreach ($banners as $b): ?>
-        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
-          <img src="<?= e($b['image']) ?>" style="width:80px;height:40px;object-fit:cover;border-radius:6px" onerror="this.style.opacity=.3">
-          <span style="flex:1"><strong><?= e($b['title'] ?? '') ?></strong><br><small style="color:var(--muted)"><?= e($b['link']) ?> · <?= e($b['size_label'] ?? '') ?></small></span>
-          <form method="post" action="?action=admin_delete_banner"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-danger">🗑️</button></form>
-        </div>
-        <?php endforeach; ?>
       </div>
 
-    <?php elseif ($tab === 'chats'):
-        $groups = db()->query("SELECT * FROM chat_groups ORDER BY id DESC")->fetchAll();
-    ?>
       <div class="admin-box">
-        <h3>➕ إضافة مجموعة دردشة</h3>
-        <form method="post" action="?action=admin_save_chat_group" class="formrow">
+        <h3><?= icon('megaphone', 'ic') ?>الشريط الإخباري المتحرك (عروض وأخبار)</h3>
+        <form method="post" action="?action=admin_save_ticker" class="formrow">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <input name="name" placeholder="اسم المجموعة" required>
-          <input name="icon" placeholder="إيقونة (emoji)" value="💬">
-          <input name="link" placeholder="رابط الانضمام (تيليجرام/واتساب)" required>
-          <input name="members" placeholder="عدد الأعضاء (اختياري)">
-          <button class="btn btn-primary">حفظ</button>
+          <input name="text" placeholder="نص الخبر / العرض" required>
+          <input name="link" placeholder="رابط عند الضغط (اختياري)">
+          <button class="btn btn-primary"><?= icon('plus', 'ic-sm') ?>إضافة للشريط</button>
         </form>
-      </div>
-      <div class="admin-box">
-        <table>
-          <tr><th>المجموعة</th><th>الرابط</th><th>الأعضاء</th><th></th></tr>
-          <?php foreach ($groups as $g): ?>
+        <table style="margin-top:10px">
+          <tr><th>النص</th><th>الرابط</th><th>الحالة</th><th></th></tr>
+          <?php foreach ($tickers as $t): ?>
           <tr>
-            <td><?= e($g['icon']) ?> <?= e($g['name']) ?></td>
-            <td style="font-family:monospace;font-size:11px"><?= e($g['link']) ?></td>
-            <td><?= e($g['members']) ?></td>
-            <td><form method="post" action="?action=admin_delete_chat_group" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$g['id'] ?>"><button class="btn btn-danger">🗑️</button></form></td>
+            <td><?= e($t['text']) ?></td>
+            <td><?= e($t['link']) ?></td>
+            <td><?= $t['active'] ? icon('check', 'ic-sm') : icon('x', 'ic-sm') ?></td>
+            <td style="display:flex;gap:6px">
+              <form method="post" action="?action=admin_toggle_ticker"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$t['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?></button></form>
+              <form method="post" action="?action=admin_delete_ticker"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$t['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
+            </td>
           </tr>
           <?php endforeach; ?>
         </table>
       </div>
 
-    <?php elseif ($tab === 'ai'): ?>
       <div class="admin-box">
-        <h3>🤖 إعدادات OpenRouter AI</h3>
-        <form method="post" action="?action=admin_save_settings" class="formrow">
+        <h3><?= icon('plus', 'ic') ?>بنرات صور إضافية (شرائح متحركة أسفل البنر الرئيسي)</h3>
+        <form method="post" action="?action=admin_save_settings" class="formrow" style="margin-bottom:14px">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
-          <label style="grid-column:1/-1">مفتاح OpenRouter API
-            <input name="openrouter_key" placeholder="sk-or-..." value="<?= e(setting('openrouter_key')) ?>"></label>
-          <label>الموديل الافتراضي<input name="openrouter_model" id="orModelDefault" value="<?= e(setting('openrouter_model')) ?>"></label>
-          <button class="btn btn-primary" style="align-self:end">💾 حفظ المفتاح</button>
+          <input type="hidden" name="redirect_tab" value="banners">
+          <label>مدة التبديل بين الصور (ميلي ثانية)<input type="number" name="banner_interval" value="<?= e(setting('banner_interval')) ?>" min="1500" step="500"></label>
+          <label>ارتفاع شرائح البنر (px)<input type="number" name="banner_height" value="<?= e(setting('banner_height')) ?>" min="80" max="400"></label>
+          <button class="btn btn-ghost" style="grid-column:1/-1"><?= icon('check', 'ic-sm') ?>حفظ إعدادات الشرائح</button>
         </form>
-        <p style="color:var(--muted);font-size:12px">احصل على المفتاح من <span style="color:var(--accent2)">openrouter.ai/keys</span>. يمكنك أيضاً ضبطه في config.php عبر OPENROUTER_KEY.</p>
+        <form method="post" action="?action=admin_save_banner" class="formrow" enctype="multipart/form-data">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="upload-row" style="grid-column:1/-1">
+            <input type="text" name="image" id="bimage" placeholder="رابط صورة البنر (أو ارفع ملفاً)" required>
+            <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" name="image_file" accept="image/*" style="display:none" onchange="uploadInto(this,'bimage')"></label>
+          </div>
+          <input name="link" placeholder="رابط عند الضغط (اختياري)">
+          <button class="btn btn-primary"><?= icon('plus', 'ic-sm') ?>إضافة بنر</button>
+        </form>
+        <div id="bannerDropZone" class="bulk-dropzone" style="grid-column:1/-1" ondragover="event.preventDefault();this.classList.add('dragover')" ondragleave="this.classList.remove('dragover')" ondrop="handleBannerBulkDrop(event)">
+          <?= icon('upload', 'ic') ?>
+          <span>اسحب وأفلت عدة صور بنر هنا للرفع الدفعي دفعة واحدة، أو <label class="btn-link" style="cursor:pointer;text-decoration:underline" onclick="document.getElementById('bannerBulkInput').click()">اختر ملفات</label></span>
+          <input type="file" id="bannerBulkInput" accept="image/*" multiple style="display:none" onchange="handleBannerBulkFiles(this.files)">
+        </div>
       </div>
       <div class="admin-box">
-        <h3>🧪 اختبار الاتصال والموديلات</h3>
-        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
-          <button class="btn btn-ghost" onclick="orLoadModels()">📥 جلب كل الموديلات</button>
+        <?php foreach ($banners as $b): ?>
+        <div style="display:flex;align-items:center;gap:10px;margin-bottom:8px">
+          <img src="<?= e($b['image']) ?>" style="width:80px;height:40px;object-fit:cover;border-radius:6px">
+          <span style="flex:1"><?= e($b['link']) ?></span>
+          <form method="post" action="?action=admin_delete_banner"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
         </div>
-        <select id="orModelSelect" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff;margin-bottom:10px"><option value="">— اختر موديل بعد الجلب —</option></select>
-        <div id="orModelsInfo" style="color:var(--muted);font-size:12px;margin-bottom:10px"></div>
-        <input id="orPrompt" placeholder="رسالة اختبار" value="قل مرحباً بكلمة واحدة" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff;margin-bottom:10px">
-        <button class="btn btn-success" onclick="orTest()">🚀 اختبر الموديل المحدد</button>
-        <pre id="orResult" style="white-space:pre-wrap;background:#11152a;border-radius:10px;padding:12px;margin-top:12px;min-height:40px;font-size:13px;color:#cfe9df"></pre>
+        <?php endforeach; ?>
       </div>
 
-    <?php elseif ($tab === 'pages'):
-        $privacy = db()->query("SELECT content FROM pages WHERE slug='privacy'")->fetch();
-        $terms = db()->query("SELECT content FROM pages WHERE slug='terms'")->fetch();
+    <?php elseif ($tab === 'homepage'):
+        $homeSectionLabels = [
+            'hero' => 'البنر الرئيسي + العنوان',
+            'search' => 'شريط البحث',
+            'apk_promo' => 'بنر تحميل التطبيق/المتجر',
+            'cat_tiles' => 'بلاطات التصنيفات (بالصور)',
+            'cat_chips' => 'أزرار التصنيفات السريعة',
+            'carousel' => 'البنرات الدوارة',
+            'ticker' => 'الشريط الإعلاني المتحرك',
+            'live_ticker' => 'شريط أحدث التطبيقات والألعاب المباشر',
+            'latest_apps' => 'أحدث التطبيقات والألعاب',
+            'trending_apps' => 'الأكثر تحميلاً',
+            'products' => 'شبكة المنتجات حسب التصنيف',
+            'soon' => 'قسم "قريباً"',
+        ];
+        $homeOrderCur = array_filter(explode(',', setting('home_sections_order', '')));
+        foreach (array_keys($homeSectionLabels) as $k2) if (!in_array($k2, $homeOrderCur, true)) $homeOrderCur[] = $k2;
+        $homeHiddenCur = array_filter(explode(',', setting('home_sections_hidden', '')));
     ?>
       <div class="admin-box">
-        <h3>🔒 سياسة الخصوصية</h3>
+        <h3><?= icon('menu', 'ic') ?>ترتيب وإظهار أقسام الصفحة الرئيسية</h3>
+        <p style="color:var(--muted);font-size:13px;margin:6px 0 14px">اسحب الأقسام لتغيير ترتيب ظهورها في الصفحة الرئيسية، وألغِ تفعيل أي قسم لإخفائه تماماً.</p>
+        <ul id="homeSectionsList" style="list-style:none;padding:0;margin:0;display:flex;flex-direction:column;gap:8px">
+          <?php foreach ($homeOrderCur as $k2):
+              if (!isset($homeSectionLabels[$k2])) continue;
+              $isHidden = in_array($k2, $homeHiddenCur, true);
+          ?>
+            <li draggable="true" data-key="<?= e($k2) ?>" class="home-section-row<?= $isHidden ? ' is-hidden' : '' ?>" style="display:flex;align-items:center;gap:10px;background:#101a2e;border:1px solid #2a3350;border-radius:10px;padding:10px 14px;cursor:grab">
+              <?= icon('menu', 'ic-sm') ?>
+              <span style="flex:1"><?= e($homeSectionLabels[$k2]) ?></span>
+              <label style="display:flex;align-items:center;gap:6px;font-size:12px;color:var(--muted);margin:0">
+                <input type="checkbox" class="home-section-toggle" <?= $isHidden ? '' : 'checked' ?>> مفعّل
+              </label>
+            </li>
+          <?php endforeach; ?>
+        </ul>
+        <button type="button" class="btn btn-primary" style="margin-top:14px" onclick="saveHomeSections()"><?= icon('check', 'ic-sm') ?>حفظ الترتيب</button>
+        <form method="post" action="?action=admin_save_home_sections" id="homeSectionsForm" style="display:none">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="order" id="homeSectionsOrder">
+          <input type="hidden" name="hidden" id="homeSectionsHidden">
+        </form>
+      </div>
+      <style>.home-section-row.dragging{opacity:.4}.home-section-row.is-hidden{opacity:.55}</style>
+      <script>
+      (function(){
+        const list = document.getElementById('homeSectionsList');
+        if (!list) return;
+        let dragEl = null;
+        list.querySelectorAll('li').forEach(li => {
+          li.addEventListener('dragstart', () => { dragEl = li; li.classList.add('dragging'); });
+          li.addEventListener('dragend', () => { dragEl = null; li.classList.remove('dragging'); });
+          li.addEventListener('dragover', e => {
+            e.preventDefault();
+            if (!dragEl || dragEl === li) return;
+            const rect = li.getBoundingClientRect();
+            const before = (e.clientY - rect.top) < rect.height / 2;
+            list.insertBefore(dragEl, before ? li : li.nextSibling);
+          });
+        });
+      })();
+      function saveHomeSections(){
+        const list = document.getElementById('homeSectionsList');
+        const order = [], hidden = [];
+        list.querySelectorAll('li').forEach(li => {
+          const key = li.dataset.key;
+          order.push(key);
+          const checked = li.querySelector('.home-section-toggle').checked;
+          li.classList.toggle('is-hidden', !checked);
+          if (!checked) hidden.push(key);
+        });
+        document.getElementById('homeSectionsOrder').value = order.join(',');
+        document.getElementById('homeSectionsHidden').value = hidden.join(',');
+        document.getElementById('homeSectionsForm').submit();
+      }
+      </script>
+
+    <?php elseif ($tab === 'pages'):
+        $privacy = db()->query("SELECT * FROM pages WHERE slug='privacy'")->fetch();
+        $terms = db()->query("SELECT * FROM pages WHERE slug='terms'")->fetch();
+        $faq = db()->query("SELECT * FROM pages WHERE slug='faq'")->fetch();
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('doc', 'ic') ?>الأسئلة الشائعة (FAQ)</h3>
+        <form method="post" action="?action=admin_save_page">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="slug" value="faq">
+          <input name="meta_title" placeholder="عنوان SEO" value="<?= e($faq['meta_title'] ?? '') ?>">
+          <input name="meta_description" placeholder="وصف SEO مختصر" value="<?= e($faq['meta_description'] ?? '') ?>">
+          <textarea name="content" rows="8" placeholder="سؤال وجواب، سطر فارغ بين كل سؤال والآخر"><?= e($faq['content'] ?? '') ?></textarea>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
+        </form>
+      </div>
+      <div class="admin-box">
+        <h3><?= icon('lock', 'ic') ?>سياسة الخصوصية</h3>
         <form method="post" action="?action=admin_save_page">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <input type="hidden" name="slug" value="privacy">
+          <input name="meta_title" placeholder="عنوان SEO (يظهر في نتائج البحث)" value="<?= e($privacy['meta_title'] ?? '') ?>">
+          <input name="meta_description" placeholder="وصف SEO مختصر" value="<?= e($privacy['meta_description'] ?? '') ?>">
           <textarea name="content" rows="6"><?= e($privacy['content'] ?? '') ?></textarea>
-          <button class="btn btn-primary">حفظ</button>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
         </form>
       </div>
       <div class="admin-box">
-        <h3>📜 شروط الاستخدام</h3>
+        <h3><?= icon('doc', 'ic') ?>شروط الاستخدام</h3>
         <form method="post" action="?action=admin_save_page">
           <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
           <input type="hidden" name="slug" value="terms">
+          <input name="meta_title" placeholder="عنوان SEO (يظهر في نتائج البحث)" value="<?= e($terms['meta_title'] ?? '') ?>">
+          <input name="meta_description" placeholder="وصف SEO مختصر" value="<?= e($terms['meta_description'] ?? '') ?>">
           <textarea name="content" rows="6"><?= e($terms['content'] ?? '') ?></textarea>
-          <button class="btn btn-primary">حفظ</button>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
         </form>
       </div>
 
@@ -1731,19 +6613,387 @@ case 'admin':
         $users = db()->query("SELECT * FROM users ORDER BY id DESC")->fetchAll();
     ?>
       <div class="admin-box">
+        <div style="text-align:left;margin-bottom:10px"><a class="btn btn-ghost" href="?action=admin_export_csv&type=users&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تصدير CSV</a></div>
         <table>
-          <tr><th>الاسم</th><th>البريد</th><th>النقاط</th><th>الدور</th><th>الحالة</th><th>إجراء</th></tr>
+          <tr><th>الاسم</th><th>البريد</th><th>الدور</th><th>الحالة</th><th>إجراء</th></tr>
           <?php foreach ($users as $u): ?>
           <tr>
-            <td><?= e($u['name']) ?></td><td><?= e($u['email']) ?></td><td><?= (int)$u['points'] ?></td>
-            <td><?= e($u['role']) ?></td><td><?= $u['is_banned'] ? '🚫' : '🟢' ?></td>
+            <td><?= e($u['name']) ?></td><td><?= e($u['email']) ?></td>
+            <td><?= e($u['role']) ?></td><td><?= icon($u['is_banned'] ? 'x' : 'check', 'ic-sm') ?></td>
             <td style="display:flex;gap:4px;flex-wrap:wrap">
               <form method="post" action="?action=admin_user_action"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$u['id'] ?>"><input type="hidden" name="op" value="<?= $u['is_banned'] ? 'unban' : 'ban' ?>"><button class="btn btn-ghost"><?= $u['is_banned'] ? 'رفع حظر' : 'حظر' ?></button></form>
-              <form method="post" action="?action=admin_user_action" style="display:flex;gap:4px"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$u['id'] ?>"><input type="hidden" name="op" value="addpoints"><input type="number" name="points" placeholder="عملات" style="width:80px;padding:4px"><button class="btn btn-primary">إضافة</button></form>
             </td>
           </tr>
           <?php endforeach; ?>
         </table>
+      </div>
+
+    <?php elseif ($tab === 'suggestions'):
+        $suggestions = db()->query("SELECT s.*, u.name uname, u.username FROM product_suggestions s JOIN users u ON u.id=s.user_id ORDER BY s.id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <?php if (!$suggestions): ?><div class="empty">لا توجد اقتراحات بعد.</div><?php endif; ?>
+        <table>
+          <tr><th>المستخدم</th><th>الاقتراح</th><th>التفاصيل</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($suggestions as $s): ?>
+          <tr>
+            <td><?= e($s['uname'] ?: $s['username']) ?></td>
+            <td><?= e($s['title']) ?></td>
+            <td><?= e($s['details']) ?></td>
+            <td><?= e($s['status']) ?></td>
+            <td style="display:flex;gap:4px;flex-wrap:wrap">
+              <form method="post" action="?action=admin_suggestion_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$s['id'] ?>"><input type="hidden" name="status" value="reviewed"><button class="btn btn-ghost">تمت المراجعة</button></form>
+              <form method="post" action="?action=admin_suggestion_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$s['id'] ?>"><input type="hidden" name="status" value="dismissed"><button class="btn btn-ghost">رفض</button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'reports'):
+        $appReports = db()->query("SELECT r.*, a.name AS app_name FROM app_reports r LEFT JOIN apps a ON a.id=r.app_id WHERE r.status='open' ORDER BY r.id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('megaphone', 'ic') ?>بلاغات روابط تحميل لا تعمل</h3>
+        <?php if (!$appReports): ?><div class="empty">لا توجد بلاغات مفتوحة حالياً.</div><?php endif; ?>
+        <table>
+          <tr><th>التطبيق</th><th>الرسالة</th><th>الوقت</th><th>إجراء</th></tr>
+          <?php foreach ($appReports as $r): ?>
+          <tr>
+            <td><?= $r['app_name'] ? '<a href="?page=admin&tab=apps">' . e($r['app_name']) . '</a>' : 'تطبيق محذوف' ?></td>
+            <td><?= e($r['message']) ?></td>
+            <td><?= e($r['created_at']) ?></td>
+            <td><form method="post" action="?action=admin_report_decision"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$r['id'] ?>"><button class="btn btn-ghost">تم الحل</button></form></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'security'):
+        $recentFails = db()->query("SELECT * FROM login_attempts WHERE success=0 ORDER BY id DESC LIMIT 30")->fetchAll();
+        $blockedIps = db()->query("SELECT * FROM blocked_ips ORDER BY id DESC")->fetchAll();
+        $failCounts = db()->query("SELECT identity, ip, COUNT(*) c FROM login_attempts WHERE success=0 GROUP BY identity, ip ORDER BY c DESC LIMIT 15")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3><?= icon('shield', 'ic') ?>إعدادات الحماية من تخمين كلمات المرور</h3>
+        <form method="post" action="?action=admin_save_settings" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="redirect_tab" value="security">
+          <label>الحد الأقصى للمحاولات الفاشلة <input type="number" name="login_max_attempts" value="<?= e(setting('login_max_attempts', 5)) ?>" min="0"></label>
+          <label>مدة الحظر المؤقت (دقائق) <input type="number" name="login_lockout_minutes" value="<?= e(setting('login_lockout_minutes', 15)) ?>" min="1"></label>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
+        </form>
+        <p class="muted" style="margin-top:8px">ضع الحد الأقصى = 0 لتعطيل الحظر التلقائي بالكامل (يبقى الحظر اليدوي بالأسفل فعالاً).</p>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('shield', 'ic') ?>حظر عنوان IP يدوياً</h3>
+        <form method="post" action="?action=admin_block_ip" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="text" name="ip" placeholder="عنوان IP" required>
+          <input type="text" name="reason" placeholder="السبب (اختياري)">
+          <button class="btn btn-danger"><?= icon('close', 'ic-sm') ?>حظر</button>
+        </form>
+        <?php if (!$blockedIps): ?><div class="empty">لا توجد عناوين محظورة حالياً.</div><?php endif; ?>
+        <table>
+          <tr><th>IP</th><th>السبب</th><th>تاريخ الحظر</th><th>إجراء</th></tr>
+          <?php foreach ($blockedIps as $b): ?>
+          <tr>
+            <td><?= e($b['ip']) ?></td>
+            <td><?= e($b['reason'] ?: '—') ?></td>
+            <td><?= e($b['created_at']) ?></td>
+            <td><form method="post" action="?action=admin_unblock_ip"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-ghost">إلغاء الحظر</button></form></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('shield', 'ic') ?>أكثر المحاولات الفاشلة تكراراً</h3>
+        <?php if (!$failCounts): ?><div class="empty">لا توجد محاولات فاشلة مسجّلة.</div><?php endif; ?>
+        <table>
+          <tr><th>الهوية</th><th>IP</th><th>عدد المحاولات الفاشلة</th><th>إجراء</th></tr>
+          <?php foreach ($failCounts as $f): ?>
+          <tr>
+            <td><?= e($f['identity']) ?></td>
+            <td><?= e($f['ip']) ?></td>
+            <td><?= (int)$f['c'] ?></td>
+            <td><form method="post" action="?action=admin_block_ip"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="ip" value="<?= e($f['ip']) ?>"><input type="hidden" name="reason" value="محاولات تسجيل دخول فاشلة متكررة"><button class="btn btn-danger">حظر هذا IP</button></form></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('shield', 'ic') ?>آخر المحاولات الفاشلة</h3>
+        <?php if (!$recentFails): ?><div class="empty">لا توجد محاولات فاشلة مسجّلة.</div><?php endif; ?>
+        <table>
+          <tr><th>الهوية</th><th>IP</th><th>الوقت</th></tr>
+          <?php foreach ($recentFails as $f): ?>
+          <tr><td><?= e($f['identity']) ?></td><td><?= e($f['ip']) ?></td><td><?= e($f['created_at']) ?></td></tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'bots'):
+        $editBotId = (int)($_GET['edit'] ?? 0);
+        $editBot = $editBotId ? (function () use ($editBotId) {
+            $st = db()->prepare("SELECT * FROM bot_scripts WHERE id=?"); $st->execute([$editBotId]); return $st->fetch() ?: null;
+        })() : null;
+        $templates = db()->query("SELECT * FROM bot_scripts WHERE is_template=1 ORDER BY id ASC")->fetchAll();
+        $customBots = db()->query("SELECT * FROM bot_scripts WHERE is_template=0 ORDER BY id DESC")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3><?= icon($editBot ? 'edit' : 'plus', 'ic') ?><?= $editBot ? 'تعديل ملف/بوت' : 'إضافة بوت أو سكربت جديد' ?></h3>
+        <form method="post" action="?action=admin_bot_save" enctype="multipart/form-data" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <?php if ($editBot): ?><input type="hidden" name="id" value="<?= (int)$editBot['id'] ?>"><?php endif; ?>
+          <label>الاسم <input type="text" name="name" required value="<?= e($editBot['name'] ?? '') ?>"></label>
+          <label>الوصف <textarea name="description" rows="3"><?= e($editBot['description'] ?? '') ?></textarea></label>
+          <label>التصنيف
+            <select name="category">
+              <?php foreach (['telegram_bot' => 'بوت تيليجرام', 'script' => 'سكربت', 'tool' => 'أداة'] as $ck => $cl): ?>
+              <option value="<?= $ck ?>" <?= ($editBot['category'] ?? '') === $ck ? 'selected' : '' ?>><?= $cl ?></option>
+              <?php endforeach; ?>
+            </select>
+          </label>
+          <label>الإصدار <input type="text" name="version" value="<?= e($editBot['version'] ?? '1.0') ?>"></label>
+          <label>الملف (zip / php / py / js / txt) <?= $editBot ? '— اتركه فارغاً للاحتفاظ بالملف الحالي' : '' ?> <input type="file" name="file"></label>
+          <button class="btn btn-primary"><?= icon('check', 'ic-sm') ?>حفظ</button>
+          <?php if ($editBot): ?><a href="?page=admin&tab=bots" class="btn btn-ghost">إلغاء</a><?php endif; ?>
+        </form>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('terminal', 'ic') ?>قوالب جاهزة</h3>
+        <table>
+          <tr><th>الاسم</th><th>التصنيف</th><th>الإصدار</th><th>التحميلات</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($templates as $b): ?>
+          <tr>
+            <td><b><?= e($b['name']) ?></b><div class="muted" style="font-size:13px"><?= e($b['description']) ?></div></td>
+            <td><?= e($b['category']) ?></td>
+            <td><?= e($b['version']) ?></td>
+            <td><?= (int)$b['downloads'] ?></td>
+            <td><?= $b['status'] === 'active' ? '✅ مفعّل' : '⛔ معطّل' ?></td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap">
+              <a class="btn btn-ghost" href="?action=admin_bot_download&id=<?= (int)$b['id'] ?>&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تحميل</a>
+              <a class="btn btn-ghost" href="?page=admin&tab=bots&edit=<?= (int)$b['id'] ?>"><?= icon('edit', 'ic-sm') ?>تعديل</a>
+              <form method="post" action="?action=admin_bot_toggle" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?><?= $b['status'] === 'active' ? 'تعطيل' : 'تفعيل' ?></button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3><?= icon('upload', 'ic') ?>ملفاتك المرفوعة</h3>
+        <?php if (!$customBots): ?><div class="empty">لم يتم رفع أي بوت/سكربت بعد.</div><?php endif; ?>
+        <table>
+          <tr><th>الاسم</th><th>التصنيف</th><th>الإصدار</th><th>التحميلات</th><th>الحالة</th><th>إجراء</th></tr>
+          <?php foreach ($customBots as $b): ?>
+          <tr>
+            <td><b><?= e($b['name']) ?></b><div class="muted" style="font-size:13px"><?= e($b['description']) ?></div></td>
+            <td><?= e($b['category']) ?></td>
+            <td><?= e($b['version']) ?></td>
+            <td><?= (int)$b['downloads'] ?></td>
+            <td><?= $b['status'] === 'active' ? '✅ مفعّل' : '⛔ معطّل' ?></td>
+            <td style="display:flex;gap:6px;flex-wrap:wrap">
+              <?php if ($b['file_path']): ?><a class="btn btn-ghost" href="?action=admin_bot_download&id=<?= (int)$b['id'] ?>&csrf=<?= csrf_token() ?>"><?= icon('download', 'ic-sm') ?>تحميل</a><?php endif; ?>
+              <a class="btn btn-ghost" href="?page=admin&tab=bots&edit=<?= (int)$b['id'] ?>"><?= icon('edit', 'ic-sm') ?>تعديل</a>
+              <form method="post" action="?action=admin_bot_toggle" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?><?= $b['status'] === 'active' ? 'تعطيل' : 'تفعيل' ?></button></form>
+              <form method="post" action="?action=admin_bot_delete" style="display:inline" onsubmit="return confirm('تأكيد الحذف؟')"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$b['id'] ?>"><button class="btn btn-ghost"><?= icon('trash', 'ic-sm') ?>حذف</button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'categories'): ?>
+      <div class="admin-box">
+        <h3><?= icon('pages', 'ic') ?> إدارة الأقسام (تظهر في الرئيسية)</h3>
+        <p style="color:var(--muted);font-size:12px">كل قسم يظهر كبطاقة في الرئيسية، ينقر المستخدم فيدخل لصفحة تعرض منتجات القسم فقط. الإيموجي هو أيقونة القسم.</p>
+        <form method="post" action="?action=admin_save_category" style="margin-bottom:14px">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>اسم القسم<input type="text" name="name" required placeholder="مثال: الألعاب"></label>
+            <label>Slug (رابط لطيف)<input type="text" name="slug" placeholder="games"></label>
+            <label>الأيقونة (إيموجي)<input type="text" name="icon_svg" placeholder="🎮" maxlength="4"></label>
+            <label>النوع<select name="kind">
+              <option value="general">عام</option>
+              <option value="game">ألعاب</option>
+              <option value="app">تطبيقات</option>
+              <option value="subscription">اشتراكات</option>
+              <option value="gift">بطاقات هدايا</option>
+              <option value="payment">مدفوعات</option>
+              <option value="charging">شحن رصيد</option>
+            </select></label>
+          </div>
+          <label>الوصف<input type="text" name="description" placeholder="وصف مختصر يظهر تحت اسم القسم"></label>
+          <div class="formrow">
+            <label>SEO Title<input type="text" name="seo_title" placeholder="عنوان SEO"></label>
+            <label>SEO Description<input type="text" name="seo_description" placeholder="وصف لمحركات البحث"></label>
+            <label>الترتيب<input type="number" name="sort_order" value="0"></label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="visible_on_home" value="1" checked> يظهر في الرئيسية</label>
+          </div>
+          <button class="btn btn-primary" type="submit"><?= icon('plus','ic-sm') ?> إضافة قسم</button>
+        </form>
+        <?php $adminCats = db()->query("SELECT * FROM categories ORDER BY sort_order, id")->fetchAll(); ?>
+        <table>
+          <tr><th>الأيقونة</th><th>الاسم</th><th>Slug</th><th>النوع</th><th>ترتيب</th><th>في الرئيسية</th><th>حذف</th></tr>
+          <?php foreach ($adminCats as $c): ?>
+          <tr>
+            <td style="font-size:24px"><?= e($c['icon_svg'] ?: '📦') ?></td>
+            <td><strong><?= e($c['name']) ?></strong></td>
+            <td><code><?= e($c['slug']) ?></code></td>
+            <td><?= e($c['kind']) ?></td>
+            <td><?= (int)$c['sort_order'] ?></td>
+            <td><?= (int)$c['visible_on_home'] ? '✅' : '❌' ?></td>
+            <td><a href="?action=admin_delete_category&id=<?= (int)$c['id'] ?>&csrf=<?= csrf_token() ?>" onclick="return confirm('حذف؟')" style="color:var(--danger)">🗑️</a></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'packages'): ?>
+      <div class="admin-box">
+        <h3><?= icon('star', 'ic') ?> إدارة الباقات (لكل منتج)</h3>
+        <p style="color:var(--muted);font-size:12px">مثال: لعبة فري فاير — أضف باقات: 100 جوهرة/1$، 500 جوهرة/4$، 2000 جوهرة/15$... المستخدم يختار الباقة ويشتريها بالرصيد مباشرة.</p>
+        <form method="post" action="?action=admin_save_package" style="margin-bottom:14px">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>المنتج<select name="product_id" required>
+              <?php $adminProds = db()->query("SELECT id, name FROM products WHERE status='active' ORDER BY name")->fetchAll(); ?>
+              <?php foreach ($adminProds as $ap): ?>
+                <option value="<?= (int)$ap['id'] ?>"><?= e($ap['name']) ?></option>
+              <?php endforeach; ?>
+            </select></label>
+            <label>اسم الباقة<input type="text" name="name" required placeholder="مثال: 500 جوهرة"></label>
+            <label>الأيقونة<input type="text" name="icon" placeholder="💎" maxlength="4"></label>
+          </div>
+          <div class="formrow">
+            <label>السعر<input type="number" step="0.01" name="price" required></label>
+            <label>السعر القديم (اختياري)<input type="number" step="0.01" name="old_price"></label>
+            <label>الكمية<input type="number" name="quantity" placeholder="500"></label>
+            <label>الوحدة<input type="text" name="currency" placeholder="جوهرة"></label>
+            <label>وسم (Tag)<input type="text" name="tag" placeholder="الأكثر مبيعاً"></label>
+            <label>ترتيب<input type="number" name="sort_order" value="0"></label>
+          </div>
+          <div class="formrow">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="allow_custom_amount" value="1"> السماح بمبلغ مخصّص</label>
+            <label>الحد الأدنى<input type="number" step="0.01" name="min_amount"></label>
+            <label>الحد الأقصى<input type="number" step="0.01" name="max_amount"></label>
+          </div>
+          <button class="btn btn-primary" type="submit"><?= icon('plus','ic-sm') ?> إضافة باقة</button>
+        </form>
+        <?php $adminPkgs = db()->query("SELECT pk.*, p.name AS product_name FROM packages pk JOIN products p ON p.id=pk.product_id ORDER BY p.name, pk.sort_order, pk.price")->fetchAll(); ?>
+        <?php if ($adminPkgs): ?>
+        <table>
+          <tr><th>المنتج</th><th>الباقة</th><th>الأيقونة</th><th>السعر</th><th>الكمية</th><th>وسم</th><th>حذف</th></tr>
+          <?php foreach ($adminPkgs as $pk): ?>
+          <tr>
+            <td><?= e($pk['product_name']) ?></td>
+            <td><strong><?= e($pk['name']) ?></strong></td>
+            <td style="font-size:20px"><?= e($pk['icon'] ?: '💎') ?></td>
+            <td><?= (int)$pk['allow_custom_amount'] ? 'مخصّص' : number_format((float)$pk['price'], 2).'$' ?></td>
+            <td><?= (int)$pk['quantity'] ?> <?= e($pk['currency']) ?></td>
+            <td><?= e($pk['tag']) ?></td>
+            <td><a href="?action=admin_delete_package&id=<?= (int)$pk['id'] ?>&csrf=<?= csrf_token() ?>" onclick="return confirm('حذف؟')" style="color:var(--danger)">🗑️</a></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php else: ?>
+          <p style="color:var(--muted);font-size:13px">لا توجد باقات بعد. ابدأ بإضافة باقات لأحد منتجاتك.</p>
+        <?php endif; ?>
+      </div>
+
+    <?php elseif ($tab === 'wallet_config'): ?>
+      <div class="admin-box">
+        <h3><?= icon('coin', 'ic') ?> إعدادات نظام المحفظة</h3>
+        <form method="post" action="?action=admin_save_settings">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>الحد الأدنى للشحن<input type="number" name="wallet_min_topup" value="<?= e(setting('wallet_min_topup', '5')) ?>"></label>
+            <label>الحد الأعلى للشحن<input type="number" name="wallet_max_topup" value="<?= e(setting('wallet_max_topup', '500')) ?>"></label>
+            <label>الحد الأدنى للسحب<input type="number" name="wallet_min_withdraw" value="<?= e(setting('wallet_min_withdraw', '10')) ?>"></label>
+            <label>عملة المحفظة<input type="text" name="wallet_currency" value="<?= e(setting('wallet_currency', 'USD')) ?>"></label>
+            <label>رمز العملة<input type="text" name="wallet_currency_symbol" value="<?= e(setting('wallet_currency_symbol', '$')) ?>"></label>
+            <label>مبالغ سريعة (مفصولة بفاصلة)<input type="text" name="wallet_quick_amounts" value="<?= e(setting('wallet_quick_amounts', '5,10,25,50,100,200')) ?>"></label>
+          </div>
+          <div class="formrow">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="wallet_show_balance_in_topbar" value="1" <?= setting('wallet_show_balance_in_topbar','1')==='1'?'checked':'' ?>> إظهار الرصيد في الشريط العلوي</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="wallet_withdraw_enabled" value="1" <?= setting('wallet_withdraw_enabled','1')==='1'?'checked':'' ?>> تفعيل السحب للمستخدمين</label>
+          </div>
+          <label>عنوان صفحة المحفظة<input type="text" name="wallet_page_headline" value="<?= e(setting('wallet_page_headline', 'اشحن محفظتك بأمان')) ?>"></label>
+          <label>نص فرعي لصفحة المحفظة<input type="text" name="wallet_page_subheadline" value="<?= e(setting('wallet_page_subheadline', 'اختر المبلغ، حوّل الدفعة، وفعّل رصيدك خلال دقائق')) ?>"></label>
+          <button class="btn btn-primary" type="submit" style="margin-top:12px"><?= icon('check','ic-sm') ?> حفظ إعدادات المحفظة</button>
+        </form>
+      </div>
+
+    <?php elseif ($tab === 'notifications_config'): ?>
+      <div class="admin-box">
+        <h3><?= icon('bell', 'ic') ?> إعدادات الإشعارات (تيليجرام + بريد)</h3>
+        <form method="post" action="?action=admin_save_settings">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>Bot Token<input type="text" name="bot_token" value="<?= e(setting('bot_token')) ?>" placeholder="من BotFather"></label>
+            <label>Owner ID (رقم الأدمن على تيليجرام)<input type="text" name="owner_id" value="<?= e(setting('owner_id')) ?>"></label>
+            <label>اسم بوت تيليجرام (بدون @)<input type="text" name="tg_notify_bot_username" value="<?= e(setting('tg_notify_bot_username')) ?>"></label>
+          </div>
+          <h4 style="margin-top:16px;color:var(--accent2)">📱 تنبيهات الأدمن</h4>
+          <div class="formrow">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="tg_notify_new_topup" value="1" <?= setting('tg_notify_new_topup','1')==='1'?'checked':'' ?>> طلب شحن جديد</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="tg_notify_new_withdraw" value="1" <?= setting('tg_notify_new_withdraw','1')==='1'?'checked':'' ?>> طلب سحب جديد</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="tg_notify_new_order" value="1" <?= setting('tg_notify_new_order','1')==='1'?'checked':'' ?>> طلب شراء جديد</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="tg_notify_new_user" value="1" <?= setting('tg_notify_new_user','1')==='1'?'checked':'' ?>> تسجيل مستخدم جديد</label>
+          </div>
+          <h4 style="margin-top:16px;color:var(--accent2)">🌐 المظهر واللغة</h4>
+          <div class="formrow">
+            <label>الثيم الافتراضي<select name="ui_default_theme">
+              <option value="dark" <?= setting('ui_default_theme','dark')==='dark'?'selected':'' ?>>داكن</option>
+              <option value="light" <?= setting('ui_default_theme')==='light'?'selected':'' ?>>فاتح</option>
+              <option value="auto" <?= setting('ui_default_theme')==='auto'?'selected':'' ?>>حسب النظام</option>
+            </select></label>
+            <label>اللغة الافتراضية<select name="ui_default_language">
+              <option value="ar" <?= setting('ui_default_language','ar')==='ar'?'selected':'' ?>>العربية</option>
+              <option value="en" <?= setting('ui_default_language')==='en'?'selected':'' ?>>English</option>
+              <option value="tr" <?= setting('ui_default_language')==='tr'?'selected':'' ?>>Türkçe</option>
+            </select></label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="ui_allow_theme_change" value="1" <?= setting('ui_allow_theme_change','1')==='1'?'checked':'' ?>> السماح للمستخدم بتغيير الثيم</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="ui_allow_language_change" value="1" <?= setting('ui_allow_language_change','1')==='1'?'checked':'' ?>> السماح للمستخدم بتغيير اللغة</label>
+          </div>
+          <h4 style="margin-top:16px;color:var(--accent2)">🔐 الأمان</h4>
+          <div class="formrow">
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="security_2fa_enabled_globally" value="1" <?= setting('security_2fa_enabled_globally','1')==='1'?'checked':'' ?>> تفعيل ميزة 2FA للمستخدمين</label>
+            <label style="display:flex;align-items:center;gap:8px"><input type="checkbox" name="security_login_alert_email" value="1" <?= setting('security_login_alert_email','0')==='1'?'checked':'' ?>> تنبيه بريد عند تسجيل دخول جديد</label>
+          </div>
+          <p style="color:var(--muted);font-size:12px;margin-top:10px">Webhook للأزرار: <code style="background:#222;padding:2px 6px;border-radius:4px"><?= e(rtrim(SITE_URL, '/')) ?>/index.php?action=tg_admin_webhook</code></p>
+          <button class="btn btn-primary" type="submit" style="margin-top:12px"><?= icon('check','ic-sm') ?> حفظ الإعدادات</button>
+        </form>
+      </div>
+
+    <?php elseif ($tab === 'ads'): ?>
+      <div class="admin-box">
+        <h3><?= icon('megaphone', 'ic') ?> إعدادات AdMob (للتطبيق Android)</h3>
+        <form method="post" action="?action=admin_save_settings">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <label>AdMob App ID<input type="text" name="admob_app_id" value="<?= e(setting('admob_app_id')) ?>" placeholder="ca-app-pub-XXXX~XXXX"></label>
+            <label>Rewarded Interstitial Unit ID<input type="text" name="admob_rewarded_id" value="<?= e(setting('admob_rewarded_id')) ?>" placeholder="ca-app-pub-XXXX/XXXX"></label>
+            <label>Interstitial Unit ID<input type="text" name="admob_interstitial_id" value="<?= e(setting('admob_interstitial_id')) ?>" placeholder="ca-app-pub-XXXX/XXXX"></label>
+          </div>
+          <label style="display:flex;align-items:center;gap:8px">
+            <input type="checkbox" name="admob_test_mode" value="1" <?= setting('admob_test_mode','1')==='1'?'checked':'' ?>>
+            وضع الاختبار (Test Mode) — فعّله أثناء التطوير، أطفئه عند الإطلاق الرسمي
+          </label>
+          <p style="color:var(--muted);font-size:12px;margin-top:10px">AndroidManifest.xml: <code>&lt;meta-data android:name="com.google.android.gms.ads.APPLICATION_ID" android:value="<?= e(setting('admob_app_id') ?: 'ca-app-pub-5506877998492189~9990105460') ?>" /&gt;</code></p>
+          <hr style="border-color:#2a3350;margin:16px 0">
+          <h3 style="margin-bottom:8px"><?= icon('chart', 'ic') ?> إعدادات AdSense (الموقع)</h3>
+          <div class="formrow">
+            <label>AdSense Publisher ID<input type="text" name="adsense_client_id" value="<?= e(setting('adsense_client_id')) ?>" placeholder="ca-pub-XXXXXXXXXXXXXXXXX"></label>
+            <label>محتوى ads.txt<textarea name="ads_txt_content" rows="3"><?= e(setting('ads_txt_content')) ?></textarea></label>
+          </div>
+          <button class="btn btn-primary" type="submit"><?= icon('check', 'ic-sm') ?> حفظ إعدادات الإعلانات</button>
+        </form>
       </div>
 
     <?php elseif ($tab === 'settings'): ?>
@@ -1753,30 +7003,249 @@ case 'admin':
           <label>اسم الموقع<input name="site_name" value="<?= e(setting('site_name')) ?>"></label>
           <label>الوصف (SEO)<input name="site_description" value="<?= e(setting('site_description')) ?>"></label>
           <label>كلمات مفتاحية<input name="site_keywords" value="<?= e(setting('site_keywords')) ?>"></label>
-          <label>رابط الشعار<input name="logo_url" value="<?= e(setting('logo_url')) ?>"></label>
+          <label>شعار الموقع
+            <div class="upload-row">
+              <input type="text" name="logo_url" id="logoUrl" value="<?= e(setting('logo_url')) ?>">
+              <label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" id="logoFile" accept="image/*" style="display:none" onchange="uploadInto(this,'logoUrl')"></label>
+              <?php if ($logo): ?><img class="preview" src="<?= e($logo) ?>"><?php endif; ?>
+            </div>
+          </label>
           <label>عنوان البنر<input name="banner_title" value="<?= e(setting('banner_title')) ?>"></label>
           <label>وصف البنر<input name="banner_subtitle" value="<?= e(setting('banner_subtitle')) ?>"></label>
-          <label>سعر النقطة بالدولار<input name="points_rate" value="<?= e(setting('points_rate')) ?>"></label>
-          <label>الحد الأدنى للسحب $<input name="min_withdraw_usd" value="<?= e(setting('min_withdraw_usd')) ?>"></label>
-          <label>مكافأة الكابتشا<input name="captcha_reward" value="<?= e(setting('captcha_reward')) ?>"></label>
-          <label>أقصى كابتشا باليوم<input name="captcha_max_per_day" value="<?= e(setting('captcha_max_per_day')) ?>"></label>
-          <label>أقصى مهام باليوم<input name="task_max_per_day" value="<?= e(setting('task_max_per_day')) ?>"></label>
-          <label>نسبة ربح الإدارة %<input name="profit_split_admin" value="<?= e(setting('profit_split_admin')) ?>"></label>
-          <label>نسبة ربح المستخدم %<input name="profit_split_user" value="<?= e(setting('profit_split_user')) ?>"></label>
-          <label>🎡 تكلفة دورة العجلة (عملات)<input name="wheel_cost" value="<?= e(setting('wheel_cost')) ?>"></label>
-          <label>🎡 جوائز العجلة (مفصولة بفاصلة)<input name="wheel_prizes" value="<?= e(setting('wheel_prizes')) ?>"></label>
-          <label>🎁 مكافأة الإحالة<input name="referral_reward" value="<?= e(setting('referral_reward')) ?>"></label>
-          <label>📺 مكافأة مشاهدة الإعلان<input name="ad_watch_reward" value="<?= e(setting('ad_watch_reward')) ?>"></label>
-          <label>📺 مدة الإعلان (ثوانٍ)<input name="ad_watch_seconds" value="<?= e(setting('ad_watch_seconds')) ?>"></label>
-          <label>📺 أقصى مشاهدات باليوم<input name="ad_watch_max_per_day" value="<?= e(setting('ad_watch_max_per_day')) ?>"></label>
-          <label>⏱️ مدة إعلان الكابتشا (ثوانٍ)<input name="captcha_ad_seconds" value="<?= e(setting('captcha_ad_seconds')) ?>"></label>
-          <label>📐 قياس البنرات (نص إرشادي)<input name="banner_size_hint" value="<?= e(setting('banner_size_hint')) ?>"></label>
-          <label style="grid-column:1/-1">📰 شريط الأخبار (كل سطر = خبر)<textarea name="news_ticker" rows="4"><?= e(setting('news_ticker')) ?></textarea></label>
+          <label>ارتفاع صورة بطاقة المنتج (px)<input type="number" name="product_image_height" value="<?= e(setting('product_image_height')) ?>" min="60" max="400"></label>
+          <label>عرض بطاقة القسم (px)<input type="number" name="cat_tile_size" value="<?= e(setting('cat_tile_size')) ?>" min="80" max="320"></label>
+          <label>نص زر الشراء<input name="buy_button_text" value="<?= e(setting('buy_button_text')) ?>"></label>
+          <label>نص عدم وجود منتجات<input name="empty_products_text" value="<?= e(setting('empty_products_text')) ?>"></label>
+          <label>نص أسفل الصفحة (الفوتر، اتركه فارغاً للنص الافتراضي)<input name="footer_text" value="<?= e(setting('footer_text')) ?>" placeholder="© 2026 Yassota — جميع الحقوق محفوظة"></label>
+          <label>ثيمات جاهزة (اختر ثيماً لتعبئة الألوان تلقائياً)
+            <select onchange="applyThemePreset(this.value)">
+              <option value="">— اختر ثيماً جاهزاً —</option>
+              <option value="#2563eb,#06b6d4">كلاسيك أحمر</option>
+              <option value="#1e63d6,#3fa9f5">أزرق محيطي</option>
+              <option value="#1ea672,#34d399">أخضر طبيعي</option>
+              <option value="#7c3aed,#a855f7">بنفسجي ملكي</option>
+              <option value="#d97706,#fbbf24">برتقالي غروب</option>
+              <option value="#0f172a,#d4af37">أسود وذهبي</option>
+              <option value="#db2777,#f472b6">وردي نابض</option>
+            </select>
+          </label>
+          <label>اللون الأساسي للموقع<input type="color" id="themeAccentColor" name="theme_accent_color" value="<?= e(setting('theme_accent_color')) ?>"></label>
+          <label>لون التمييز الثانوي<input type="color" id="themeAccent2Color" name="theme_accent2_color" value="<?= e(setting('theme_accent2_color')) ?>"></label>
+          <label>كود إعلانات MoneyTag (يظهر فقط في صفحة تحميل التطبيقات)<textarea name="moneytag_script" rows="3" placeholder="ألصق كود/سكربت MoneyTag هنا"><?= e(setting('moneytag_script')) ?></textarea></label>
+          <label>كود إعلانات إضافي لصفحة "شكراً لزيارتك" (تظهر بعد بدء التحميل)<textarea name="thankyou_ads_html" rows="3" placeholder="ألصق أكواد الإعلانات هنا"><?= e(setting('thankyou_ads_html')) ?></textarea></label>
+          <label>تفعيل Service Worker الخاص بـ MoneyTag (sw.js)
+            <select name="moneytag_sw_enabled">
+              <option value="1" <?= setting('moneytag_sw_enabled', '0') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('moneytag_sw_enabled', '0') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <label>محتوى ملف sw.js (الصق الكود الذي يطلبه MoneyTag حرفياً، يُكتب تلقائياً في جذر الموقع عند الحفظ)<textarea name="moneytag_sw_content" rows="4" placeholder="self.addEventListener(...)"><?= e(setting('moneytag_sw_content')) ?></textarea></label>
+          <label>ثواني الانتظار بصفحة التحميل قبل ظهور رابط التحميل<input type="number" name="app_download_wait_seconds" value="<?= e(setting('app_download_wait_seconds')) ?>" min="0" max="30"></label>
+          <label>ثواني الانتظار بصفحة الشكر قبل ظهور زر "هل لا يزال الملف لا يحمّل؟" تلقائياً<input type="number" name="thankyou_retry_seconds" value="<?= e(setting('thankyou_retry_seconds', 4)) ?>" min="2" max="30"></label>
+          <label>مفتاح Cloudflare Turnstile العلني (Site Key) — كابتشا عالمية حقيقية<input name="turnstile_site_key" value="<?= e(setting('turnstile_site_key')) ?>" placeholder="0x4AAAAAAA..."></label>
+          <label>مفتاح Cloudflare Turnstile السري (Secret Key)<input type="password" name="turnstile_secret_key" value="<?= e(setting('turnstile_secret_key')) ?>" autocomplete="off"></label>
+          <label>نسبة هامش ربح Satofill %<input type="number" step="0.1" name="satofill_markup_percent" value="<?= e(setting('satofill_markup_percent', 15)) ?>"></label>
+          <label>تفعيل الإعلانات (عند ضغط زر فقط)
+            <select name="ad_enabled">
+              <option value="1" <?= setting('ad_enabled') === '1' ? 'selected' : '' ?>>مفعّلة</option>
+              <option value="0" <?= setting('ad_enabled') === '0' ? 'selected' : '' ?>>معطّلة</option>
+            </select>
+          </label>
+          <label>رمز منطقة الإعلان (Zone ID)<input name="ad_zone_id" value="<?= e(setting('ad_zone_id')) ?>"></label>
+          <label>ترجمة الموقع تلقائياً حسب لغة جهاز الزائر
+            <select name="auto_translate_enabled">
+              <option value="1" <?= setting('auto_translate_enabled') === '1' ? 'selected' : '' ?>>مفعّلة</option>
+              <option value="0" <?= setting('auto_translate_enabled') === '0' ? 'selected' : '' ?>>معطّلة</option>
+            </select>
+          </label>
+          <label>شريط أرباح المستخدمين المباشر (الرئيسية)
+            <select name="live_ticker_enabled">
+              <option value="1" <?= setting('live_ticker_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('live_ticker_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <label>بنرات الصور المتحركة (الرئيسية)
+            <select name="banner_carousel_enabled">
+              <option value="1" <?= setting('banner_carousel_enabled', '1') === '1' ? 'selected' : '' ?>>مفعّلة</option>
+              <option value="0" <?= setting('banner_carousel_enabled', '1') === '0' ? 'selected' : '' ?>>معطّلة (إيقاف نهائي)</option>
+            </select>
+          </label>
+          <label>الشريط الإخباري المتحرك (الرئيسية)
+            <select name="news_ticker_enabled">
+              <option value="1" <?= setting('news_ticker_enabled', '1') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('news_ticker_enabled', '1') === '0' ? 'selected' : '' ?>>معطّل (إيقاف نهائي)</option>
+            </select>
+          </label>
+          <label>تيليجرام خدمة العملاء<input name="support_telegram" value="<?= e(setting('support_telegram')) ?>" placeholder="@username"></label>
+          <label>رابط قناة تيليجرام (يظهر كزر بصفحة التطبيق)<input name="telegram_channel_url" value="<?= e(setting('telegram_channel_url')) ?>" placeholder="https://t.me/yourchannel"></label>
+          <label>زر «الاشتراك في التحديثات» بصفحة التطبيق
+            <select name="app_notify_enabled">
+              <option value="1" <?= setting('app_notify_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('app_notify_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <label>اسم بوت تيليجرام لتسجيل الدخول (بدون @)<input name="telegram_bot_username" value="<?= e(setting('telegram_bot_username')) ?>" placeholder="مثال: YassotaBot"></label>
+          <label>توكن بوت تيليجرام (BOT_TOKEN)<input type="password" name="bot_token" value="" placeholder="<?= setting('bot_token') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'من @BotFather' ?>" autocomplete="off"></label>
+          <label>آيدي المالك على تيليجرام (OWNER_ID)<input name="owner_id" value="<?= e(setting('owner_id')) ?>" placeholder="آيدي حسابك الرقمي، احصل عليه من @userinfobot"></label>
+          <label>رمز تحقق Google Search Console<input name="google_site_verification" value="<?= e(setting('google_site_verification')) ?>" placeholder="محتوى meta tag فقط بدون الوسم"></label>
+          <label>معرّف ناشر Google AdSense (ca-pub-xxxxxxxxxxxxxxxx)<input name="adsense_client_id" value="<?= e(setting('adsense_client_id')) ?>" placeholder="ca-pub-xxxxxxxxxxxxxxxx"></label>
+          <label>محتوى ملف ads.txt (يظهر على /index.php?action=ads_txt أو /ads.txt)<textarea name="ads_txt_content" rows="2" placeholder="google.com, pub-xxxxxxxxxxxxxxxx, DIRECT, f08c47fec0942fa0"><?= e(setting('ads_txt_content')) ?></textarea></label>
+          <label>كود إعلانات إضافي يظهر أعلى كل صفحة (أي شبكة إعلانات: Monetag, PropellerAds...الخ)، يعمل فقط عند تفعيل "تفعيل الإعلانات" أعلاه<textarea name="ad_header_code" rows="2" placeholder="<script>...</script>"><?= e(setting('ad_header_code')) ?></textarea></label>
+          <label>كود إعلانات إضافي يظهر أسفل كل صفحة<textarea name="ad_footer_code" rows="2" placeholder="<script>...</script>"><?= e(setting('ad_footer_code')) ?></textarea></label>
+          <h4 style="margin:18px 0 6px">بنر تحميل التطبيق (الصفحة الرئيسية)</h4>
+          <label>رابط تحميل ملف APK / المتجر<input name="apk_download_url" value="<?= e(setting('apk_download_url')) ?>" placeholder="رابط ملف APK أو رابط المتجر"></label>
+          <div class="upload-row"><input type="text" name="apk_banner_image" id="apkBannerImg" value="<?= e(setting('apk_banner_image')) ?>" placeholder="رابط صورة بنر التطبيق"><label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apkBannerImg')"></label></div>
+          <div class="upload-row"><input type="text" name="apk_logo_image" id="apkLogoImg" value="<?= e(setting('apk_logo_image')) ?>" placeholder="رابط شعار التطبيق"><label class="btn btn-ghost"><?= icon('upload', 'ic-sm') ?>رفع<input type="file" accept="image/*" style="display:none" onchange="uploadInto(this,'apkLogoImg')"></label></div>
+          <label>عنوان بنر التحميل<input name="apk_promo_title" value="<?= e(setting('apk_promo_title')) ?>"></label>
+          <label>وصف بنر التحميل<input name="apk_promo_subtitle" value="<?= e(setting('apk_promo_subtitle')) ?>"></label>
+          <h4 style="margin:18px 0 6px">البريد الإلكتروني (SMTP)</h4>
+          <label>تفعيل إرسال البريد
+            <select name="mail_enabled">
+              <option value="1" <?= setting('mail_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('mail_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <label>اشتراط تأكيد البريد قبل تسجيل الدخول
+            <select name="email_verify_required">
+              <option value="1" <?= setting('email_verify_required') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('email_verify_required') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <div class="formrow">
+            <input name="smtp_host" value="<?= e(setting('smtp_host')) ?>" placeholder="SMTP Host مثل smtp.gmail.com">
+            <input name="smtp_port" value="<?= e(setting('smtp_port')) ?>" placeholder="Port مثل 587">
+            <select name="smtp_secure">
+              <option value="tls" <?= setting('smtp_secure') === 'tls' ? 'selected' : '' ?>>TLS</option>
+              <option value="ssl" <?= setting('smtp_secure') === 'ssl' ? 'selected' : '' ?>>SSL</option>
+            </select>
+            <input name="smtp_user" value="<?= e(setting('smtp_user')) ?>" placeholder="SMTP Username (البريد غالباً)" autocomplete="off">
+            <input type="password" name="smtp_pass" value="" placeholder="<?= setting('smtp_pass') ? '•••••••• (محفوظ، اتركه فارغاً للاحتفاظ به)' : 'SMTP Password' ?>" autocomplete="off">
+            <input name="mail_from_email" value="<?= e(setting('mail_from_email')) ?>" placeholder="بريد المُرسل الظاهر">
+            <input name="mail_from_name" value="<?= e(setting('mail_from_name')) ?>" placeholder="اسم المُرسل الظاهر">
+          </div>
+          <label>رابط تقييم Google لموقعك/عملك (لاستخدامه بحملة طلب التقييم)<input name="google_review_url" value="<?= e(setting('google_review_url')) ?>" placeholder="https://g.page/r/..."></label>
+          <button type="button" class="btn btn-ghost" onclick="testSmtp()"><?= icon('rocket', 'ic-sm') ?>إرسال رسالة اختبار SMTP لبريد الأدمن</button>
+          <label>موديل OpenRouter (الافتراضي موديل مجاني يعمل مع المفاتيح المجانية. عند فشله يبدّل النظام تلقائياً لموديلات مجانية أخرى)<input name="openrouter_model" value="<?= e(setting('openrouter_model')) ?>" list="orModels" placeholder="meta-llama/llama-3.3-70b-instruct:free">
+            <datalist id="orModels">
+              <option value="openai/gpt-4o">
+              <option value="openai/gpt-4o-mini">
+              <option value="openai/gpt-4.1-mini">
+              <option value="anthropic/claude-3.7-sonnet">
+              <option value="anthropic/claude-3.5-sonnet">
+              <option value="anthropic/claude-3.5-haiku">
+              <option value="google/gemini-2.5-pro">
+              <option value="google/gemini-2.5-flash">
+              <option value="deepseek/deepseek-chat-v3">
+              <option value="x-ai/grok-2-1212">
+              <option value="meta-llama/llama-3.3-70b-instruct:free">
+              <option value="meta-llama/llama-3.1-8b-instruct:free">
+              <option value="google/gemini-2.0-flash-exp:free">
+              <option value="google/gemma-2-9b-it:free">
+              <option value="deepseek/deepseek-chat:free">
+              <option value="deepseek/deepseek-r1:free">
+              <option value="mistralai/mistral-7b-instruct:free">
+              <option value="mistralai/mistral-nemo:free">
+              <option value="qwen/qwen-2.5-72b-instruct:free">
+              <option value="microsoft/phi-3-medium-128k-instruct:free">
+            </datalist>
+          </label>
+          <label>موديل توليد الصور (اختياري)<input name="openrouter_image_model" value="<?= e(setting('openrouter_image_model')) ?>" list="orImageModels" placeholder="مثال: google/gemini-2.5-flash-image-preview">
+            <datalist id="orImageModels">
+              <option value="google/gemini-2.5-flash-image-preview">
+              <option value="google/gemini-2.0-flash-exp:free">
+              <option value="openai/gpt-4o">
+            </datalist>
+          </label>
         </form>
-        <button class="btn btn-primary" form="" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()">💾 حفظ الإعدادات</button>
-        <hr style="border-color:#232a45;margin:18px 0">
+        <hr style="border-color:#28304a;margin:18px 0">
+        <h4 style="margin:0 0 8px">الاستيراد التلقائي للتطبيقات عبر تيليجرام</h4>
+        <p style="color:#9aa3b8;font-size:13px;margin:0 0 10px">
+          اجعل البوت مشرفاً (Admin) في قناتك الخاصة على تيليجرام، وكل منشور تنشره فيها (ملف APK أو رابط تحميل + اسم في النص/الوصف) سيتم استيراده تلقائياً كتطبيق جديد، مع توليد الوصف وبيانات SEO بالذكاء الاصطناعي تلقائياً عبر OpenRouter.
+          للحصول على آيدي القناة: أضف البوت كمشرف في القناة، ثم أرسل أي منشور فيها وراجع سجل الاستيراد بالأسفل، أو استخدم أي أداة لمعرفة آيدي القناة (يبدأ عادة بـ -100).
+        </p>
+        <form method="post" action="?action=admin_save_settings" class="formrow" id="telegramImportForm">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <input type="hidden" name="redirect_tab" value="settings">
+          <label>تفعيل الاستيراد التلقائي من تيليجرام
+            <select name="telegram_import_enabled">
+              <option value="1" <?= setting('telegram_import_enabled') === '1' ? 'selected' : '' ?>>مفعّل</option>
+              <option value="0" <?= setting('telegram_import_enabled') === '0' ? 'selected' : '' ?>>معطّل</option>
+            </select>
+          </label>
+          <label>آيدي قناة المصدر (Channel ID)<input name="telegram_import_channel_id" value="<?= e(setting('telegram_import_channel_id')) ?>" placeholder="مثال: -1001234567890"></label>
+          <label>عند الاستيراد
+            <select name="telegram_import_auto_publish">
+              <option value="0" <?= setting('telegram_import_auto_publish') === '0' ? 'selected' : '' ?>>وضعه «قيد المراجعة» (يدوي قبل النشر)</option>
+              <option value="1" <?= setting('telegram_import_auto_publish') === '1' ? 'selected' : '' ?>>نشره مباشرة تلقائياً</option>
+            </select>
+          </label>
+        </form>
+        <button class="btn btn-primary" onclick="document.getElementById('telegramImportForm').submit()" style="margin-bottom:14px"><?= icon('check', 'ic-sm') ?>حفظ إعدادات الاستيراد</button>
+        <?php $importLog = db()->query("SELECT * FROM app_imports ORDER BY id DESC LIMIT 15")->fetchAll(); ?>
+        <?php if ($importLog): ?>
+        <table>
+          <tr><th>التاريخ</th><th>الاسم</th><th>الحالة</th><th>ملاحظة</th></tr>
+          <?php foreach ($importLog as $im): ?>
+          <tr>
+            <td><?= e($im['created_at']) ?></td>
+            <td><?= e($im['app_name'] ?: '-') ?></td>
+            <td><?= $im['status'] === 'ok' ? '✅ تم' : '❌ فشل' ?></td>
+            <td><?= e($im['note'] ?: '-') ?></td>
+          </tr>
+          <?php endforeach; ?>
+        </table>
+        <?php endif; ?>
+        <div style="display:flex;gap:10px;flex-wrap:wrap">
+          <button class="btn btn-primary" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()"><?= icon('check', 'ic-sm') ?>حفظ الإعدادات</button>
+          <button type="button" class="btn btn-ghost" onclick="testOpenRouter()"><?= icon('rocket', 'ic-sm') ?>اختبار الاتصال بـ OpenRouter</button>
+          <button type="button" class="btn btn-ghost" onclick="clearCache()"><?= icon('refresh', 'ic-sm') ?>تفريغ الكاش (لإظهار آخر التعديلات فوراً)</button>
+        </div>
+        <hr style="border-color:#28304a;margin:18px 0">
+        <h4 style="margin:0 0 8px">الحملات التسويقية (بريد جماعي للمستخدمين المسجّلين)</h4>
+        <p style="color:#9aa3b8;font-size:13px;margin:0 0 10px">
+          يرسل بريداً لكل المستخدمين المسجّلين غير المحظورين عبر إعدادات SMTP أعلاه. لطلب التقييمات نرسل رابط تقييم Google الحقيقي لتشجيع المستخدمين الحقيقيين على ترك تقييم بأنفسهم — لا يقوم النظام بإنشاء تقييمات مزيفة، فهذا مخالف لسياسات جوجل وقد يعرّض حسابك للحظر.
+        </p>
+        <div class="formrow">
+          <select id="campaignType" onchange="document.getElementById('campaignSubject').value=''; document.getElementById('campaignBody').value='';">
+            <option value="promo">حملة ترويجية مخصّصة</option>
+            <option value="review">طلب تقييم Google حقيقي (يحتاج ضبط رابط التقييم أعلاه)</option>
+          </select>
+          <input id="campaignSubject" placeholder="عنوان الرسالة (اختياري لحملة التقييم)">
+        </div>
+        <textarea id="campaignBody" rows="3" placeholder="محتوى الرسالة (HTML مسموح، اختياري لحملة التقييم)"></textarea>
+        <button type="button" class="btn btn-primary" onclick="sendCampaign()"><?= icon('rocket', 'ic-sm') ?>إرسال الحملة الآن لكل المستخدمين</button>
+        <hr style="border-color:#28304a;margin:18px 0">
+        <h4 style="margin:0 0 8px">مفاتيح OpenRouter API (عدد غير محدود)</h4>
+        <p style="color:var(--muted);font-size:13px;margin-top:0">يمكنك إضافة أكثر من مفتاح. عند استهلاك حد مفتاح أو تعطّله يجرّب النظام المفتاح التالي تلقائياً.</p>
+        <form method="post" action="?action=admin_save_openrouter_key" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <label>تسمية (اختياري)<input name="label" placeholder="مثال: حساب رئيسي"></label>
+          <label>مفتاح API<input type="password" name="api_key" placeholder="sk-or-..." required></label>
+          <button class="btn btn-primary"><?= icon('plus', 'ic-sm') ?>إضافة مفتاح</button>
+        </form>
+        <table class="admin-table" style="margin-top:10px">
+          <thead><tr><th>التسمية</th><th>المفتاح</th><th>الحالة</th><th>آخر خطأ</th><th></th></tr></thead>
+          <tbody>
+          <?php foreach (db()->query("SELECT * FROM openrouter_keys ORDER BY sort_order ASC, id ASC")->fetchAll() as $ok): ?>
+            <tr>
+              <td><?= e($ok['label'] ?: '—') ?></td>
+              <td><code><?= e(substr($ok['api_key'], 0, 8)) ?>••••<?= e(substr($ok['api_key'], -4)) ?></code></td>
+              <td><?= $ok['active'] ? '<span style="color:#7fdc8f">مفعّل</span>' : '<span style="color:var(--muted)">معطّل</span>' ?></td>
+              <td style="color:var(--muted);font-size:12px"><?= e($ok['last_error'] ?: '—') ?></td>
+              <td style="display:flex;gap:6px">
+                <form method="post" action="?action=admin_toggle_openrouter_key" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ok['id'] ?>"><button class="btn btn-ghost"><?= icon('toggle', 'ic-sm') ?>تبديل</button></form>
+                <form method="post" action="?action=admin_delete_openrouter_key" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$ok['id'] ?>"><button class="btn btn-danger"><?= icon('trash', 'ic-sm') ?></button></form>
+              </td>
+            </tr>
+          <?php endforeach; ?>
+          <?php if (!db()->query("SELECT COUNT(*) c FROM openrouter_keys")->fetch()['c']): ?>
+            <tr><td colspan="5" style="color:var(--muted)">لا توجد مفاتيح مضافة بعد.</td></tr>
+          <?php endif; ?>
+          </tbody>
+        </table>
+        <hr style="border-color:#28304a;margin:18px 0">
         <p style="color:var(--muted);font-size:13px">
-          ℹ️ بيانات قاعدة البيانات وبوت تيليجرام وGoogle OAuth وMoneyTag تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي.
+          بيانات قاعدة البيانات وGoogle OAuth تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). توكن البوت وآيدي المالك يتم ضبطهما من الحقلين أعلاه فقط — يقرأهما بوت تيليجرام (<code>telegram_bot.php</code>) مباشرة من قاعدة البيانات حتى لو كان يعمل على سيرفر VPS مستقل تماماً عن هذا الموقع. باقي إعدادات البوت (الرسائل الجماعية، مكافأة الكابتشا، الحد الأدنى للسحب) تُضبط من داخل البوت نفسه بإرسال أمر <code>/admin</code> له (للمالك فقط). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي. مفتاح OpenRouter مجاني ويمكن الحصول عليه من openrouter.ai، ويدعم آلاف الموديلات المجانية والمدفوعة لتوليد الوصف وSEO تلقائياً للمنتجات. لتفعيل تسجيل الدخول بتيليجرام: أنشئ بوتاً عبر @BotFather، ضع توكنه في الحقل أعلاه، واكتب اسم المستخدم للبوت (بدون @) في الحقل المخصص — كما يجب ضبط دومين الموقع للبوت عبر أمر <code>/setdomain</code> في @BotFather.
         </p>
       </div>
     <?php endif; ?>
@@ -1791,71 +7260,444 @@ default:
 </div>
 
 <div class="bottom-nav">
-  <a href="?" class="<?= $page === 'home' ? 'active' : '' ?>"><span class="bi">🏠</span>الرئيسية</a>
-  <a href="?page=earn" class="<?= $page === 'earn' ? 'active' : '' ?>"><span class="bi">🪙</span>اكسب</a>
-  <a href="?page=tasks" class="<?= $page === 'tasks' ? 'active' : '' ?>"><span class="bi">📋</span>مهام</a>
-  <a href="?page=wallet" class="<?= $page === 'wallet' ? 'active' : '' ?>"><span class="bi">💳</span>محفظتي</a>
-  <a href="?page=orders" class="<?= $page === 'orders' ? 'active' : '' ?>"><span class="bi">📦</span>طلباتي</a>
+  <a href="?" class="<?= $page === 'home' ? 'active' : '' ?>"><?= icon('home', 'ic') ?>الرئيسية</a>
+  <a href="?page=apps&kind=app" class="<?= $page === 'apps' && $appsKindNav === 'app' ? 'active' : '' ?>"><?= icon('android', 'ic') ?>تطبيقات</a>
+  <a href="?page=wallet" class="bn-deposit <?= $page === 'wallet' ? 'active' : '' ?>" title="إيداع رصيد">
+    <div class="bn-deposit-bubble"><?= icon('wallet', 'ic') ?></div>
+    <span>إيداع</span>
+  </a>
+  <a href="?page=store" class="<?= $page === 'store' ? 'active' : '' ?>"><?= icon('cart', 'ic') ?>المتجر</a>
+  <a href="?page=favorites" class="<?= $page === 'favorites' ? 'active' : '' ?>"><?= icon('heart', 'ic') ?>المفضّلة</a>
 </div>
 
-<footer>© <?= date('Y') ?> <?= e($siteName) ?> — جميع الحقوق محفوظة</footer>
+<button id="scrollTop" onclick="window.scrollTo({top:0,behavior:'smooth'})" aria-label="أعلى الصفحة"><?= icon('chevron-up', 'ic') ?></button>
+
+<footer><?= setting('footer_text') ? e(setting('footer_text')) : '© ' . date('Y') . ' ' . e($siteName) . ' — جميع الحقوق محفوظة' ?></footer>
 
 <?php if (!isset($_COOKIE['policy_accepted']) || $_COOKIE['policy_accepted'] !== setting('policy_version', '1')): ?>
-<div class="policy-modal" id="policyModal">
-  <div class="policy-box">
-    <h2>👋 أهلاً بك</h2>
-    <p style="margin:12px 0;color:var(--muted)">باستخدامك للموقع أنت توافق على <a href="?page=privacy" style="color:var(--accent2)">سياسة الخصوصية</a> و<a href="?page=terms" style="color:var(--accent2)">شروط الاستخدام</a>.</p>
-    <button class="btn btn-primary" style="width:100%" onclick="acceptPolicy()">موافق وأستمر</button>
+<div class="policy-modal policy-modal-pro" id="policyModal">
+  <div class="policy-box policy-box-pro">
+    <div class="policy-hero">
+      <div class="policy-hero-icon"><?= icon('shield', 'ic ic-lg') ?></div>
+      <h2>أهلاً بك في <?= e($siteName) ?></h2>
+      <p>لتوفير أفضل تجربة لك، نستخدم كوكيز لحفظ جلستك وتفضيلاتك. قبل المتابعة، يرجى الموافقة على الشروط.</p>
+    </div>
+    <div class="policy-checks">
+      <label class="policy-check">
+        <input type="checkbox" id="pcTerms" checked>
+        <span class="pc-box"></span>
+        <span class="pc-text">أوافق على <a href="?page=terms" target="_blank">شروط الاستخدام</a></span>
+      </label>
+      <label class="policy-check">
+        <input type="checkbox" id="pcPrivacy" checked>
+        <span class="pc-box"></span>
+        <span class="pc-text">أوافق على <a href="?page=privacy" target="_blank">سياسة الخصوصية</a></span>
+      </label>
+      <label class="policy-check">
+        <input type="checkbox" id="pcAge" checked>
+        <span class="pc-box"></span>
+        <span class="pc-text">أُقرّ بأنني بلغت 13 عاماً أو أكثر</span>
+      </label>
+    </div>
+    <div class="policy-actions">
+      <button class="btn-policy-accept" onclick="acceptPolicy()"><?= icon('check','ic-sm') ?> موافق ومتابعة</button>
+      <a href="?page=privacy" class="btn-policy-reject">قراءة السياسة كاملة</a>
+    </div>
   </div>
 </div>
 <?php endif; ?>
+<?php endif; /* end !$isLoginPage chrome */ ?>
 
 <div class="toast" id="toast"></div>
 
-<?php if (MONEYTAG_SCRIPT): ?>
-<?= MONEYTAG_SCRIPT ?>
-<?php endif; ?>
-
 <script>
 const CSRF = "<?= csrf_token() ?>";
-const CAPTCHA_AD_SECS = <?= (int)setting('captcha_ad_seconds', 5) ?>;
-
-/* إعلان إجباري قصير (interstitial) — يستدعي AdMob في نسخة APK */
-function forcedAd(secs, cb){
-  if (window.Android && window.Android.showInterstitial){ window.Android.showInterstitial(); cb(); return; }
-  let ov = document.createElement('div');
-  ov.style.cssText='position:fixed;inset:0;background:rgba(0,0,0,.9);z-index:600;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;color:#fff;text-align:center;padding:20px';
-  ov.innerHTML='<div style="font-size:13px;opacity:.7">إعلان</div><div style="font-size:50px">📺</div><div style="font-size:18px;font-weight:700">إعلان برعاية Yassota</div><div id="adCount" style="font-size:14px;opacity:.85"></div>';
-  document.body.appendChild(ov);
-  let r=secs; const c=ov.querySelector('#adCount');
-  c.textContent='يمكنك المتابعة بعد '+r+' ثانية';
-  const iv=setInterval(()=>{ r--; c.textContent= r>0 ? ('يمكنك المتابعة بعد '+r+' ثانية') : 'جارٍ المتابعة...'; if(r<=0){clearInterval(iv);ov.remove();cb();} },1000);
+const LOGGED_IN = <?= $user ? 'true' : 'false' ?>;
+const AD_ENABLED = <?= setting('ad_enabled', '1') === '1' ? 'true' : 'false' ?>;
+const AD_ZONE_ID = "<?= e(setting('ad_zone_id', '')) ?>";
+let __adLoaded = false;
+function loadAdNetworkOnce(){
+  if (__adLoaded || !AD_ENABLED || !AD_ZONE_ID) return;
+  __adLoaded = true;
+  const s = document.createElement('script');
+  s.dataset.zone = AD_ZONE_ID;
+  s.src = 'https://al5sm.com/tag.min.js';
+  document.body.appendChild(s);
 }
+loadAdNetworkOnce();
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.btn, button')) loadAdNetworkOnce();
+}, { capture: true });
+<?php if (setting('moneytag_sw_enabled', '0') === '1'): ?>
+if ('serviceWorker' in navigator) {
+  navigator.serviceWorker.register('/sw.js').catch(() => {});
+}
+<?php endif; ?>
+function openAuthModal(){ window.location.href = '?page=login'; }
+function switchAuthTab(tab){
+  const lf = document.getElementById('loginForm'), rf = document.getElementById('registerForm');
+  if (!lf || !rf) return;
+  lf.style.display = tab === 'login' ? 'block' : 'none';
+  rf.style.display = tab === 'register' ? 'block' : 'none';
+  const lb = document.getElementById('loginTabBtn'), rb = document.getElementById('registerTabBtn');
+  if (lb) lb.classList.toggle('active', tab === 'login');
+  if (rb) rb.classList.toggle('active', tab === 'register');
+}
+function requireLogin(){ openAuthModal(); return false; }
 window.addEventListener('load', () => {
   const pl = document.getElementById('preloader');
+  const bar = document.getElementById('plBar'), pct = document.getElementById('plPct');
+  if (bar && pct) {
+    let p = 0;
+    const iv = setInterval(() => {
+      p = Math.min(100, p + Math.random() * 18 + 6);
+      bar.style.strokeDashoffset = 301 - (301 * p / 100);
+      pct.textContent = Math.round(p) + '%';
+      if (p >= 100) clearInterval(iv);
+    }, 90);
+  }
   setTimeout(() => { pl.style.opacity = 0; setTimeout(() => pl.remove(), 400); }, 300);
+
+  // scroll-reveal animations
+  const io = new IntersectionObserver((entries) => {
+    entries.forEach(en => { if (en.isIntersecting) { en.target.classList.add('in'); io.unobserve(en.target); } });
+  }, { threshold: .12 });
+  document.querySelectorAll('.admin-box, .section-title, .product-detail, .wallet-balance-card').forEach(el => {
+    el.classList.add('reveal'); io.observe(el);
+  });
+
+  // button ripple effect
+  document.addEventListener('pointerdown', (e) => {
+    const btn = e.target.closest('.btn');
+    if (!btn) return;
+    const r = btn.getBoundingClientRect();
+    const c = document.createElement('span');
+    const size = Math.max(r.width, r.height);
+    c.className = 'ripple';
+    c.style.width = c.style.height = size + 'px';
+    c.style.left = (e.clientX - r.left - size / 2) + 'px';
+    c.style.top = (e.clientY - r.top - size / 2) + 'px';
+    btn.appendChild(c);
+    setTimeout(() => c.remove(), 600);
+  });
 });
+
+// scroll-to-top button visibility
+window.addEventListener('scroll', () => {
+  const b = document.getElementById('scrollTop');
+  if (b) b.classList.toggle('show', window.scrollY > 400);
+}, { passive: true });
 function toggleSidebar(){
   document.getElementById('sidebar').classList.toggle('open');
   document.getElementById('overlay').classList.toggle('show');
 }
+(function(){
+  const car = document.getElementById('bannerCarousel');
+  if (!car) return;
+  const track = car.querySelector('.banner-carousel-track');
+  const dots = car.querySelectorAll('.bc-dot');
+  const count = track.children.length;
+  const dirSign = document.documentElement.dir === 'rtl' ? 1 : -1;
+  let idx = 0, timer = null;
+  window.bannerGoTo = function(i){
+    idx = i;
+    track.style.transform = 'translateX(' + (i * 100 * dirSign) + '%)';
+    dots.forEach((d, di) => d.classList.toggle('active', di === i));
+  };
+  function next(){ bannerGoTo((idx + 1) % count); }
+  if (count > 1) {
+    const interval = parseInt(car.dataset.interval, 10) || 4000;
+    timer = setInterval(next, interval);
+    car.addEventListener('mouseenter', () => clearInterval(timer));
+    car.addEventListener('mouseleave', () => { timer = setInterval(next, interval); });
+  }
+})();
 function toast(msg){
   const t = document.getElementById('toast');
-  t.textContent = msg; t.style.display = 'block';
-  setTimeout(() => t.style.display = 'none', 2600);
+  t.textContent = msg;
+  t.classList.remove('show'); void t.offsetWidth; t.classList.add('show');
+  clearTimeout(window.__toastT);
+  window.__toastT = setTimeout(() => t.classList.remove('show'), 2800);
 }
 function acceptPolicy(){
   fetch('?action=accept_policy').then(() => document.getElementById('policyModal').remove());
+}
+function applyThemePreset(val){
+  if (!val) return;
+  const [c1, c2] = val.split(',');
+  document.getElementById('themeAccentColor').value = c1;
+  document.getElementById('themeAccent2Color').value = c2;
 }
 async function post(action, data){
   data.append('csrf', CSRF);
   const r = await fetch('?action=' + action, { method: 'POST', body: data });
   return r.json();
 }
-function buyProduct(id){
-  if (!confirm('تأكيد إرسال طلب الشراء؟')) return;
-  const d = new FormData(); d.append('product_id', id);
-  post('api_buy_product', d).then(res => { toast(res.msg); });
+async function uploadInto(input, targetId){
+  if (!input.files || !input.files[0]) return;
+  await uploadFileInto(input.files[0], targetId);
+  input.value = '';
+}
+async function uploadFileInto(file, targetId){
+  const d = new FormData();
+  d.append('file', file);
+  d.append('field', targetId);
+  const targetEl = document.getElementById(targetId);
+  if (targetEl && targetEl.value) d.append('old_url', targetEl.value); // لحذف الصورة القديمة تلقائياً
+  d.append('csrf', CSRF);
+  toast('جاري رفع ومعالجة الصورة (WebP/AVIF)...');
+  const r = await fetch('?action=admin_upload', { method: 'POST', body: d });
+  const res = await r.json();
+  if (res.ok) { if (targetEl) targetEl.value = res.url; toast('تم رفع الملف وضغطه بنجاح'); }
+  else toast(res.msg || 'فشل رفع الملف.');
+}
+// دعم السحب والإفلات: يُفعَّل تلقائياً على أي صندوق رفع (.upload-row) يحتوي حقل ملف،
+// دون الحاجة لتعديل كل نموذج رفع في الصفحة يدوياً.
+function initDropZones(){
+  document.querySelectorAll('.upload-row').forEach(row => {
+    const fileInput = row.querySelector('input[type=file]');
+    if (!fileInput || row.dataset.dzReady) return;
+    row.dataset.dzReady = '1';
+    const targetId = (fileInput.getAttribute('onchange') || '').match(/uploadInto\(this,\s*'([^']+)'\)/);
+    row.addEventListener('dragover', e => { e.preventDefault(); row.classList.add('dragover'); });
+    row.addEventListener('dragleave', () => row.classList.remove('dragover'));
+    row.addEventListener('drop', e => {
+      e.preventDefault();
+      row.classList.remove('dragover');
+      const files = e.dataTransfer.files;
+      if (!files || !files.length) return;
+      if (targetId && targetId[1]) uploadFileInto(files[0], targetId[1]);
+    });
+  });
+}
+document.addEventListener('DOMContentLoaded', initDropZones);
+function handleBannerBulkDrop(e){
+  e.preventDefault();
+  e.currentTarget.classList.remove('dragover');
+  handleBannerBulkFiles(e.dataTransfer.files);
+}
+async function handleBannerBulkFiles(files){
+  if (!files || !files.length) return;
+  const d = new FormData();
+  for (const f of files) d.append('files[]', f);
+  d.append('field', 'banner');
+  d.append('csrf', CSRF);
+  toast('جاري رفع ' + files.length + ' صورة...');
+  const r = await fetch('?action=admin_upload_banners_multi', { method: 'POST', body: d });
+  const res = await r.json();
+  toast(res.msg || (res.ok ? ('تم إضافة ' + res.count + ' بنر بنجاح') : 'فشل الرفع الدفعي.'));
+  if (res.ok) setTimeout(() => location.reload(), 900);
+}
+let buyProductId = null;
+let buyProductPrice = 0;
+let buyProductFinal = 0;
+let buyAppliedCoupon = null;
+let buyMyBalanceVal = 0;
+const CURRENCY = <?= json_encode(setting('wallet_currency_symbol','$')) ?>;
+function buyProduct(id, price, opts){
+  if (!LOGGED_IN) return requireLogin();
+  opts = opts || {};
+  buyProductId = id;
+  buyProductPrice = parseFloat(price) || 0;
+  buyProductFinal = buyProductPrice;
+  buyAppliedCoupon = null;
+  buyMyBalanceVal = parseFloat(document.body.dataset.userBalance || 0);
+  document.getElementById('buyProductName').textContent = opts.name || 'تأكيد الطلب';
+  document.getElementById('buyProductDesc').textContent = opts.desc || '';
+  const iconEl = document.getElementById('buyProductIcon');
+  if (opts.image) iconEl.innerHTML = '<img src="' + opts.image + '" alt="">';
+  else if (opts.icon) iconEl.innerHTML = '<span style="font-size:32px">' + opts.icon + '</span>';
+  else iconEl.innerHTML = '<svg class="ic" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="9" cy="20" r="1.4"/><circle cx="17" cy="20" r="1.4"/><path d="M3 4h2l2.2 11h10.6L20 7H6.3"/></svg>';
+  document.getElementById('buyOriginalPrice').textContent = buyProductPrice.toFixed(2) + CURRENCY;
+  document.getElementById('buyFinalPrice').textContent = buyProductPrice.toFixed(2) + CURRENCY;
+  document.getElementById('buyDiscountRow').style.display = 'none';
+  document.getElementById('buyMyBalance').textContent = buyMyBalanceVal.toFixed(2) + CURRENCY;
+  document.getElementById('buyCouponCode').value = '';
+  document.getElementById('buyCouponMsg').textContent = '';
+  // Show ID field only for game/app charge products
+  const needsId = !!(opts.needsId);
+  document.getElementById('buyIdField').style.display = needsId ? 'block' : 'none';
+  document.getElementById('buyAccountId').value = '';
+  if (needsId) {
+    document.getElementById('buyIdLabel').querySelector('span').textContent = opts.idLabel || 'آيدي حسابك في اللعبة/التطبيق';
+    document.getElementById('buyIdHint').textContent = opts.idHint || 'أدخل الآيدي الظاهر داخل التطبيق أو اللعبة لضمان وصول الشحن للحساب الصحيح.';
+  }
+  updateBuyBalanceView();
+  document.getElementById('buyModal').style.display = 'flex';
+}
+function updateBuyBalanceView(){
+  const after = buyMyBalanceVal - buyProductFinal;
+  const afterEl = document.getElementById('buyAfterBalance');
+  afterEl.textContent = after.toFixed(2) + CURRENCY;
+  afterEl.style.color = after < 0 ? '#ef4444' : '#10b981';
+  const btn = document.getElementById('buySubmitBtn');
+  const insuff = document.getElementById('buyInsufficient');
+  if (after < 0) {
+    insuff.style.display = 'flex';
+    document.getElementById('buyMissingAmt').textContent = Math.abs(after).toFixed(2) + CURRENCY;
+    btn.disabled = true;
+    btn.innerHTML = '<svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M12 8v5M12 16v.5"/><circle cx="12" cy="12" r="10"/></svg> رصيدك غير كافٍ';
+  } else {
+    insuff.style.display = 'none';
+    btn.disabled = false;
+    btn.innerHTML = '<svg class="ic ic-sm" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M5 12.5 9.5 17 19 7"/></svg> ادفع من الرصيد (' + buyProductFinal.toFixed(2) + CURRENCY + ')';
+  }
+}
+async function applyCoupon(){
+  const code = document.getElementById('buyCouponCode').value.trim();
+  const msgEl = document.getElementById('buyCouponMsg');
+  if (!code) { msgEl.textContent = ''; buyAppliedCoupon = null; buyProductFinal = buyProductPrice; document.getElementById('buyDiscountRow').style.display='none'; document.getElementById('buyFinalPrice').textContent = buyProductPrice.toFixed(2) + CURRENCY; updateBuyBalanceView(); return; }
+  const d = new FormData();
+  d.append('code', code);
+  d.append('product_id', buyProductId);
+  const res = await post('api_validate_coupon', d);
+  if (res.ok) {
+    buyAppliedCoupon = code;
+    buyProductFinal = parseFloat(res.new_price);
+    const discount = buyProductPrice - buyProductFinal;
+    msgEl.style.color = '#10b981';
+    msgEl.textContent = '✓ تم تطبيق خصم ' + res.discount_percent + '%';
+    document.getElementById('buyDiscountRow').style.display = 'flex';
+    document.getElementById('buyDiscount').textContent = '-' + discount.toFixed(2) + CURRENCY;
+    document.getElementById('buyFinalPrice').textContent = buyProductFinal.toFixed(2) + CURRENCY;
+  } else {
+    buyAppliedCoupon = null;
+    buyProductFinal = buyProductPrice;
+    msgEl.style.color = '#ef4444';
+    msgEl.textContent = res.msg || 'كود غير صالح';
+    document.getElementById('buyDiscountRow').style.display = 'none';
+    document.getElementById('buyFinalPrice').textContent = buyProductPrice.toFixed(2) + CURRENCY;
+  }
+  updateBuyBalanceView();
+}
+function toggleWishlist(id, btn){
+  if (!LOGGED_IN) return requireLogin();
+  const d = new FormData();
+  d.append('product_id', id);
+  post('api_toggle_wishlist', d).then(res => {
+    if (res.ok) btn.classList.toggle('active', res.added);
+    else toast(res.msg || 'حدث خطأ');
+  });
+}
+function saveProfile(){
+  const d = new FormData();
+  d.append('name', document.getElementById('editName').value);
+  d.append('username', document.getElementById('editUsername').value);
+  d.append('bio', document.getElementById('editBio').value);
+  post('api_update_profile', d).then(res => {
+    toast(res.msg);
+    if (res.ok) setTimeout(() => location.reload(), 1200);
+  });
+}
+function uploadAvatar(file){
+  if (!file) return;
+  const d = new FormData();
+  d.append('file', file);
+  post('api_upload_avatar', d).then(res => {
+    toast(res.msg || (res.ok ? 'تم تحديث الصورة.' : 'فشل رفع الصورة.'));
+    if (res.ok && res.url) {
+      const el = document.getElementById('avatarPreview');
+      if (el && el.tagName === 'IMG') el.src = res.url;
+      else setTimeout(() => location.reload(), 800);
+    }
+  });
+}
+function submitSuggestion(){
+  const title = document.getElementById('sugTitle').value.trim();
+  if (!title) return toast('أدخل اسم المنتج المقترح.');
+  const d = new FormData();
+  d.append('title', title);
+  d.append('details', document.getElementById('sugDetails').value);
+  post('api_submit_suggestion', d).then(res => {
+    toast(res.msg);
+    if (res.ok) { document.getElementById('sugTitle').value = ''; document.getElementById('sugDetails').value = ''; }
+  });
+}
+function spinWheel(){
+  if (!LOGGED_IN) return requireLogin();
+  const btn = document.getElementById('spinBtn');
+  const wheel = document.getElementById('spinWheelEl');
+  if (btn) btn.disabled = true;
+  post('api_spin_wheel', new FormData()).then(res => {
+    if (wheel) {
+      const turns = 4 + Math.random();
+      wheel.style.transform = `rotate(${turns * 360}deg)`;
+    }
+    setTimeout(() => {
+      toast(res.msg);
+      if (btn) btn.disabled = !res.ok ? false : true;
+      if (res.ok) setTimeout(() => location.reload(), 1500);
+      else if (btn) btn.disabled = false;
+    }, 2600);
+  });
+}
+function claimDailyBonus(){
+  if (!LOGGED_IN) return requireLogin();
+  post('api_claim_daily_bonus', new FormData()).then(res => {
+    toast(res.msg);
+    if (res.ok) setTimeout(() => location.reload(), 1000);
+  });
+}
+function closeBuyModal(){ document.getElementById('buyModal').style.display = 'none'; }
+function resetReceiptBox(){
+  const box = document.getElementById('buyReceiptBox');
+  box.classList.remove('has-file');
+  box.querySelector('.upload-box-empty').style.display = 'flex';
+  box.querySelector('.upload-box-preview').style.display = 'none';
+}
+function clearReceiptFile(ev){
+  ev.preventDefault(); ev.stopPropagation();
+  document.getElementById('buyReceiptFile').value = '';
+  resetReceiptBox();
+}
+function showReceiptFile(f){
+  const box = document.getElementById('buyReceiptBox');
+  box.classList.add('has-file');
+  box.querySelector('.upload-box-empty').style.display = 'none';
+  box.querySelector('.upload-box-preview').style.display = 'flex';
+  document.getElementById('buyReceiptPreview').src = URL.createObjectURL(f);
+  document.getElementById('buyReceiptName').textContent = f.name;
+}
+(function(){
+  const box = document.getElementById('buyReceiptBox');
+  const input = document.getElementById('buyReceiptFile');
+  if (!box || !input) return;
+  input.addEventListener('change', function(){
+    const f = this.files[0];
+    if (!f) { resetReceiptBox(); return; }
+    showReceiptFile(f);
+  });
+  ['dragenter', 'dragover'].forEach(evt => box.addEventListener(evt, e => { e.preventDefault(); box.classList.add('dragover'); }));
+  ['dragleave', 'drop'].forEach(evt => box.addEventListener(evt, e => { e.preventDefault(); box.classList.remove('dragover'); }));
+  box.addEventListener('drop', e => {
+    if (e.dataTransfer.files && e.dataTransfer.files[0]) {
+      input.files = e.dataTransfer.files;
+      showReceiptFile(e.dataTransfer.files[0]);
+    }
+  });
+})();
+async function submitBuyRequest(){
+  if (!buyProductId) return;
+  const needsIdField = document.getElementById('buyIdField').style.display !== 'none';
+  const accountId = document.getElementById('buyAccountId').value.trim();
+  if (needsIdField && !accountId) return toast('يجب إدخال الآيدي.');
+  if (buyMyBalanceVal < buyProductFinal) return toast('رصيدك غير كافٍ.');
+  const btn = document.getElementById('buySubmitBtn');
+  btn.disabled = true; btn.innerHTML = '⏳ جاري تنفيذ الطلب...';
+  const d = new FormData();
+  d.append('product_id', buyProductId);
+  d.append('account_id', accountId);
+  d.append('pay_from_balance', '1');
+  if (buyAppliedCoupon) d.append('coupon_code', buyAppliedCoupon);
+  const res = await post('api_buy_product', d);
+  toast(res.msg);
+  if (res.ok) {
+    closeBuyModal();
+    setTimeout(() => location.reload(), 1000);
+  } else {
+    btn.disabled = false;
+    updateBuyBalanceView();
+  }
 }
 function loadCaptcha(){
   fetch('?action=api_new_captcha').then(r => r.json()).then(res => {
@@ -1864,19 +7706,17 @@ function loadCaptcha(){
 }
 if (document.getElementById('captchaBox')) loadCaptcha();
 function submitCaptcha(){
+  if (!LOGGED_IN) return requireLogin();
   const ans = document.getElementById('captchaAnswer').value.trim();
-  if (!ans){ toast('أدخل الرقم أولاً'); return; }
-  // إعلان إجباري قصير قبل التحقق
-  forcedAd(CAPTCHA_AD_SECS, ()=>{
-    const d = new FormData(); d.append('answer', ans);
-    post('api_solve_captcha', d).then(res => {
-      toast(res.msg);
-      document.getElementById('captchaAnswer').value = '';
-      if (res.ok) loadCaptcha();
-    });
+  const d = new FormData(); d.append('answer', ans);
+  post('api_solve_captcha', d).then(res => {
+    toast(res.msg);
+    document.getElementById('captchaAnswer').value = '';
+    if (res.ok) loadCaptcha();
   });
 }
 function startTask(id, url, seconds){
+  if (!LOGGED_IN) return requireLogin();
   window.open(url, '_blank');
   let remain = seconds;
   toast('انتظر ' + seconds + ' ثانية ثم سيتم التحقق...');
@@ -1890,136 +7730,156 @@ function startTask(id, url, seconds){
   }, 1000);
 }
 function saveWallet(){
+  if (!LOGGED_IN) return requireLogin();
   const d = new FormData();
   d.append('type', document.getElementById('wType').value);
   d.append('address', document.getElementById('wAddr').value);
   post('api_save_wallet', d).then(res => toast(res.msg));
 }
 function requestWithdraw(){
+  if (!LOGGED_IN) return requireLogin();
   if (!confirm('تأكيد طلب سحب الرصيد بالكامل؟')) return;
   post('api_request_withdraw', new FormData()).then(res => { toast(res.msg); if (res.ok) setTimeout(() => location.reload(), 1200); });
 }
 function requestTopup(){
+  if (!LOGGED_IN) return requireLogin();
   const d = new FormData();
   d.append('wallet_id', document.getElementById('topupWallet').value);
   d.append('amount', document.getElementById('topupAmount').value);
   d.append('note', document.getElementById('topupNote').value);
   post('api_request_topup', d).then(res => toast(res.msg));
 }
-
-/* ===== كاروسيل البنرات (كل 5 ثوانٍ) ===== */
-(function(){
-  const track = document.getElementById('bnrTrack');
-  if (!track) return;
-  const slides = track.children.length;
-  let idx = 0;
-  const dots = document.querySelectorAll('#bnrDots span');
-  window.goSlide = function(i){ idx = (i + slides) % slides; render(); reset(); };
-  function render(){
-    track.style.transform = 'translateX(' + (idx * 100) + '%)'; // RTL: موجب لليسار
-    dots.forEach((d,k)=>d.classList.toggle('on', k===idx));
-  }
-  let timer;
-  function reset(){ clearInterval(timer); timer = setInterval(()=>{ idx=(idx+1)%slides; render(); }, 5000); }
-  render(); reset();
-})();
-
-/* ===== تصفية الأقسام ===== */
-function filterCat(el, cat){
-  document.querySelectorAll('#catGroup .chip').forEach(c=>c.classList.remove('on'));
-  el.classList.add('on');
-  document.querySelectorAll('#productGrid .card').forEach(c=>{
-    c.style.display = (cat===0 || +c.dataset.cat===cat) ? '' : 'none';
+function clearCache(){
+  toast('جاري تفريغ الكاش...');
+  const d = new FormData(); d.append('csrf', CSRF);
+  fetch('?action=admin_clear_cache', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
+}
+function testOpenRouter(){
+  toast('جاري الاختبار...');
+  const d = new FormData(); d.append('csrf', CSRF);
+  fetch('?action=admin_test_openrouter', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
+}
+function testSmtp(){
+  toast('جاري إرسال رسالة الاختبار...');
+  const d = new FormData(); d.append('csrf', CSRF);
+  fetch('?action=admin_test_smtp', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
+}
+function sendCampaign(){
+  const type = document.getElementById('campaignType').value;
+  const subject = document.getElementById('campaignSubject').value.trim();
+  const body = document.getElementById('campaignBody').value.trim();
+  if (type === 'promo' && (!subject || !body)) return toast('أدخل عنوان ومحتوى الحملة الترويجية.');
+  if (!confirm('سيتم إرسال هذه الرسالة لكل المستخدمين المسجّلين الآن، متأكد؟')) return;
+  toast('جاري إرسال الحملة، قد يستغرق دقيقة حسب عدد المستخدمين...');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('type', type); d.append('subject', subject); d.append('body', body);
+  fetch('?action=admin_send_campaign', { method: 'POST', body: d }).then(r => r.json()).then(res => toast(res.msg));
+}
+function aiGenerateProduct(){
+  const name = document.getElementById('pname').value.trim();
+  const price = document.getElementById('pprice').value.trim();
+  if (!name) return toast('أدخل اسم المنتج أولاً.');
+  toast('جاري التوليد بالذكاء الاصطناعي...');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('price', price); d.append('gen_image', '1');
+  fetch('?action=admin_ai_generate', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    document.getElementById('pdesc').value = res.description || '';
+    if (res.meta_description) document.getElementById('pmeta').value = res.meta_description;
+    if (res.image) document.getElementById('pimage').value = res.image;
+    toast(res.image ? 'تم توليد الوصف والصورة وSEO بنجاح' : 'تم توليد الوصف وSEO' + (res.image_error ? ' (تعذر توليد الصورة: ' + res.image_error + ')' : ''));
   });
 }
-
-/* ===== مشاهدة إعلان مكافأ (مع AdMob في نسخة APK) ===== */
-function watchAd(secs){
-  const btn = document.getElementById('watchBtn');
-  // في تطبيق APK: استدعِ هنا إعلان AdMob المكافأ عبر الجسر، ثم نادِ grantAd() عند الإكمال.
-  if (window.Android && window.Android.showRewardedAd){ window.Android.showRewardedAd(); return; }
-  btn.disabled = true; let r = secs;
-  const iv = setInterval(()=>{
-    r--; btn.textContent = '⏳ جارٍ العرض... ' + r + ' ث';
-    if (r<=0){ clearInterval(iv); grantAd(); }
-  }, 1000);
-  btn.textContent = '⏳ جارٍ العرض... ' + r + ' ث';
-}
-function grantAd(){
-  post('api_watch_ad', new FormData()).then(res=>{ toast(res.msg); setTimeout(()=>location.reload(), 1400); });
-}
-window.grantAd = grantAd; // متاح لجسر AdMob في APK
-
-/* ===== عجلة الحظ ===== */
-let wheelSpinning = false, wheelRot = 0;
-function spinWheel(){
-  if (wheelSpinning) return; wheelSpinning = true;
-  const btn = document.getElementById('spinBtn'); btn.disabled = true;
-  document.getElementById('wheelResult').textContent = '';
-  post('api_spin_wheel', new FormData()).then(res=>{
-    if (!res.ok){ toast(res.msg); wheelSpinning=false; btn.disabled=false; return; }
-    const seg = window.WHEEL_SEG, target = res.index;
-    // المؤشر بالأعلى؛ ندوّر 6 لفّات كاملة + الوصول لمنتصف القطاع الفائز
-    const dest = 360*6 + (360 - (target*seg + seg/2));
-    wheelRot += dest;
-    const w = document.getElementById('wheel');
-    w.style.transform = 'rotate(' + wheelRot + 'deg)';
-    setTimeout(()=>{
-      document.getElementById('wheelResult').textContent = res.msg;
-      document.getElementById('wheelBal').textContent = res.balance;
-      if (res.prize>0) confetti();
-      toast(res.msg);
-      wheelSpinning=false; btn.disabled=false;
-    }, 5200);
+function aiGenerateApp(){
+  const name = document.getElementById('apname').value.trim();
+  const kind = document.getElementById('apkind').value;
+  if (!name) return toast('أدخل اسم التطبيق أولاً.');
+  toast('جاري التوليد بالذكاء الاصطناعي...');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('kind', kind);
+  fetch('?action=admin_ai_generate_app', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    if (res.short_description) document.getElementById('apshort').value = res.short_description;
+    if (res.description) document.getElementById('apdesc').value = res.description;
+    if (res.changelog) document.getElementById('apchangelog').value = res.changelog;
+    if (res.permissions) document.getElementById('appermissions').value = res.permissions;
+    if (res.category) document.getElementById('apcategory').value = res.category;
+    if (res.seo_title) document.getElementById('apseotitle').value = res.seo_title;
+    if (res.seo_description) document.getElementById('apseodesc').value = res.seo_description;
+    if (res.seo_keywords) document.getElementById('apseokw').value = res.seo_keywords;
+    toast('تم توليد المحتوى بنجاح بالذكاء الاصطناعي');
   });
 }
-function confetti(){
-  const cols=['#6c5ce7','#00d2a0','#ffd86b','#ff5c5c','#33c1ff'];
-  for(let i=0;i<60;i++){
-    const c=document.createElement('div'); c.className='confetti';
-    c.style.left=Math.random()*100+'vw';
-    c.style.background=cols[i%cols.length];
-    c.style.animationDuration=(2+Math.random()*2)+'s';
-    c.style.animationDelay=(Math.random())+'s';
-    document.body.appendChild(c);
-    setTimeout(()=>c.remove(),4500);
-  }
+function aiSeoBoost(){
+  const name = document.getElementById('apname').value.trim();
+  const kind = document.getElementById('apkind').value;
+  const category = document.getElementById('apcategory').value.trim();
+  const version = document.getElementById('apversion').value.trim();
+  if (!name) return toast('أدخل اسم التطبيق أولاً.');
+  toast('جاري توليد عنوان SEO قوي ومحتوى طويل بالذكاء الاصطناعي... قد يستغرق دقيقة');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('kind', kind); d.append('category', category); d.append('version', version);
+  fetch('?action=admin_ai_seo_boost', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    if (res.seo_title) document.getElementById('apseotitle').value = res.seo_title;
+    if (res.seo_description) document.getElementById('apseodesc').value = res.seo_description;
+    if (res.seo_keywords) document.getElementById('apseokw').value = res.seo_keywords;
+    if (res.description) document.getElementById('apdesc').value = res.description;
+    toast('تم تعزيز SEO وتوليد المحتوى الكامل بنجاح');
+  }).catch(() => toast('انتهت المهلة أو حدث خطأ، حاول مجدداً.'));
 }
-
-/* ===== الإحالة ===== */
-function copyRef(){
-  const i=document.getElementById('refInput'); i.select();
-  navigator.clipboard.writeText(i.value).then(()=>toast('تم نسخ الرابط ✅')).catch(()=>{document.execCommand('copy');toast('تم النسخ');});
-}
-function shareRef(url){
-  if (navigator.share){ navigator.share({title:'انضم إلي', url}); }
-  else copyRef();
-}
-
-/* ===== OpenRouter (لوحة الإدارة) ===== */
-function orLoadModels(){
-  const sel=document.getElementById('orModelSelect'), info=document.getElementById('orModelsInfo');
-  info.textContent='⏳ جارٍ الجلب...';
-  post('admin_openrouter_models', new FormData()).then(res=>{
-    if(!res.ok){ info.textContent='❌ '+(res.error||'فشل'); return; }
-    sel.innerHTML='';
-    res.models.forEach(m=>{ const o=document.createElement('option'); o.value=m.id; o.textContent=m.name+' ('+m.id+')'; sel.appendChild(o); });
-    const def=document.getElementById('orModelDefault'); if(def&&def.value) sel.value=def.value;
-    info.textContent='✅ تم جلب '+res.count+' موديل.';
+function aiGenerateAppIcon(){
+  const name = document.getElementById('apname').value.trim();
+  const kind = document.getElementById('apkind').value;
+  if (!name) return toast('أدخل اسم التطبيق أولاً.');
+  toast('جاري توليد الأيقونة...');
+  const d = new FormData(); d.append('csrf', CSRF); d.append('name', name); d.append('kind', kind);
+  fetch('?action=admin_ai_generate_app_icon', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    document.getElementById('apicon').value = res.url;
+    toast('تم توليد الأيقونة بنجاح');
   });
 }
-function orTest(){
-  const out=document.getElementById('orResult');
-  const model=document.getElementById('orModelSelect').value || document.getElementById('orModelDefault').value;
-  out.textContent='⏳ جارٍ الاختبار على: '+model;
-  const d=new FormData(); d.append('model', model); d.append('prompt', document.getElementById('orPrompt').value);
-  post('admin_openrouter_test', d).then(res=>{
-    out.textContent = res.ok ? ('✅ ['+res.model+']\n\n'+res.reply) : ('❌ '+(res.error||'فشل')+' (الموديل: '+res.model+')');
+function appVote(id, dir){
+  const d = new FormData(); d.append('csrf', CSRF); d.append('id', id); d.append('dir', dir);
+  fetch('?action=app_vote', { method: 'POST', body: d }).then(r => r.json()).then(res => {
+    if (!res.ok) return toast(res.msg);
+    document.getElementById('appLikeCount').textContent = res.likes.toLocaleString();
+    document.getElementById('appDislikeCount').textContent = res.dislikes.toLocaleString();
+    document.getElementById('appVoteUp').disabled = true;
+    document.getElementById('appVoteDown').disabled = true;
+    toast('شكراً لتقييمك!');
   });
 }
-
-/* ===== Service Worker (لتثبيت التطبيق وAPK) ===== */
-if ('serviceWorker' in navigator){ navigator.serviceWorker.register('?action=sw').catch(()=>{}); }
+function appNotifySubscribe(btn){
+  localStorage.setItem('app_notify_' + window.location.search, '1');
+  btn.disabled = true;
+  btn.innerHTML = btn.innerHTML.replace('اشترك في التحديثات', 'تم تفعيل التنبيهات');
+  toast('تم تفعيل تنبيهات التحديثات لهذا التطبيق');
+}
+function copyAddr(btn){
+  const addr = btn.getAttribute('data-addr');
+  navigator.clipboard.writeText(addr).then(() => {
+    btn.classList.add('copied');
+    toast('تم نسخ العنوان');
+    setTimeout(() => btn.classList.remove('copied'), 1500);
+  });
+}
+<?php $__admob = admob_cfg(); ?>
+window.ADMOB = {
+  rewarded: "<?= e($__admob['rewarded']) ?>",
+  interstitial: "<?= e($__admob['interstitial']) ?>",
+  test: <?= $__admob['test'] ? '1' : '0' ?>
+};
+window.grantAd = function() {
+  const d = new FormData(); d.append('csrf', CSRF);
+  fetch('?action=api_watch_ad', { method: 'POST', body: d })
+    .then(r => r.json()).then(res => { if (res && res.msg) toast(res.msg); });
+};
+window.adClosed = function() {
+  if (window._forcedAdCb) { const cb = window._forcedAdCb; window._forcedAdCb = null; cb(); }
+};
+window.adFailed = function(msg) {
+  if (window._forcedAdCb) { const cb = window._forcedAdCb; window._forcedAdCb = null; cb(); }
+};
+window.adDismissed = window.adFailed;
 </script>
+<?php if (setting('ad_enabled') === '1' && setting('ad_footer_code')) echo setting('ad_footer_code'); ?>
 </body>
 </html>
