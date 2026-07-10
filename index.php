@@ -2848,6 +2848,53 @@ if ($action === 'admin_ai_generate_app') {
     exit;
 }
 
+if ($action === 'admin_ai_continue_content') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    set_time_limit(180);
+    $name = trim($_POST['name'] ?? '');
+    $kindRaw = ($_POST['kind'] ?? 'app');
+    $kind = $kindRaw === 'game' ? 'لعبة' : 'تطبيق';
+    $existing = trim($_POST['existing'] ?? '');
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    $prompt = "أنت كاتب محتوى SEO احترافي للتطبيقات. أكمل الوصف التالي لـ$kind اسمه \"$name\" بإضافة 600-800 كلمة عربية جديدة تكمّل ما بدأ. "
+        . "أضِف: 1) شرح تفصيلي لمزايا إضافية 2) مقارنة مختصرة بتطبيقات مشابهة 3) نصائح للمستخدم 4) لماذا يُنصح بتحميله. "
+        . "اكتب فقرات طبيعية مفصلة (لا نقاط) واستخدم كلمات مفتاحية تكرارية طبيعية مثل: تحميل، آخر إصدار، مجاني، آمن. لا تُكرر ما جاء في:\n\n$existing\n\nأخرج فقط المحتوى الجديد (بدون عناوين، بدون Markdown، فقرات عربية فقط).";
+    $r = openrouter_chat($prompt, true);
+    if (!$r['ok']) { echo json_encode(['ok' => false, 'msg' => $r['msg']]); exit; }
+    echo json_encode(['ok' => true, 'content' => trim($r['text'])]);
+    exit;
+}
+
+if ($action === 'admin_ai_generate_icon') {
+    require_admin();
+    csrf_check();
+    header('Content-Type: application/json; charset=utf-8');
+    set_time_limit(120);
+    $name = trim($_POST['name'] ?? '');
+    if (!$name) { echo json_encode(['ok' => false, 'msg' => 'أدخل اسم التطبيق أولاً.']); exit; }
+    // 1) حاول التوليد الحقيقي عبر OpenRouter
+    $imgPrompt = "app icon logo for \"$name\", modern flat design, high quality, no text, centered, square 512x512, professional gradient background";
+    $imgRes = openrouter_image($imgPrompt);
+    if (!empty($imgRes['ok']) && !empty($imgRes['url'])) {
+        echo json_encode(['ok' => true, 'url' => $imgRes['url'], 'source' => 'ai']);
+        exit;
+    }
+    // 2) fallback: توليد أيقونة SVG محلياً (لن يفشل أبداً)
+    $letter = mb_substr($name, 0, 1);
+    $colors = ['#10b981,#059669', '#2563eb,#06b6d4', '#8b5cf6,#6d28d9', '#f59e0b,#d97706', '#ef4444,#dc2626'];
+    $pick = $colors[abs(crc32($name)) % count($colors)];
+    [$c1, $c2] = explode(',', $pick);
+    $svg = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512"><defs><linearGradient id="g" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="' . $c1 . '"/><stop offset="1" stop-color="' . $c2 . '"/></linearGradient></defs><rect width="512" height="512" rx="110" fill="url(#g)"/><text x="256" y="330" font-family="Cairo, Arial" font-size="240" font-weight="900" fill="#fff" text-anchor="middle">' . htmlspecialchars($letter, ENT_QUOTES) . '</text></svg>';
+    $filename = 'ai_icon_' . bin2hex(random_bytes(6)) . '.svg';
+    $dir = __DIR__ . '/uploads/apps';
+    if (!is_dir($dir)) @mkdir($dir, 0755, true);
+    file_put_contents($dir . '/' . $filename, $svg);
+    echo json_encode(['ok' => true, 'url' => 'uploads/apps/' . $filename, 'source' => 'svg', 'msg' => ($imgRes['msg'] ?? '') . ' — تم توليد أيقونة SVG محلياً']);
+    exit;
+}
+
 if ($action === 'admin_ai_seo_boost') {
     require_admin();
     csrf_check();
@@ -3024,7 +3071,7 @@ if ($action && str_starts_with($action, 'admin_')) {
                 'seo_title' => trim($_POST['seo_title'] ?? ''),
                 'seo_description' => trim($_POST['seo_description'] ?? ''),
                 'seo_keywords' => trim($_POST['seo_keywords'] ?? ''),
-                'status' => in_array($_POST['status'] ?? 'published', ['published', 'pending', 'hidden'], true) ? $_POST['status'] : 'published',
+                'status' => in_array($_POST['status'] ?? 'published', ['published', 'pending', 'hidden', 'draft'], true) ? $_POST['status'] : 'published',
             ];
             $slugBase = trim(preg_replace('/[^a-z0-9-]+/', '-', strtolower($name)), '-') ?: 'app';
             $admin = current_user();
@@ -3646,6 +3693,18 @@ table tbody tr{transition:background .15s var(--ease)}
 table tbody tr:hover{background:rgba(37,99,235,.08)}
 .admin-tabs{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px}
 .admin-tabs a{padding:8px 14px;border-radius:10px;background:#28304a;font-size:13px}
+/* Admin sidebar drawer (mobile-first, 3-dot menu opens it) */
+.admin-sidebar-toggle{position:fixed;top:12px;right:12px;z-index:100;width:44px;height:44px;border-radius:12px;background:linear-gradient(135deg,#10b981,#059669);border:none;color:#fff;cursor:pointer;display:none;align-items:center;justify-content:center;box-shadow:0 8px 20px rgba(16,185,129,.4);font-size:22px;font-weight:900}
+.admin-sidebar-toggle:hover{transform:scale(1.05)}
+.admin-sidebar-backdrop{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:98;display:none}
+.admin-sidebar-backdrop.open{display:block}
+.admin-sidebar-drawer{position:fixed;top:0;bottom:0;right:-320px;width:290px;background:linear-gradient(180deg,#0d1a2f,#131f38);border-left:1px solid rgba(16,185,129,.35);z-index:99;transition:right .3s var(--ease);padding:24px 16px;overflow-y:auto;box-shadow:-20px 0 40px rgba(0,0,0,.5)}
+.admin-sidebar-drawer.open{right:0}
+.admin-sidebar-drawer h3{color:#10b981;margin-bottom:14px;display:flex;align-items:center;gap:8px}
+.admin-sidebar-drawer a{display:flex;align-items:center;gap:10px;padding:12px 14px;border-radius:12px;color:var(--text);font-weight:600;font-size:13.5px;text-decoration:none;transition:.2s;margin-bottom:4px;background:transparent;border:1px solid transparent}
+.admin-sidebar-drawer a:hover{background:rgba(16,185,129,.1);border-color:rgba(16,185,129,.3)}
+.admin-sidebar-drawer a.active{background:linear-gradient(135deg,#10b981,#059669);color:#fff;box-shadow:0 6px 16px rgba(16,185,129,.4)}
+@media (max-width:820px){.admin-tabs{display:none}.admin-sidebar-toggle{display:flex}}
 .admin-tabs a.active{background:var(--accent)}
 .admin-box{background:var(--card);margin:0 18px 20px;border-radius:var(--radius);padding:18px;overflow-x:auto}
 .formrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px}
@@ -3938,6 +3997,23 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .pd-desc{color:var(--muted);line-height:1.8;margin-bottom:16px}
 .apps-grid{grid-template-columns:repeat(auto-fill,minmax(150px,1fr))}
 .app-card{display:flex;flex-direction:column}
+.card-link-overlay{color:transparent!important}
+/* Features list */
+.app-features-list{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:10px;padding:0 18px 12px}
+.feature-item{display:flex;gap:10px;align-items:flex-start;padding:12px 14px;border-radius:14px;background:linear-gradient(135deg,rgba(16,185,129,.1),rgba(6,182,212,.05));border:1px solid rgba(16,185,129,.2)}
+.feature-item span{font-size:24px;flex-shrink:0;line-height:1}
+.feature-item div{flex:1;min-width:0}
+.feature-item strong{display:block;font-size:14px;color:#fff;font-weight:700;margin-bottom:2px}
+.feature-item small{font-size:12px;color:var(--muted);display:block;line-height:1.4}
+/* FAQ */
+.app-faq{padding:0 18px 12px;display:flex;flex-direction:column;gap:8px}
+.app-faq details{background:linear-gradient(135deg,rgba(6,78,59,.35),rgba(0,0,0,.28));border:1px solid rgba(16,185,129,.25);border-radius:12px;overflow:hidden;transition:.2s}
+.app-faq details[open]{border-color:#10b981;box-shadow:0 6px 16px rgba(16,185,129,.15)}
+.app-faq summary{cursor:pointer;padding:12px 14px;font-weight:700;color:#fff;font-size:13.5px;list-style:none;display:flex;justify-content:space-between;align-items:center}
+.app-faq summary::-webkit-details-marker{display:none}
+.app-faq summary::after{content:"+";color:#10b981;font-weight:900;font-size:18px;transition:.2s}
+.app-faq details[open] summary::after{transform:rotate(45deg)}
+.app-faq p{padding:0 14px 14px;color:var(--muted);font-size:13px;line-height:1.7;margin:0}
 .app-card .pimg.app-icon-img{width:64px;height:64px;border-radius:16px;margin:0 auto 8px;object-fit:cover}
 .app-kind-tag{background:linear-gradient(135deg,var(--accent),var(--accent2))}
 .app-stats{display:flex;gap:10px;flex-wrap:wrap;color:var(--muted);font-size:12px;margin:6px 0}
@@ -4239,21 +4315,12 @@ function googleTranslateElementInit(){
 <?php else: ?>
 
 <div class="topbar">
+  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><?= icon('rocket', 'ic ic-lg') ?><?php endif; ?> <?= e($siteName) ?></a>
   <?php if ($user): ?>
-    <a href="?page=profile" class="topbar-profile" title="ملفي الشخصي">
-      <div class="tp-avatar">
-        <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>" alt=""><?php else: ?><?= icon('user', 'ic') ?><?php endif; ?>
-      </div>
-      <span class="tp-name"><?= e(mb_strimwidth($user['name'] ?? $user['username'] ?? '', 0, 14, '…')) ?></span>
-    </a>
-  <?php endif; ?>
-  <button class="burger" onclick="toggleSidebar()"><?= icon('menu', 'ic') ?></button>
-  <?php if ($user): ?>
-    <a href="?page=notifications" class="btn btn-ghost btn-icon-only" title="الإشعارات"><?= icon('bell', 'ic ic-sm') ?></a>
     <a href="?page=profile&tab=settings" class="btn btn-ghost btn-icon-only" title="الإعدادات"><?= icon('settings', 'ic ic-sm') ?></a>
+    <a href="?page=notifications" class="btn btn-ghost btn-icon-only" title="الإشعارات"><?= icon('bell', 'ic ic-sm') ?></a>
   <?php endif; ?>
   <div class="grow"></div>
-  <a href="?" class="brand"><?php if ($logo): ?><img src="<?= e($logo) ?>" alt="<?= e($siteName) ?>"><?php else: ?><?= icon('rocket', 'ic ic-lg') ?><?php endif; ?> <?= e($siteName) ?></a>
   <?php if ($user): ?>
     <a href="?page=wallet" class="wallet-btn" title="محفظتي">
       <div class="wb-icon"><?= icon('wallet', 'ic') ?></div>
@@ -4264,9 +4331,16 @@ function googleTranslateElementInit(){
         <span class="wb-label">المحفظة</span>
       </div>
     </a>
+    <a href="?page=profile" class="topbar-profile" title="ملفي الشخصي">
+      <div class="tp-avatar">
+        <?php if ($user['avatar']): ?><img src="<?= e($user['avatar']) ?>" alt=""><?php else: ?><?= icon('user', 'ic') ?><?php endif; ?>
+      </div>
+      <span class="tp-name"><?= e(mb_strimwidth($user['name'] ?? $user['username'] ?? '', 0, 14, '…')) ?></span>
+    </a>
   <?php else: ?>
     <a href="?page=login" class="btn btn-primary"><?= icon('user', 'ic ic-sm') ?>تسجيل الدخول</a>
   <?php endif; ?>
+  <button class="burger" onclick="toggleSidebar()" title="القائمة"><?= icon('menu', 'ic') ?></button>
 </div>
 
 <div class="overlay" id="overlay" onclick="toggleSidebar()"></div>
@@ -4378,10 +4452,12 @@ function render_product_card(array $p): void
     global $wishlistSet;
     $isFav = !empty($wishlistSet[$p['id']]);
     ?>
-    <div class="card">
-      <?php if ($p['tag']): ?><span class="tag"><?= e($p['tag']) ?></span><?php endif; ?>
-      <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" onclick="toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
-      <a href="?page=product&id=<?= (int)$p['id'] ?>">
+    <?php $prodUrl = '?page=product&id=' . (int)$p['id']; ?>
+    <div class="card" style="position:relative;cursor:pointer" onclick="if(!event.target.closest('a,button')){window.location='<?= e($prodUrl) ?>'}">
+      <a href="<?= e($prodUrl) ?>" class="card-link-overlay" style="position:absolute;inset:0;z-index:1;text-indent:-9999px;overflow:hidden" aria-label="<?= e($p['name']) ?>"><?= e($p['name']) ?></a>
+      <?php if ($p['tag']): ?><span class="tag" style="z-index:3;position:absolute"><?= e($p['tag']) ?></span><?php endif; ?>
+      <button type="button" class="wish-btn<?= $isFav ? ' active' : '' ?>" style="z-index:3;position:absolute" onclick="event.stopPropagation();toggleWishlist(<?= (int)$p['id'] ?>, this)"><?= icon('heart', 'ic-sm') ?></button>
+      <div style="position:relative;z-index:2;pointer-events:none">
         <?php if ($p['image']): ?>
           <img class="pimg" loading="lazy" decoding="async" src="<?= e($p['image']) ?>" alt="<?= e($p['name']) ?>">
         <?php elseif (!empty($p['icon'])): ?>
@@ -4390,7 +4466,7 @@ function render_product_card(array $p): void
           <div class="product-icon-tile"><span class="pit-emoji"><?= e(product_auto_emoji($p['name'] ?? '')) ?></span></div>
         <?php endif; ?>
         <h3><?= e($p['name']) ?></h3>
-      </a>
+      </div>
       <?php if ($p['description']): ?><div class="desc"><?= e(mb_substr($p['description'], 0, 60)) ?></div><?php endif; ?>
       <div>
         <span class="price"><?= e($p['price']) ?>$</span>
@@ -4404,24 +4480,26 @@ function render_product_card(array $p): void
 function render_app_card(array $a): void
 {
     $kindLabel = $a['kind'] === 'game' ? 'لعبة' : 'تطبيق';
+    $appUrl = '?page=app&id=' . (int)$a['id'];
     ?>
-    <div class="card app-card">
-      <span class="tag app-kind-tag"><?= e($kindLabel) ?></span>
-      <a href="?page=app&id=<?= (int)$a['id'] ?>">
+    <div class="card app-card" style="position:relative;cursor:pointer" onclick="if(!event.target.closest('a,button')){window.location='<?= e($appUrl) ?>'}">
+      <a href="<?= e($appUrl) ?>" class="card-link-overlay" style="position:absolute;inset:0;z-index:1;text-indent:-9999px;overflow:hidden" aria-label="<?= e($a['name']) ?>"><?= e($a['name']) ?></a>
+      <span class="tag app-kind-tag" style="z-index:2;position:absolute"><?= e($kindLabel) ?></span>
+      <div style="position:relative;z-index:2;pointer-events:none">
         <?php if ($a['icon']): ?>
           <img class="pimg app-icon-img" loading="lazy" decoding="async" src="<?= e($a['icon']) ?>" alt="<?= e($a['name']) ?>">
         <?php else: ?>
           <div class="icon-wrap"><?= icon($a['kind'] === 'game' ? 'rocket' : 'android', 'ic ic-xl') ?></div>
         <?php endif; ?>
         <h3><?= e($a['name']) ?></h3>
-      </a>
-      <?php if ($a['short_description']): ?><div class="desc"><?= e(mb_substr($a['short_description'], 0, 60)) ?></div><?php endif; ?>
-      <div class="app-stats">
-        <?php if ($a['rating_avg']): ?><span><?= icon('star', 'ic-sm') ?><?= e(number_format((float)$a['rating_avg'], 1)) ?></span><?php endif; ?>
-        <span><?= icon('eye', 'ic-sm') ?><?= number_format((int)$a['views']) ?></span>
-        <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads']) ?></span>
+        <?php if ($a['short_description']): ?><div class="desc"><?= e(mb_substr($a['short_description'], 0, 60)) ?></div><?php endif; ?>
+        <div class="app-stats">
+          <?php if ($a['rating_avg']): ?><span><?= icon('star', 'ic-sm') ?><?= e(number_format((float)$a['rating_avg'], 1)) ?></span><?php endif; ?>
+          <span><?= icon('eye', 'ic-sm') ?><?= number_format((int)$a['views']) ?></span>
+          <span><?= icon('download', 'ic-sm') ?><?= number_format((int)$a['downloads']) ?></span>
+        </div>
       </div>
-      <a class="btn btn-primary buy" href="?page=app&id=<?= (int)$a['id'] ?>"><?= icon('download', 'ic ic-sm') ?>تحميل</a>
+      <a class="btn btn-primary buy" href="<?= e($appUrl) ?>" style="position:relative;z-index:2"><?= icon('download', 'ic ic-sm') ?>تحميل</a>
     </div>
     <?php
 }
@@ -5042,15 +5120,56 @@ case 'app':
       <?php endif; ?>
       <div class="section-title"><?= icon('check', 'ic') ?>معلومات إضافية</div>
       <div class="app-info-grid">
-        <?php if ($a['package_name']): ?><div><span>اسم الحزمة</span><strong><?= e($a['package_name']) ?></strong></div><?php endif; ?>
+        <?php if ($a['package_name']): ?>
+          <?php $gpUrl = 'https://play.google.com/store/apps/details?id=' . urlencode($a['package_name']); ?>
+          <div><span>اسم الحزمة</span><strong style="display:flex;align-items:center;gap:6px"><code style="background:#101a2e;padding:2px 6px;border-radius:5px;font-size:11px"><?= e($a['package_name']) ?></code><a href="<?= e($gpUrl) ?>" target="_blank" rel="nofollow noopener" title="عرض على جوجل بلاي" style="background:linear-gradient(135deg,#0f9d58,#0b8043);color:#fff;width:28px;height:28px;border-radius:8px;display:flex;align-items:center;justify-content:center;flex-shrink:0" aria-label="Google Play"><svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor"><path d="M3.6 1.9v20.2l11.2-10.1L3.6 1.9zm12.9 6.4L6.2 2.5l10 9zm3.1 3.7L22 12l-2.4-1.4-3 2.7 3 2.7zM6.2 21.5l10.3-5.8-2.1-1.9-8.2 7.7z"/></svg></a></strong></div>
+        <?php endif; ?>
         <?php if ($a['min_android']): ?><div><span>أقل إصدار أندرويد</span><strong><?= e($a['min_android']) ?></strong></div><?php endif; ?>
         <?php if ($a['category']): ?><div><span>التصنيف</span><strong><?= e($a['category']) ?></strong></div><?php endif; ?>
-        <?php if ($a['developer_website']): ?><div><span>موقع المطوّر</span><strong><a href="<?= e($a['developer_website']) ?>" target="_blank" rel="nofollow noopener"><?= e($a['developer_website']) ?></a></strong></div><?php endif; ?>
-        <?php if ($a['privacy_policy_url']): ?><div><span>سياسة الخصوصية</span><strong><a href="<?= e($a['privacy_policy_url']) ?>" target="_blank" rel="nofollow noopener">عرض</a></strong></div><?php endif; ?>
+        <?php if ($a['developer_website']): ?><div><span>موقع المطوّر</span><strong><a href="<?= e($a['developer_website']) ?>" target="_blank" rel="nofollow noopener" title="موقع المطوّر" style="background:linear-gradient(135deg,#3b82f6,#1d4ed8);color:#fff;padding:4px 10px;border-radius:8px;font-size:11px;display:inline-flex;align-items:center;gap:4px">🌐 زيارة</a></strong></div><?php endif; ?>
+        <?php if ($a['privacy_policy_url']): ?><div><span>سياسة الخصوصية</span><strong><a href="<?= e($a['privacy_policy_url']) ?>" target="_blank" rel="nofollow noopener" style="background:linear-gradient(135deg,#8b5cf6,#6d28d9);color:#fff;padding:4px 10px;border-radius:8px;font-size:11px;display:inline-flex;align-items:center;gap:4px">🔒 عرض</a></strong></div><?php endif; ?>
       </div>
 
       <div class="app-share-row" style="display:flex;gap:10px;margin:16px 0">
         <button type="button" class="btn btn-ghost" onclick="shareAppLink(this)" data-url="<?= e(app_canonical_url($a)) ?>"><?= icon('send', 'ic-sm') ?>مشاركة</button>
+      </div>
+
+      <!-- ==== قسم مميزات + FAQ + تثبيت + شروط لكل تطبيق (SEO Boost) ==== -->
+      <div class="section-title"><?= icon('star', 'ic') ?> مميزات <?= e($a['name']) ?></div>
+      <div class="app-features-list">
+        <div class="feature-item"><span>⚡</span><div><strong>سرعة عالية في التحميل</strong><small>روابط مباشرة بدون إعلانات مزعجة</small></div></div>
+        <div class="feature-item"><span>🔒</span><div><strong>آمن 100%</strong><small>مفحوص من الفيروسات والبرمجيات الخبيثة</small></div></div>
+        <div class="feature-item"><span>🆓</span><div><strong>مجاني بالكامل</strong><small>بدون رسوم خفية أو اشتراكات</small></div></div>
+        <div class="feature-item"><span>🔄</span><div><strong>محدّث باستمرار</strong><small>آخر إصدار متوفر دائماً</small></div></div>
+        <div class="feature-item"><span>📱</span><div><strong>يدعم أغلب الأجهزة</strong><small>يعمل على أندرويد <?= e($a['min_android'] ?: '5.0') ?>+</small></div></div>
+        <div class="feature-item"><span>🌍</span><div><strong>يدعم اللغة العربية</strong><small>واجهة سهلة ومفهومة</small></div></div>
+      </div>
+
+      <div class="section-title"><?= icon('doc', 'ic') ?> كيفية تثبيت <?= e($a['name']) ?></div>
+      <div class="admin-box" style="line-height:1.9">
+        <ol style="padding-inline-start:20px;color:var(--muted)">
+          <li>اضغط زر <strong>«تحميل الآن»</strong> في أعلى الصفحة.</li>
+          <li>انتظر بضع ثوانٍ حتى يظهر رابط التحميل المباشر.</li>
+          <li>ابدأ التحميل بحجم <strong><?= e($a['size_label'] ?: '—') ?></strong>.</li>
+          <li>افتح إعدادات هاتفك ← <strong>الأمان</strong> ← فعّل «مصادر غير معروفة».</li>
+          <li>افتح ملف APK وابدأ التثبيت.</li>
+          <li>افتح <?= e($a['name']) ?> واستمتع!</li>
+        </ol>
+      </div>
+
+      <div class="section-title"><?= icon('doc', 'ic') ?> الأسئلة الشائعة عن <?= e($a['name']) ?></div>
+      <div class="app-faq">
+        <details><summary>❓ هل <?= e($a['name']) ?> مجاني؟</summary><p>نعم، <?= e($a['name']) ?> متاح للتحميل مجاناً بالكامل من موقعنا بأحدث إصدار (<?= e($a['version'] ?: '1.0') ?>).</p></details>
+        <details><summary>❓ هل التطبيق آمن على هاتفي؟</summary><p>نعم، نفحص كل ملف APK قبل نشره على الموقع للتأكد من خلوّه من الفيروسات. ننصح دائماً بمسح إضافي عبر تطبيق حماية.</p></details>
+        <details><summary>❓ ما الحد الأدنى لإصدار أندرويد المطلوب؟</summary><p>يعمل <?= e($a['name']) ?> على أندرويد <?= e($a['min_android'] ?: '5.0') ?> وما فوق.</p></details>
+        <details><summary>❓ هل يحدّث التطبيق تلقائياً؟</summary><p>لا يحدّث تلقائياً من هذا الموقع. عُد إلى الصفحة لتحميل أحدث إصدار عند نشره.</p></details>
+        <details><summary>❓ هل يحتاج التطبيق روت (Root)؟</summary><p>لا يحتاج <?= e($a['name']) ?> إلى صلاحيات روت للعمل بشكل طبيعي.</p></details>
+        <details><summary>❓ لماذا فشل تثبيت التطبيق؟</summary><p>تأكد من: 1) توافق إصدار أندرويد. 2) وجود مساحة كافية. 3) تفعيل «مصادر غير معروفة» في الإعدادات.</p></details>
+      </div>
+
+      <div class="section-title"><?= icon('shield', 'ic') ?> سياسة الاستخدام</div>
+      <div class="admin-box" style="line-height:1.8;color:var(--muted);font-size:13.5px">
+        <p>تحميل <?= e($a['name']) ?> من موقعنا يخضع لسياسة الخصوصية العامة للموقع. لا نجمع أي بيانات شخصية عند تحميل التطبيق. الملف يُقدَّم كما هو، والتطبيق نفسه له سياسة خصوصية خاصة به من المطور. لأي مشكلة أو بلاغ راسلنا عبر <a href="?page=contact" style="color:var(--accent2)">تواصل معنا</a>. لمعلومات أكثر راجع <a href="?page=privacy" style="color:var(--accent2)">سياسة الخصوصية</a> و<a href="?page=terms" style="color:var(--accent2)">شروط الاستخدام</a>.</p>
       </div>
 
       <?php
@@ -5062,6 +5181,16 @@ case 'app':
       <div class="section-title"><?= icon('rocket', 'ic') ?>تطبيقات مشابهة</div>
       <div class="grid apps-grid">
         <?php foreach ($relatedApps as $ra) render_app_card($ra); ?>
+      </div>
+      <?php endif; ?>
+
+      <?php
+      $mostDownloaded = db()->query("SELECT * FROM apps WHERE status='published' ORDER BY downloads DESC LIMIT 6")->fetchAll();
+      if ($mostDownloaded):
+      ?>
+      <div class="section-title"><?= icon('chart', 'ic') ?> الأكثر تحميلاً</div>
+      <div class="grid apps-grid">
+        <?php foreach ($mostDownloaded as $md) render_app_card($md); ?>
       </div>
       <?php endif; ?>
     </div>
@@ -5895,12 +6024,27 @@ case 'article-payment-methods':
 case 'admin':
     require_admin();
     $tab = $_GET['tab'] ?? 'dashboard';
+    $adminTabs = ['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'categories'=>['pages','📂 الأقسام'],'packages'=>['star','🎁 الباقات'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'wallet_config'=>['coin','⚙️ المحفظة'],'notifications_config'=>['bell','🔔 إشعارات'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'ads'=>['megaphone','📣 إعلانات'],'settings'=>['settings','الإعدادات']];
     ?>
+    <button class="admin-sidebar-toggle" onclick="toggleAdminDrawer()" title="القائمة الجانبية"><?= icon('menu', 'ic') ?></button>
+    <div class="admin-sidebar-backdrop" id="adminBackdrop" onclick="toggleAdminDrawer()"></div>
+    <aside class="admin-sidebar-drawer" id="adminDrawer">
+      <h3><?= icon('hat', 'ic') ?> لوحة الإدارة</h3>
+      <?php foreach ($adminTabs as $k => $t): ?>
+        <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
+      <?php endforeach; ?>
+    </aside>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>['hat','لوحة البيانات'],'apps'=>['android','تطبيقات وألعاب'],'products'=>['cart','المنتجات (المتجر)'],'categories'=>['pages','📂 الأقسام'],'packages'=>['star','🎁 الباقات'],'orders'=>['orders','الطلبات'],'wallets'=>['bank','المحافظ'],'wallet_config'=>['coin','⚙️ المحفظة'],'notifications_config'=>['bell','🔔 إشعارات'],'banners'=>['image','البنرات'],'homepage'=>['menu','تخطيط الرئيسية'],'pages'=>['pages','الصفحات'],'users'=>['users','المستخدمون'],'suggestions'=>['megaphone','اقتراحات المنتجات'],'reports'=>['shield','بلاغات الروابط'],'security'=>['shield','الحماية والأمان'],'bots'=>['terminal','بوتات وسكربتات'],'ads'=>['megaphone','📣 إعلانات'],'settings'=>['settings','الإعدادات']] as $k=>$t): ?>
+      <?php foreach ($adminTabs as $k => $t): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= icon($t[0], 'ic-sm') ?><?= $t[1] ?></a>
       <?php endforeach; ?>
     </div>
+    <script>
+    function toggleAdminDrawer(){
+      document.getElementById('adminDrawer').classList.toggle('open');
+      document.getElementById('adminBackdrop').classList.toggle('open');
+    }
+    </script>
 
     <?php if ($tab === 'dashboard'):
         $users_count = db()->query("SELECT COUNT(*) c FROM users")->fetch()['c'];
