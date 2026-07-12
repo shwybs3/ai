@@ -3,3 +3,6 @@ uploads/products/*
 !uploads/products/.gitkeep
 *.sqlite
 *.log
+__pycache__/
+*.pyc
+*.pyo
