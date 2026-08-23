@@ -12,6 +12,7 @@ if (!file_exists(__DIR__ . '/config.php')) {
     die('يرجى إنشاء config.php من config.sample.php أولاً.');
 }
 require __DIR__ . '/config.php';
+require __DIR__ . '/includes/seo_index.php';
 
 // ثوابت اختيارية قد لا تكون موجودة في config.php القديم
 foreach ([
@@ -187,6 +188,22 @@ function migrate(): void
         sort_order INT NOT NULL DEFAULT 0,
         active TINYINT NOT NULL DEFAULT 1
     )$engine",
+    "CREATE TABLE IF NOT EXISTS index_log (
+        id $id,
+        url VARCHAR(600) NOT NULL,
+        engine VARCHAR(40) NOT NULL,
+        status VARCHAR(20) NOT NULL,
+        http_code INT NOT NULL DEFAULT 0,
+        message VARCHAR(400) NULL,
+        created_at $ts
+    )$engine",
+    "CREATE TABLE IF NOT EXISTS google_admin_tokens (
+        service VARCHAR(30) PRIMARY KEY,
+        access_token TEXT NOT NULL,
+        refresh_token TEXT NULL,
+        expires_at " . (DB_DRIVER === 'sqlite' ? 'TEXT' : 'DATETIME') . " NULL,
+        scope VARCHAR(500) NULL
+    )$engine",
     ];
 
     foreach ($tables as $sql) $pdo->exec($sql);
@@ -240,6 +257,11 @@ function migrate(): void
         'openrouter_model' => 'openai/gpt-4o-mini',
         // قياسات البنرات (نص إرشادي للأدمن)
         'banner_size_hint' => '1200×400 بكسل (نسبة 3:1) — صيغة JPG/PNG/WebP',
+        // IndexNow — نفس المفتاح المستخدم عبر جميع مواقع الشبكة، لا يُولَّد عشوائياً
+        'indexnow_key' => 'd12a9522b79d420992b2f46d4ab34062',
+        'auto_index_on_publish' => '1',
+        'google_indexing_enabled' => '0',
+        'gsc_site_url' => '',
     ];
     $stmt = $pdo->prepare("INSERT INTO settings (k, v) SELECT ?, ? WHERE NOT EXISTS (SELECT 1 FROM settings WHERE k = ?)");
     foreach ($defaults as $k => $v) $stmt->execute([$k, $v, $k]);
@@ -484,6 +506,21 @@ if ($action === 'google_callback') {
     exit;
 }
 
+if ($action === 'admin_google_callback') {
+    require_admin();
+    $resp = gadmin_exchange_code($_GET['code'] ?? '');
+    flash(!empty($resp['access_token']) ? 'تم ربط حساب Search Console بنجاح.' : ('فشل الربط: ' . e($resp['error_description'] ?? ($resp['error'] ?? 'خطأ غير معروف'))), !empty($resp['access_token']) ? 'success' : 'error');
+    redirect('?page=admin&tab=indexing');
+}
+
+if ($action === 'admin_google_disconnect') {
+    require_admin();
+    csrf_check();
+    gadmin_disconnect();
+    flash('تم فصل حساب Search Console.');
+    redirect('?page=admin&tab=indexing');
+}
+
 if ($action === 'logout') { logout(); redirect('?'); }
 
 // التقاط رمز الإحالة وتخزينه لحين التسجيل
@@ -710,6 +747,7 @@ if ($action && str_starts_with($action, 'admin_')) {
                 $st = db()->prepare("SELECT * FROM products WHERE id=?"); $st->execute([$id]);
                 tg_broadcast_product($st->fetch());
             }
+            indexnow_ping(rtrim(SITE_URL, '/') . '/');
             flash('تم حفظ المنتج بنجاح.');
             redirect('?page=admin&tab=products');
 
@@ -777,6 +815,7 @@ if ($action && str_starts_with($action, 'admin_')) {
         case 'admin_save_banner':
             db()->prepare("INSERT INTO banners (image, link, title, size_label) VALUES (?,?,?,?)")
                 ->execute([$_POST['image'], $_POST['link'] ?? '', $_POST['title'] ?? '', $_POST['size_label'] ?? '']);
+            indexnow_ping(rtrim(SITE_URL, '/') . '/');
             redirect('?page=admin&tab=banners');
 
         case 'admin_save_chat_group':
@@ -833,6 +872,7 @@ if ($action && str_starts_with($action, 'admin_')) {
                 ? "INSERT INTO pages (slug, content) VALUES (?,?) ON CONFLICT(slug) DO UPDATE SET content=?"
                 : "INSERT INTO pages (slug, content) VALUES (?,?) ON DUPLICATE KEY UPDATE content=?")
                 ->execute([$_POST['slug'], $_POST['content'], $_POST['content']]);
+            indexnow_ping(rtrim(SITE_URL, '/') . '/?page=' . rawurlencode($_POST['slug']));
             flash('تم حفظ الصفحة.');
             redirect('?page=admin&tab=pages');
 
@@ -842,6 +882,23 @@ if ($action && str_starts_with($action, 'admin_')) {
             if ($_POST['op'] === 'unban') db()->prepare("UPDATE users SET is_banned=0 WHERE id=?")->execute([$uid]);
             if ($_POST['op'] === 'addpoints') add_points($uid, (int)$_POST['points'], 'admin', 'إضافة يدوية من الإدارة');
             redirect('?page=admin&tab=users');
+
+        case 'admin_index_republish_key':
+            $file = indexnow_keyfile();
+            flash($file ? 'تم نشر ملف المفتاح في جذر الموقع.' : 'تعذّر كتابة ملف المفتاح — تحقق من صلاحيات المجلد.', $file ? 'success' : 'error');
+            redirect('?page=admin&tab=indexing');
+
+        case 'admin_index_submit_all':
+            seo_write_sitemap_file();
+            $res = indexnow_submit(seo_public_urls());
+            $ok = count(array_filter($res, fn($r) => !empty($r['ok'])));
+            $gsc = gadmin_is_connected() ? gsc_sitemap_submit() : null;
+            flash("تم الإرسال إلى $ok من " . count(SH_INDEXNOW_ENDPOINTS) . ' محركات IndexNow' . ($gsc ? ($gsc['ok'] ? '، وتم قبول خريطة الموقع من Search Console.' : '، لكن Search Console رفض خريطة الموقع — راجع سجل الإرسال.') : '.'));
+            redirect('?page=admin&tab=indexing');
+
+        case 'admin_index_inspect':
+            $_SESSION['gsc_inspect_result'] = gsc_inspect_url(trim($_POST['inspect_url'] ?? ''));
+            redirect('?page=admin&tab=indexing');
 
         default:
             die('إجراء غير معروف.');
@@ -1423,7 +1480,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
+      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','indexing'=>'🛰️ الفهرسة','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= $label ?></a>
       <?php endforeach; ?>
     </div>
@@ -1746,6 +1803,110 @@ case 'admin':
         </table>
       </div>
 
+    <?php elseif ($tab === 'indexing'):
+        $inKey = indexnow_key();
+        $inKeyOk = file_exists(seo_docroot() . '/' . $inKey . '.txt');
+        $gConnected = gadmin_is_connected();
+        $inspect = $_SESSION['gsc_inspect_result'] ?? null; unset($_SESSION['gsc_inspect_result']);
+        $log = db()->query("SELECT * FROM index_log ORDER BY created_at DESC LIMIT 40")->fetchAll();
+    ?>
+      <div class="admin-box">
+        <h3 style="margin-top:0">🔑 مفتاح IndexNow</h3>
+        <p style="color:var(--muted);font-size:13px">مفتاح واحد مستخدم عبر كل مواقع الشبكة — لا تُغيّره إلا إذا طُلب منك ذلك صراحة.</p>
+        <div class="formrow">
+          <input type="text" value="<?= e($inKey) ?>" readonly onclick="this.select()">
+          <span><?= $inKeyOk ? '✅ منشور في جذر الموقع' : '⚠️ غير منشور — اضغط الزر لنشره' ?></span>
+        </div>
+        <?php if ($inKeyOk): ?>
+        <p style="font-size:12px;margin-top:6px"><a href="<?= e(rtrim(SITE_URL, '/') . '/' . $inKey . '.txt') ?>" target="_blank" style="color:var(--accent2)">تحقق: <?= e(rtrim(SITE_URL, '/') . '/' . $inKey . '.txt') ?></a></p>
+        <?php endif; ?>
+        <form method="post" action="?action=admin_index_republish_key" style="margin-top:10px">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <button class="btn btn-ghost">إعادة نشر ملف المفتاح</button>
+        </form>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">🌐 Google Search Console</h3>
+        <p style="color:var(--muted);font-size:13px">IndexNow لا يصل جوجل إطلاقاً — Bing وYandex فقط. الربط هنا يستخدم Search Console API الحقيقي (sitemaps.submit + URL Inspection)، منفصل عن تسجيل دخول المستخدمين بجوجل.</p>
+        <?php if (!GOOGLE_CLIENT_ID): ?>
+          <p style="color:var(--danger)">أضف GOOGLE_CLIENT_ID و GOOGLE_CLIENT_SECRET في config.php أولاً (نفس القيم المستخدمة لتسجيل الدخول).</p>
+        <?php elseif (!$gConnected): ?>
+          <a class="btn btn-primary" href="<?= e(gadmin_authorize_url()) ?>">ربط حساب Search Console</a>
+          <p style="font-size:12px;color:var(--muted);margin-top:8px">أضف هذا الرابط ضمن "Authorized redirect URIs" في Google Cloud Console:<br><code><?= e(gadmin_redirect_uri()) ?></code></p>
+        <?php else: ?>
+          <p>✅ حساب Search Console مربوط.</p>
+          <form method="post" action="?action=admin_google_disconnect" onsubmit="return confirm('فصل الحساب؟')">
+            <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+            <button class="btn btn-ghost">فصل الحساب</button>
+          </form>
+        <?php endif; ?>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">📤 إرسال يدوي</h3>
+        <form method="post" action="?action=admin_index_submit_all" onsubmit="return confirm('إرسال جميع الروابط العامة الآن؟')">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <button class="btn btn-primary">إرسال كل الروابط الآن (<?= count(seo_public_urls()) ?>)</button>
+        </form>
+        <form method="post" action="?action=admin_index_inspect" style="margin-top:14px">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <input type="text" name="inspect_url" placeholder="<?= e(rtrim(SITE_URL,'/')) ?>/" value="<?= e($_POST['inspect_url'] ?? '') ?>">
+            <button class="btn btn-ghost">فحص حالة الفهرسة في جوجل</button>
+          </div>
+        </form>
+        <?php if ($inspect !== null): ?>
+          <?php if (!empty($inspect['error'])): ?>
+            <p style="color:var(--danger);margin-top:10px"><?= e(is_array($inspect['error']) ? ($inspect['error']['message'] ?? 'خطأ') : $inspect['error']) ?></p>
+          <?php else: $r = $inspect['inspectionResult']['indexStatusResult'] ?? []; ?>
+            <div style="margin-top:10px;font-size:13px;line-height:2">
+              الحالة: <strong><?= e($r['coverageState'] ?? '—') ?></strong><br>
+              النتيجة: <strong><?= e($r['verdict'] ?? '—') ?></strong><br>
+              آخر زحف: <?= !empty($r['lastCrawlTime']) ? e(date('Y-m-d H:i', strtotime($r['lastCrawlTime']))) : 'لم يُزحف بعد' ?>
+            </div>
+          <?php endif; ?>
+        <?php endif; ?>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">⚙️ إعدادات الفهرسة</h3>
+        <form method="post" action="?action=admin_save_settings" class="formrow">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div>
+            <label>Search Console site URL</label>
+            <input type="text" name="gsc_site_url" value="<?= e(setting('gsc_site_url', '')) ?>" placeholder="sc-domain:yassota.com أو <?= e(rtrim(SITE_URL,'/')) ?>/">
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="hidden" name="auto_index_on_publish" value="0">
+            <input type="checkbox" id="autoidx" name="auto_index_on_publish" value="1" <?= (int)setting('auto_index_on_publish', 1) ? 'checked' : '' ?> style="width:auto">
+            <label for="autoidx" style="margin:0">إرسال تلقائي عند كل نشر/تعديل</label>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px">
+            <input type="hidden" name="google_indexing_enabled" value="0">
+            <input type="checkbox" id="gidx" name="google_indexing_enabled" value="1" <?= (int)setting('google_indexing_enabled', 0) ? 'checked' : '' ?> style="width:auto">
+            <label for="gidx" style="margin:0">استدعاء Google Indexing API أيضاً (JobPosting/BroadcastEvent فقط رسمياً)</label>
+          </div>
+          <button class="btn btn-primary">حفظ</button>
+        </form>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">📋 سجل الإرسال</h3>
+        <table>
+          <tr><th>الوقت</th><th>الرابط</th><th>المحرك</th><th>النتيجة</th></tr>
+          <?php foreach ($log as $row): ?>
+          <tr>
+            <td style="white-space:nowrap;font-size:12px"><?= e(date('m-d H:i', strtotime($row['created_at']))) ?></td>
+            <td style="max-width:220px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px"><?= e($row['url']) ?></td>
+            <td style="font-size:12px"><?= e($row['engine']) ?></td>
+            <td style="font-size:12px"><?= $row['status'] === 'ok' ? '✅ ' . (int)$row['http_code'] : '❌ ' . e($row['message']) ?></td>
+          </tr>
+          <?php endforeach; ?>
+          <?php if (!$log): ?><tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">لا يوجد إرسال بعد.</td></tr><?php endif; ?>
+        </table>
+      </div>
+
     <?php elseif ($tab === 'settings'): ?>
       <div class="admin-box">
         <form method="post" action="?action=admin_save_settings" class="formrow">
@@ -1798,7 +1959,7 @@ default:
   <a href="?page=orders" class="<?= $page === 'orders' ? 'active' : '' ?>"><span class="bi">📦</span>طلباتي</a>
 </div>
 
-<footer>© <?= date('Y') ?> <?= e($siteName) ?> — جميع الحقوق محفوظة</footer>
+<footer>© <?= date('Y') ?> <?= e($siteName) ?> — جميع الحقوق محفوظة<?php $ink = indexnow_key(); if ($ink !== ''): ?> · <a href="<?= e(rtrim(SITE_URL, '/') . '/' . $ink . '.txt') ?>" rel="nofollow" style="opacity:.5;color:inherit"><?= e($ink) ?></a><?php endif; ?></footer>
 
 <?php if (!isset($_COOKIE['policy_accepted']) || $_COOKIE['policy_accepted'] !== setting('policy_version', '1')): ?>
 <div class="policy-modal" id="policyModal">
