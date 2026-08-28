@@ -33,7 +33,7 @@ function yassota_nav(): array
     return [
         ['key' => 'home',     'label' => 'الرئيسية',  'href' => '/'],
         ['key' => 'tools',    'label' => 'أدوات',     'href' => '/tools.php'],
-        ['key' => 'articles', 'label' => 'مقالات',    'href' => '/?page=articles'],
+        ['key' => 'articles', 'label' => 'مقالات',    'href' => '/articles.php'],
         ['key' => 'store',    'label' => 'المتجر',    'href' => '/?page=store'],
         ['key' => 'about',    'label' => 'من نحن',    'href' => '/?page=about'],
         ['key' => 'contact',  'label' => 'تواصل',     'href' => '/?page=contact'],
@@ -152,7 +152,7 @@ function yassota_footer(): void
       </div>
       <div>
         <h4>الموقع</h4>
-        <a href="/?page=articles">المقالات</a>
+        <a href="/articles.php">المقالات</a>
         <a href="/?page=store">المتجر</a>
         <a href="/?page=about">من نحن</a>
         <a href="/?page=contact">تواصل معنا</a>

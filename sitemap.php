@@ -17,6 +17,7 @@
 
 $rootConfig = __DIR__ . '/config.php';
 if (is_file($rootConfig)) require_once $rootConfig;
+if (is_file(__DIR__ . '/includes/bootstrap.php')) require_once __DIR__ . '/includes/bootstrap.php';
 if (is_file(__DIR__ . '/tools_catalog.php')) require_once __DIR__ . '/tools_catalog.php';
 
 header('Content-Type: application/xml; charset=utf-8');
@@ -51,7 +52,7 @@ if ($type === 'main') {
     $urls = [
         ['/', '1.0', 'daily'],
         ['/tools.php', '0.9', 'daily'],
-        ['/?page=articles', '0.8', 'daily'],
+        ['/articles.php', '0.8', 'daily'],
         ['/?page=store', '0.8', 'weekly'],
         ['/?page=about', '0.4', 'monthly'],
         ['/?page=contact', '0.4', 'monthly'],
@@ -64,6 +65,16 @@ if ($type === 'main') {
         foreach (yassota_tools_meta() as $t) {
             echo "  <url><loc>" . sm_x($base . '/tools.php?t=' . $t['id']) . "</loc><changefreq>weekly</changefreq><priority>0.7</priority></url>\n";
         }
+    }
+    // every published article
+    if (function_exists('db')) {
+        try {
+            $arts = db()->query("SELECT slug, updated_at FROM articles WHERE status='published' ORDER BY id DESC LIMIT 20000");
+            foreach ($arts as $a) {
+                $mod = date('Y-m-d', strtotime($a['updated_at'] ?: 'now'));
+                echo "  <url><loc>" . sm_x($base . '/articles.php?slug=' . $a['slug']) . "</loc><lastmod>{$mod}</lastmod><changefreq>monthly</changefreq><priority>0.7</priority></url>\n";
+            }
+        } catch (Throwable $e) { /* table may not exist yet */ }
     }
     // category pages
     foreach (['text','math','color','dev','seo','security','convert','image','product','social'] as $c) {

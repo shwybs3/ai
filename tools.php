@@ -15,6 +15,7 @@
 
 $rootConfig = __DIR__ . '/config.php';
 if (is_file($rootConfig)) require_once $rootConfig;
+if (is_file(__DIR__ . '/includes/bootstrap.php')) require_once __DIR__ . '/includes/bootstrap.php';
 require_once __DIR__ . '/partials.php';
 if (is_file(__DIR__ . '/tools_catalog.php')) require __DIR__ . '/tools_catalog.php';
 

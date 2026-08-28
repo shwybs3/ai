@@ -18,6 +18,7 @@ header('Content-Type: application/json; charset=utf-8');
 
 $rootConfig = __DIR__ . '/config.php';
 if (is_file($rootConfig)) require_once $rootConfig;
+if (is_file(__DIR__ . '/includes/bootstrap.php')) require_once __DIR__ . '/includes/bootstrap.php';
 
 /* read email from JSON body or form */
 $raw = file_get_contents('php://input');

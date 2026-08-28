@@ -197,6 +197,29 @@ nav.main-nav a.active::after{content:'';position:absolute;left:13px;right:13px;b
 .cat-product { background: linear-gradient(135deg,#f59e0b,#f97316) }
 .cat-social  { background: linear-gradient(135deg,#0ea5e9,#6366f1) }
 
+/* ── Article / long-form reading ── */
+.article-cover{width:100%;aspect-ratio:21/9;object-fit:cover;border-radius:16px;margin:18px 0;background:var(--grad-brand)}
+.article-meta{display:flex;gap:14px;flex-wrap:wrap;align-items:center;font-size:13px;color:var(--muted);margin:10px 0}
+.article-meta .dot{width:4px;height:4px;border-radius:50%;background:var(--muted)}
+.article-body{font-size:17px;line-height:2;color:var(--ink-soft);max-width:760px}
+.article-body h2{font-size:24px;color:var(--ink);margin:36px 0 14px;padding-top:8px}
+.article-body h3{font-size:19px;color:var(--ink);margin:26px 0 10px}
+.article-body p{margin:0 0 18px}
+.article-body ul,.article-body ol{margin:0 0 18px;padding-inline-start:26px}
+.article-body li{margin-bottom:8px}
+.article-body strong{color:var(--ink);font-weight:800}
+.article-body blockquote{margin:22px 0;padding:16px 20px;border-inline-start:4px solid var(--brand1);background:#f8f9ff;border-radius:0 12px 12px 0;font-size:16px;color:var(--ink-soft)}
+.article-body a{color:var(--brand1);font-weight:700;text-decoration:underline;text-underline-offset:3px}
+.acard{background:var(--card);border:1px solid var(--line);border-radius:16px;overflow:hidden;display:flex;flex-direction:column;transition:transform .18s ease,box-shadow .18s ease}
+.acard:hover{transform:translateY(-3px);box-shadow:var(--shadow-lg)}
+.acard-cover{width:100%;aspect-ratio:16/9;object-fit:cover;background:var(--grad-brand)}
+.acard-body{padding:16px;display:flex;flex-direction:column;gap:8px;flex:1}
+.acard-cat{font-size:11px;font-weight:800;color:var(--brand1);text-transform:uppercase;letter-spacing:.04em}
+.acard-body h3{font-size:16px;line-height:1.4;margin:0}
+.acard-excerpt{font-size:13px;color:var(--muted);line-height:1.6;flex:1;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden}
+.grid-articles{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:20px}
+@media (max-width:560px){.grid-articles{grid-template-columns:1fr}}
+
 /* ── Range input ── */
 input[type=range]{width:100%;accent-color:var(--brand1)}
 input[type=color]{width:52px;height:38px;border:1px solid var(--line);border-radius:8px;cursor:pointer;padding:2px}

@@ -12,10 +12,12 @@ if (!file_exists(__DIR__ . '/config.php')) {
     die('يرجى إنشاء config.php من config.sample.php أولاً.');
 }
 require __DIR__ . '/config.php';
+require __DIR__ . '/includes/bootstrap.php';   // db()/e()/setting()/is_admin()/csrf_*() — shared by every entry file
 require __DIR__ . '/includes/error_logger.php';
 error_logger_boot();
 require __DIR__ . '/includes/seo_index.php';
 require __DIR__ . '/includes/subdomain_factory.php';
+require __DIR__ . '/includes/articles.php';
 require __DIR__ . '/subsite.php';
 
 // ثوابت اختيارية قد لا تكون موجودة في config.php القديم
@@ -25,27 +27,8 @@ foreach ([
 
 /* ======================================================================
    1) DB CONNECTION + AUTO SCHEMA
+   (db() now lives in includes/bootstrap.php, required above)
    ====================================================================== */
-function db(): PDO
-{
-    static $pdo = null;
-    if ($pdo) return $pdo;
-    try {
-        if (DB_DRIVER === 'sqlite') {
-            $pdo = new PDO('sqlite:' . __DIR__ . '/database.sqlite');
-        } else {
-            $dsn = 'mysql:host=' . DB_HOST . ';dbname=' . DB_NAME . ';charset=utf8mb4';
-            $pdo = new PDO($dsn, DB_USER, DB_PASS, [
-                PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION,
-            ]);
-        }
-        $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
-    } catch (Throwable $e) {
-        die('فشل الاتصال بقاعدة البيانات: ' . htmlspecialchars($e->getMessage()));
-    }
-    return $pdo;
-}
-
 function migrate(): void
 {
     $pdo = db();
@@ -276,12 +259,15 @@ function migrate(): void
     }
 }
 migrate();
-sf_migrate();               // subsites + factory_log tables for the subdomain network
+sf_migrate();                // subsites + factory_log tables for the subdomain network
+articles_migrate();          // articles table for the blog
 
 /* ======================================================================
    2) HELPERS
+   (e()/setting()/set_setting()/current_user()/is_admin()/require_admin()/
+   logout()/redirect()/csrf_token()/csrf_check() now live in
+   includes/bootstrap.php, required above — shared by every entry file)
    ====================================================================== */
-function e($s): string { return htmlspecialchars((string)$s, ENT_QUOTES, 'UTF-8'); }
 
 /**
  * شعار Yassota الافتراضي (SVG مدمج) — يظهر دائماً حتى بدون رفع صورة.
@@ -301,48 +287,6 @@ function brand_logo_svg(int $size = 36): string
         . '</svg>';
 }
 
-function setting(string $k, $default = '')
-{
-    static $cache = [];
-    if (isset($cache[$k])) return $cache[$k];
-    $st = db()->prepare("SELECT v FROM settings WHERE k = ?");
-    $st->execute([$k]);
-    $row = $st->fetch();
-    return $cache[$k] = ($row ? $row['v'] : $default);
-}
-function set_setting(string $k, $v): void
-{
-    $st = db()->prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON DUPLICATE KEY UPDATE v = ?");
-    if (DB_DRIVER === 'sqlite') {
-        $st = db()->prepare("INSERT INTO settings (k, v) VALUES (?, ?) ON CONFLICT(k) DO UPDATE SET v = ?");
-    }
-    $st->execute([$k, $v, $v]);
-}
-
-function current_user(): ?array
-{
-    if (empty($_SESSION['uid'])) return null;
-    static $u = null;
-    if ($u) return $u;
-    $st = db()->prepare("SELECT * FROM users WHERE id = ?");
-    $st->execute([$_SESSION['uid']]);
-    $u = $st->fetch() ?: null;
-    if ($u && $u['is_banned']) { logout(); return null; }
-    return $u;
-}
-function is_admin(): bool
-{
-    $u = current_user();
-    return $u && $u['role'] === 'admin';
-}
-function require_admin(): void
-{
-    if (!is_admin()) { http_response_code(403); die('🚫 ممنوع — هذه الصفحة للإدارة فقط.'); }
-}
-function logout(): void { $_SESSION = []; session_destroy(); }
-
-function redirect(string $url): void { header("Location: $url"); exit; }
-
 function flash(?string $msg = null, string $type = 'success')
 {
     if ($msg !== null) { $_SESSION['flash'] = ['msg' => $msg, 'type' => $type]; return; }
@@ -357,17 +301,6 @@ function add_points(int $uid, int $amount, string $source, string $desc = ''): v
     db()->prepare("UPDATE users SET points = points + ? WHERE id = ?")->execute([$amount, $uid]);
     db()->prepare("INSERT INTO earn_logs (user_id, amount, source, description) VALUES (?,?,?,?)")
         ->execute([$uid, $amount, $source, $desc]);
-}
-
-function csrf_token(): string
-{
-    if (empty($_SESSION['csrf'])) $_SESSION['csrf'] = bin2hex(random_bytes(16));
-    return $_SESSION['csrf'];
-}
-function csrf_check(): void
-{
-    $t = $_POST['csrf'] ?? $_GET['csrf'] ?? '';
-    if (!$t || !hash_equals($_SESSION['csrf'] ?? '', $t)) { http_response_code(419); die('انتهت صلاحية الجلسة، أعد تحميل الصفحة.'); }
 }
 
 /* ---- OpenRouter AI helpers ---- */
@@ -946,6 +879,31 @@ if ($action && str_starts_with($action, 'admin_')) {
             if ($id) db()->prepare('DELETE FROM subsites WHERE id=?')->execute([$id]);
             flash('تم حذف الدومين الفرعي من القائمة.');
             redirect('?page=admin&tab=factory');
+
+        /* ---- Articles ---- */
+        case 'admin_save_article':
+            $slug = trim($_POST['slug'] ?? '') ?: article_slugify(trim($_POST['title'] ?? ''));
+            $id = article_upsert([
+                'slug' => $slug,
+                'title' => trim($_POST['title'] ?? ''),
+                'excerpt' => trim($_POST['excerpt'] ?? ''),
+                'content' => $_POST['content'] ?? '',
+                'cover' => trim($_POST['cover'] ?? ''),
+                'category' => trim($_POST['category'] ?? ''),
+                'keywords' => trim($_POST['keywords'] ?? ''),
+                'lang' => ($_POST['lang'] ?? 'ar') === 'en' ? 'en' : 'ar',
+                'status' => ($_POST['status'] ?? 'published') === 'draft' ? 'draft' : 'published',
+            ]);
+            if (($_POST['status'] ?? 'published') !== 'draft') {
+                indexnow_ping(rtrim(SITE_URL, '/') . '/articles.php?slug=' . rawurlencode($slug));
+            }
+            flash('تم حفظ المقال.');
+            redirect('?page=admin&tab=articles');
+
+        case 'admin_delete_article':
+            article_delete((int)($_POST['id'] ?? 0));
+            flash('تم حذف المقال.');
+            redirect('?page=admin&tab=articles');
 
         default:
             die('إجراء غير معروف.');
@@ -1528,7 +1486,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','indexing'=>'🛰️ الفهرسة','factory'=>'🏭 مصنع الدومينات','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
+      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','articles'=>'📰 المقالات','indexing'=>'🛰️ الفهرسة','factory'=>'🏭 مصنع الدومينات','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= $label ?></a>
       <?php endforeach; ?>
     </div>
@@ -1952,6 +1910,61 @@ case 'admin':
           </tr>
           <?php endforeach; ?>
           <?php if (!$log): ?><tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">لا يوجد إرسال بعد.</td></tr><?php endif; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'articles'):
+      $editId = (int)($_GET['edit'] ?? 0);
+      $editArticle = null;
+      if ($editId) { $st = db()->prepare('SELECT * FROM articles WHERE id=?'); $st->execute([$editId]); $editArticle = $st->fetch(); }
+      $allArticles = db()->query('SELECT id,slug,title,category,status,views,created_at FROM articles ORDER BY id DESC LIMIT 200')->fetchAll();
+      ?>
+      <div class="admin-box">
+        <h3 style="margin-top:0"><?= $editArticle ? '✏️ تعديل مقال' : '📝 مقال جديد' ?></h3>
+        <form method="post" action="?action=admin_save_article">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <div><label>العنوان</label><input type="text" name="title" required value="<?= e($editArticle['title'] ?? '') ?>"></div>
+            <div><label>الرابط (slug) — اتركه فارغًا للتوليد التلقائي</label><input type="text" name="slug" value="<?= e($editArticle['slug'] ?? '') ?>" placeholder="my-article-title"></div>
+            <div><label>التصنيف</label><input type="text" name="category" value="<?= e($editArticle['category'] ?? '') ?>" placeholder="أدوات الويب، سيو، إنتاجية…"></div>
+          </div>
+          <div class="formrow">
+            <div><label>صورة الغلاف (رابط)</label><input type="text" name="cover" value="<?= e($editArticle['cover'] ?? '') ?>" placeholder="https://…"></div>
+            <div><label>الكلمات المفتاحية</label><input type="text" name="keywords" value="<?= e($editArticle['keywords'] ?? '') ?>"></div>
+            <div><label>الحالة</label>
+              <select name="status">
+                <option value="published" <?= ($editArticle['status'] ?? 'published') === 'published' ? 'selected' : '' ?>>منشور</option>
+                <option value="draft" <?= ($editArticle['status'] ?? '') === 'draft' ? 'selected' : '' ?>>مسودة</option>
+              </select>
+            </div>
+          </div>
+          <label>مقتطف قصير (لصفحة القائمة وميتا الوصف)</label>
+          <textarea name="excerpt" rows="2" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:var(--text);margin-bottom:10px"><?= e($editArticle['excerpt'] ?? '') ?></textarea>
+          <label>المحتوى (HTML — h2/h3/p/ul/li/blockquote)</label>
+          <textarea name="content" rows="14" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:var(--text);font-family:monospace;font-size:13px;margin-bottom:10px"><?= e($editArticle['content'] ?? '') ?></textarea>
+          <?php if ($editArticle): ?><input type="hidden" name="id" value="<?= (int)$editArticle['id'] ?>"><?php endif; ?>
+          <button class="btn btn-primary"><?= $editArticle ? 'حفظ التعديلات' : 'نشر المقال' ?></button>
+          <?php if ($editArticle): ?><a class="btn btn-ghost" href="?page=admin&tab=articles">إلغاء</a><?php endif; ?>
+        </form>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">📰 كل المقالات (<?= count($allArticles) ?>)</h3>
+        <table>
+          <tr><th>العنوان</th><th>التصنيف</th><th>الحالة</th><th>مشاهدات</th><th></th></tr>
+          <?php foreach ($allArticles as $a): ?>
+          <tr>
+            <td style="font-size:12px"><a href="/articles.php?slug=<?= e($a['slug']) ?>" target="_blank" style="color:var(--accent2)"><?= e($a['title']) ?></a></td>
+            <td style="font-size:12px"><?= e($a['category']) ?></td>
+            <td><span class="badge <?= $a['status']==='published'?'approved':'pending' ?>"><?= $a['status']==='published'?'منشور':'مسودة' ?></span></td>
+            <td style="font-size:12px"><?= (int)$a['views'] ?></td>
+            <td style="white-space:nowrap">
+              <a class="btn btn-ghost" style="padding:4px 10px;font-size:12px" href="?page=admin&tab=articles&edit=<?= (int)$a['id'] ?>">تعديل</a>
+              <form method="post" action="?action=admin_delete_article" style="display:inline" onsubmit="return confirm('حذف المقال؟')"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$a['id'] ?>"><button class="btn btn-danger" style="padding:4px 10px;font-size:12px">حذف</button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+          <?php if (!$allArticles): ?><tr><td colspan="5" style="text-align:center;color:var(--muted);padding:20px">لا توجد مقالات بعد.</td></tr><?php endif; ?>
         </table>
       </div>
 
