@@ -37,3 +37,25 @@ define('OPENROUTER_KEY', '');
 
 // ===== عام =====
 define('SITE_URL', ''); // رابط الموقع بدون / في النهاية
+
+/* ======================================================================
+ * الإعدادات التالية تُضبط من لوحة الإدارة (جدول settings) وليست ثوابت،
+ * لكنها موثّقة هنا لتعرف ما يحتاجه كل نظام. لا تضع مفاتيح سرّية في هذا
+ * الملف إن كان مرفوعًا على Git.
+ *
+ * — مصنع الدومينات (Admin → 🏭 مصنع الدومينات) —
+ *   factory_root_domain   الدومين الجذر، مثال: yassota.com
+ *   factory_docroot       مسار ملفات الدومين الشامل، مثال: public_html
+ *   openrouter_model      نموذج التوليد، الافتراضي:
+ *                         meta-llama/llama-3.1-8b-instruct:free  (مجاني)
+ *   cpanel_host           https://server-host:2083
+ *   cpanel_user           اسم مستخدم cPanel
+ *   cpanel_token          توكِن cPanel API (من Manage API Tokens) — سرّي
+ *
+ * — النشرة البريدية (newsletter.php) —
+ *   brevo_api_key         مفتاح Brevo v3 لإضافة المشتركين — سرّي
+ *   brevo_list_id         رقم قائمة Brevo لإضافة العناوين إليها
+ *
+ * — إعلانات AdSense —
+ *   adsense_publisher_id  ca-pub-xxxxxxxxxxxxxxxx (يفعّل سكربت الإعلانات)
+ * ====================================================================== */

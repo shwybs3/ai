@@ -1,0 +1,4 @@
+# ads.txt — authorised digital sellers (AdSense)
+# After AdSense approval, replace pub-0000000000000000 with YOUR publisher ID.
+# The same file is valid for every *.yassota.com subdomain served from this docroot.
+google.com, pub-0000000000000000, DIRECT, f08c47fec0942fa0
