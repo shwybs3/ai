@@ -278,10 +278,10 @@ function brand_logo_svg(int $size = 36): string
     $s = (int)$size;
     return '<svg width="' . $s . '" height="' . $s . '" viewBox="0 0 64 64" fill="none" xmlns="http://www.w3.org/2000/svg" role="img" aria-label="Yassota">'
         . '<defs><linearGradient id="yg" x1="0" y1="0" x2="1" y2="1">'
-        . '<stop offset="0" stop-color="#6c5ce7"/><stop offset=".55" stop-color="#a08bff"/><stop offset="1" stop-color="#00d2a0"/>'
+        . '<stop offset="0" stop-color="#6366f1"/><stop offset=".55" stop-color="#818cf8"/><stop offset="1" stop-color="#22d3ee"/>'
         . '</linearGradient></defs>'
         . '<rect x="2" y="2" width="60" height="60" rx="16" fill="url(#yg)"/>'
-        . '<circle cx="32" cy="32" r="20" fill="#0f1320" opacity=".18"/>'
+        . '<circle cx="32" cy="32" r="20" fill="#f7f8fc" opacity=".18"/>'
         . '<path d="M22 20l10 13 10-13" stroke="#fff" stroke-width="5" stroke-linecap="round" stroke-linejoin="round"/>'
         . '<path d="M32 33v12" stroke="#fff" stroke-width="5" stroke-linecap="round"/>'
         . '</svg>';
@@ -484,8 +484,8 @@ if ($action === 'manifest') {
         'start_url' => './',
         'display' => 'standalone',
         'orientation' => 'portrait',
-        'background_color' => '#0f1320',
-        'theme_color' => '#0f1320',
+        'background_color' => '#f7f8fc',
+        'theme_color' => '#f7f8fc',
         'lang' => 'ar',
         'dir' => 'rtl',
         'icons' => [
@@ -925,7 +925,7 @@ $logo = setting('logo_url');
 <meta name="description" content="<?= e(setting('site_description')) ?>">
 <meta name="keywords" content="<?= e(setting('site_keywords')) ?>">
 <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1">
-<meta name="theme-color" content="#0f1320">
+<meta name="theme-color" content="#f7f8fc">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -939,42 +939,44 @@ $logo = setting('logo_url');
 {"@context":"https://schema.org","@type":"Organization","name":"<?= e($siteName) ?>","url":"<?= e(SITE_URL) ?>"<?= $logo ? ',"logo":"' . e($logo) . '"' : '' ?>}
 </script>
 <style>
-:root{--bg:#0f1320;--bg2:#161b2e;--card:#1b2138;--accent:#6c5ce7;--accent2:#00d2a0;--text:#eef0f7;--muted:#8a90ab;--danger:#ff5c5c;--radius:16px}
+:root{--bg:#f7f8fc;--bg2:#ffffff;--card:#ffffff;--accent:#6366f1;--accent2:#22d3ee;--text:#0f172a;--muted:#64748b;--danger:#ef4444;--radius:16px}
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:'Segoe UI',Tahoma,Arial,sans-serif;background:var(--bg);color:var(--text);min-height:100vh}
 a{color:inherit;text-decoration:none}
 #preloader{position:fixed;inset:0;background:var(--bg);z-index:9999;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:16px;transition:opacity .4s}
 #preloader img{width:64px;height:64px;border-radius:50%}
-.spinner{width:46px;height:46px;border:4px solid #2a2f49;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
+.spinner{width:46px;height:46px;border:4px solid #e2e8f0;border-top-color:var(--accent);border-radius:50%;animation:spin 1s linear infinite}
 @keyframes spin{to{transform:rotate(360deg)}}
-.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;padding:12px 18px;background:rgba(20,24,40,.85);backdrop-filter:blur(10px);border-bottom:1px solid #262c47}
+.topbar{position:sticky;top:0;z-index:50;display:flex;align-items:center;gap:12px;padding:12px 18px;background:rgba(20,24,40,.85);backdrop-filter:blur(10px);border-bottom:1px solid #e7eaf3}
 .burger{cursor:pointer;font-size:22px;background:none;border:none;color:var(--text)}
 .brand{display:flex;align-items:center;gap:8px;font-weight:700;font-size:18px}
 .brand img{width:30px;height:30px;border-radius:8px}
 .topbar .grow{flex:1}
 .btn{padding:9px 16px;border-radius:10px;border:none;cursor:pointer;font-weight:600;font-size:14px;transition:.2s}
-.btn-primary{background:linear-gradient(135deg,var(--accent),#a08bff);color:#fff}
+.btn-primary{background:linear-gradient(135deg,var(--accent),#818cf8);color:#fff}
 .btn-primary:hover{filter:brightness(1.1)}
-.btn-ghost{background:#232a45;color:var(--text)}
-.btn-success{background:var(--accent2);color:#06251c}
-.btn-danger{background:var(--danger);color:#250505}
-.user-chip{display:flex;align-items:center;gap:8px;background:#232a45;padding:6px 10px;border-radius:30px}
+.btn-ghost{background:#e7eaf3;color:var(--text)}
+.btn-success{background:var(--accent2);color:#0f172a}
+.btn-danger{background:var(--danger);color:#ffffff}
+.user-chip{display:flex;align-items:center;gap:8px;background:#e7eaf3;padding:6px 10px;border-radius:30px}
 .user-chip img{width:26px;height:26px;border-radius:50%}
 .sidebar{position:fixed;top:0;right:-300px;width:280px;height:100%;background:var(--bg2);z-index:60;transition:right .3s;overflow-y:auto;box-shadow:-10px 0 30px rgba(0,0,0,.3)}
 .sidebar.open{right:0}
-.sidebar .sb-head{padding:18px;border-bottom:1px solid #262c47;display:flex;justify-content:space-between;align-items:center}
-.sidebar nav a{display:flex;align-items:center;gap:10px;padding:14px 18px;color:var(--text);border-bottom:1px solid #1d2238;font-size:15px}
-.sidebar nav a:hover{background:#202746}
+.sidebar .sb-head{padding:18px;border-bottom:1px solid #e7eaf3;display:flex;justify-content:space-between;align-items:center}
+.sidebar nav a{display:flex;align-items:center;gap:12px;padding:12px 18px;color:var(--text);border-bottom:1px solid #e7eaf3;font-size:15px}
+.sidebar nav a:hover{background:#f4f5fb}
+.nav-ic{flex-shrink:0;width:34px;height:34px;border-radius:10px;background:#eef0fd;color:var(--accent);display:flex;align-items:center;justify-content:center;font-size:16px}
+.sidebar nav a[style*="danger"] .nav-ic{background:#fef2f2}
 .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:55;display:none}
 .overlay.show{display:block}
-.banner{margin:18px;border-radius:var(--radius);background:linear-gradient(135deg,#3d2c8d,#6c5ce7 60%,#00d2a0);padding:42px 28px;position:relative;overflow:hidden}
+.banner{margin:18px;border-radius:var(--radius);background:linear-gradient(135deg,#4f46e5,#6366f1 60%,#22d3ee);padding:42px 28px;position:relative;overflow:hidden}
 .banner h1{font-size:28px;margin-bottom:8px}
 .banner p{color:#e6e6ff;opacity:.9}
 .section-title{margin:26px 18px 10px;font-size:19px;display:flex;align-items:center;gap:8px}
 .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(210px,1fr));gap:16px;padding:0 18px 30px}
-.card{background:var(--card);border-radius:var(--radius);padding:16px;position:relative;border:1px solid #232a45;transition:.2s}
+.card{background:var(--card);border-radius:var(--radius);padding:16px;position:relative;border:1px solid #e7eaf3;transition:.2s}
 .card:hover{transform:translateY(-3px);border-color:var(--accent)}
-.card .tag{position:absolute;top:10px;left:10px;background:var(--accent2);color:#06251c;font-size:11px;padding:3px 8px;border-radius:8px;font-weight:700}
+.card .tag{position:absolute;top:10px;left:10px;background:var(--accent2);color:#0f172a;font-size:11px;padding:3px 8px;border-radius:8px;font-weight:700}
 .card .icon{font-size:38px;margin-bottom:8px}
 .card img.pimg{width:100%;height:120px;object-fit:cover;border-radius:10px;margin-bottom:8px;background:#11152200;lazyload}
 .card h3{font-size:15px;margin-bottom:6px;min-height:38px}
@@ -983,7 +985,7 @@ a{color:inherit;text-decoration:none}
 .card .desc{font-size:12px;color:var(--muted);margin:6px 0;max-height:36px;overflow:hidden}
 .card .buy{width:100%;margin-top:8px}
 .empty{padding:60px 20px;text-align:center;color:var(--muted)}
-.bottom-nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#141829;border-top:1px solid #262c47;z-index:40}
+.bottom-nav{position:fixed;bottom:0;left:0;right:0;display:flex;background:#ffffff;border-top:1px solid #e7eaf3;z-index:40}
 .bottom-nav a{flex:1;text-align:center;padding:10px 4px;font-size:11px;color:var(--muted)}
 .bottom-nav a.active{color:var(--accent2)}
 .bottom-nav .bi{font-size:18px;display:block;margin-bottom:2px}
@@ -991,33 +993,33 @@ a{color:inherit;text-decoration:none}
 .modal-bg{position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px}
 .modal{background:var(--card);border-radius:var(--radius);padding:22px;max-width:420px;width:100%;max-height:85vh;overflow:auto}
 .modal h2{margin-bottom:12px}
-.modal input,.modal textarea,.modal select{width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:var(--text);margin-bottom:10px}
-.toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#232a45;padding:12px 20px;border-radius:30px;z-index:300;display:none;font-size:14px}
+.modal input,.modal textarea,.modal select{width:100%;padding:10px;border-radius:10px;border:1px solid #e7eaf3;background:#f7f8fc;color:var(--text);margin-bottom:10px}
+.toast{position:fixed;bottom:90px;left:50%;transform:translateX(-50%);background:#e7eaf3;padding:12px 20px;border-radius:30px;z-index:300;display:none;font-size:14px}
 .policy-modal{position:fixed;inset:0;background:rgba(0,0,0,.75);z-index:500;display:flex;align-items:center;justify-content:center;padding:16px}
 .policy-box{background:var(--card);border-radius:var(--radius);padding:24px;max-width:480px}
-.flash{margin:14px 18px;padding:12px 16px;border-radius:10px;background:#1d3b2e;border:1px solid var(--accent2)}
-.flash.error{background:#3b1d1d;border-color:var(--danger)}
+.flash{margin:14px 18px;padding:12px 16px;border-radius:10px;background:#ecfdf5;border:1px solid var(--accent2)}
+.flash.error{background:#fef2f2;border-color:var(--danger)}
 table{width:100%;border-collapse:collapse;font-size:13px}
-table th,table td{padding:8px;border-bottom:1px solid #232a45;text-align:right}
+table th,table td{padding:8px;border-bottom:1px solid #e7eaf3;text-align:right}
 .admin-tabs{display:flex;flex-wrap:wrap;gap:8px;padding:14px 18px}
-.admin-tabs a{padding:8px 14px;border-radius:10px;background:#232a45;font-size:13px}
-.admin-tabs a.active{background:var(--accent)}
+.admin-tabs a{padding:8px 14px;border-radius:10px;background:#e7eaf3;font-size:13px}
+.admin-tabs a.active{background:var(--accent);color:#fff}
 .admin-box{background:var(--card);margin:0 18px 20px;border-radius:var(--radius);padding:18px;overflow-x:auto}
 .formrow{display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:10px;margin-bottom:12px}
 .badge{padding:2px 8px;border-radius:8px;font-size:11px}
-.badge.pending{background:#5a4a1c}
-.badge.approved{background:#1d3b2e}
-.badge.rejected{background:#3b1d1d}
+.badge.pending{background:#fffbeb}
+.badge.approved{background:#ecfdf5}
+.badge.rejected{background:#fef2f2}
 footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 
 /* ===== شارة الرصيد في الشريط العلوي ===== */
-.coin-chip{display:flex;align-items:center;gap:6px;background:linear-gradient(135deg,#3a2f12,#5a4a1c);color:#ffd86b;padding:6px 12px;border-radius:30px;font-weight:700;font-size:13px;border:1px solid #6b5620;white-space:nowrap}
-.coin-chip small{color:#cdb98a;font-weight:600}
+.coin-chip{display:flex;align-items:center;gap:6px;background:linear-gradient(135deg,#fef3c7,#fde68a);color:#92400e;padding:6px 12px;border-radius:30px;font-weight:700;font-size:13px;border:1px solid #fde68a;white-space:nowrap}
+.coin-chip small{color:#92400e;font-weight:600}
 
 /* ===== كاروسيل البنرات ===== */
 .bnr-wrap{margin:16px 18px;border-radius:var(--radius);overflow:hidden;position:relative}
 .bnr-track{display:flex;transition:transform .6s cubic-bezier(.4,0,.2,1)}
-.bnr-slide{min-width:100%;position:relative;aspect-ratio:3/1;background:linear-gradient(135deg,#3d2c8d,#6c5ce7 55%,#00d2a0);display:flex;align-items:center;justify-content:center}
+.bnr-slide{min-width:100%;position:relative;aspect-ratio:3/1;background:linear-gradient(135deg,#4f46e5,#6366f1 55%,#22d3ee);display:flex;align-items:center;justify-content:center}
 .bnr-slide img{width:100%;height:100%;object-fit:cover;display:block}
 .bnr-slide .bnr-cap{position:absolute;inset:auto 0 0 0;background:linear-gradient(transparent,rgba(0,0,0,.75));padding:30px 18px 14px;font-weight:700;font-size:16px}
 .bnr-ph{color:#fff;text-align:center;padding:10px}
@@ -1027,7 +1029,7 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 .bnr-dots span.on{background:#fff;width:22px;border-radius:5px}
 
 /* ===== شريط الأخبار المتحرك ===== */
-.news-bar{margin:0 18px 16px;display:flex;align-items:stretch;background:linear-gradient(90deg,#1a1030,#241540);border:1px solid #3a2a5e;border-radius:12px;overflow:hidden;box-shadow:0 0 24px rgba(108,92,231,.25)}
+.news-bar{margin:0 18px 16px;display:flex;align-items:stretch;background:linear-gradient(90deg,#1a1030,#241540);border:1px solid #3a2a5e;border-radius:12px;overflow:hidden;box-shadow:0 0 24px rgba(99,102,241,.25)}
 .news-live{display:flex;align-items:center;gap:6px;background:var(--danger);color:#fff;font-weight:800;font-size:12px;padding:0 12px;white-space:nowrap}
 .news-live .dot{width:8px;height:8px;border-radius:50%;background:#fff;animation:pulse 1s infinite}
 @keyframes pulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.4;transform:scale(.7)}}
@@ -1040,28 +1042,28 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 
 /* ===== مجموعة الأقسام (قائمة منسدلة) ===== */
 .group-box{margin:0 18px 8px}
-.group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--card);border:1px solid #2a3050;border-radius:12px;padding:12px 16px;cursor:pointer;font-weight:700}
+.group-head{display:flex;align-items:center;justify-content:space-between;gap:8px;background:var(--card);border:1px solid #e7eaf3;border-radius:12px;padding:12px 16px;cursor:pointer;font-weight:700}
 .group-head .chev{transition:.3s}
 .group-box.open .group-head .chev{transform:rotate(180deg)}
 .group-body{display:none;flex-wrap:wrap;gap:8px;padding:12px 2px 4px}
 .group-box.open .group-body{display:flex}
-.chip{background:#232a45;border:1px solid #2f3656;padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;transition:.2s}
-.chip:hover,.chip.on{background:var(--accent);border-color:var(--accent)}
+.chip{background:#e7eaf3;border:1px solid #e7eaf3;padding:8px 14px;border-radius:20px;font-size:13px;cursor:pointer;transition:.2s}
+.chip:hover,.chip.on{background:var(--accent);border-color:var(--accent);color:#fff}
 
 /* ===== تحسين كروت الشراء ===== */
-.card{background:linear-gradient(160deg,#1d2440,#161b2e);border:1px solid #2a3257}
-.card:hover{transform:translateY(-4px);border-color:var(--accent);box-shadow:0 12px 30px rgba(108,92,231,.25)}
-.card .pimg-wrap{width:100%;aspect-ratio:1/1;border-radius:12px;overflow:hidden;background:#11152a;display:flex;align-items:center;justify-content:center;margin-bottom:10px}
+.card{background:linear-gradient(160deg,#ffffff,#fbfbff);border:1px solid #e7eaf3}
+.card:hover{transform:translateY(-4px);border-color:var(--accent);box-shadow:0 12px 30px rgba(99,102,241,.25)}
+.card .pimg-wrap{width:100%;aspect-ratio:1/1;border-radius:12px;overflow:hidden;background:#f7f8fc;display:flex;align-items:center;justify-content:center;margin-bottom:10px}
 .card .pimg-wrap img{width:100%;height:100%;object-fit:cover}
 .card .pimg-wrap .ph-icon{font-size:46px}
 .card h3{font-size:15px;margin:2px 0 8px;text-align:center;min-height:auto;font-weight:700}
 .card .price-row{display:flex;align-items:center;justify-content:center;gap:8px;margin-bottom:4px}
-.card .price{font-size:18px;font-weight:800;background:linear-gradient(135deg,#00d2a0,#5fffd0);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
-.card .buy{background:linear-gradient(135deg,#6c5ce7,#00d2a0);color:#fff}
+.card .price{font-size:18px;font-weight:800;background:linear-gradient(135deg,#22d3ee,#67e8f9);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.card .buy{background:linear-gradient(135deg,#6366f1,#22d3ee);color:#fff}
 
 /* ===== الشبكة الميزات (أيقونات) ===== */
 .feature-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(96px,1fr));gap:12px;padding:0 18px 8px}
-.feature{background:linear-gradient(160deg,#1d2440,#161b2e);border:1px solid #2a3257;border-radius:16px;padding:14px 8px;text-align:center;transition:.2s}
+.feature{background:linear-gradient(160deg,#ffffff,#fbfbff);border:1px solid #e7eaf3;border-radius:16px;padding:14px 8px;text-align:center;transition:.2s}
 .feature:hover{transform:translateY(-3px);border-color:var(--accent)}
 .feature .fi{font-size:30px;display:block;margin-bottom:6px}
 .feature .fl{font-size:12px;color:var(--text);font-weight:600}
@@ -1070,21 +1072,21 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 /* ===== عجلة الحظ ===== */
 .wheel-stage{display:flex;flex-direction:column;align-items:center;gap:18px;padding:10px}
 .wheel-outer{position:relative;width:300px;max-width:86vw;aspect-ratio:1/1}
-.wheel-outer::before{content:"";position:absolute;inset:-10px;border-radius:50%;background:conic-gradient(from 0deg,#6c5ce7,#00d2a0,#ffd86b,#ff5c5c,#6c5ce7);filter:blur(14px);opacity:.55;animation:spin 6s linear infinite;z-index:0}
+.wheel-outer::before{content:"";position:absolute;inset:-10px;border-radius:50%;background:conic-gradient(from 0deg,#6366f1,#22d3ee,#ffd86b,#ef4444,#6366f1);filter:blur(14px);opacity:.55;animation:spin 6s linear infinite;z-index:0}
 .wheel{position:relative;z-index:1;width:100%;height:100%;border-radius:50%;border:8px solid #ffd86b;box-shadow:0 0 40px rgba(255,216,107,.5),inset 0 0 30px rgba(0,0,0,.5);transition:transform 5s cubic-bezier(.17,.67,.12,1)}
 .wheel-pointer{position:absolute;top:-6px;left:50%;transform:translateX(-50%);z-index:3;font-size:34px;filter:drop-shadow(0 3px 4px rgba(0,0,0,.6))}
-.wheel-hub{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;width:64px;height:64px;border-radius:50%;background:radial-gradient(circle,#ffd86b,#b8860b);display:flex;align-items:center;justify-content:center;font-weight:800;color:#3a2a00;border:4px solid #fff;box-shadow:0 0 20px rgba(255,216,107,.7)}
-.wheel-result{font-size:20px;font-weight:800;min-height:28px;text-align:center;background:linear-gradient(135deg,#ffd86b,#00d2a0);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
+.wheel-hub{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);z-index:2;width:64px;height:64px;border-radius:50%;background:radial-gradient(circle,#ffd86b,#b8860b);display:flex;align-items:center;justify-content:center;font-weight:800;color:#78350f;border:4px solid #fff;box-shadow:0 0 20px rgba(255,216,107,.7)}
+.wheel-result{font-size:20px;font-weight:800;min-height:28px;text-align:center;background:linear-gradient(135deg,#ffd86b,#22d3ee);-webkit-background-clip:text;background-clip:text;-webkit-text-fill-color:transparent}
 .confetti{position:fixed;top:-10px;width:10px;height:14px;z-index:400;pointer-events:none;animation:fall linear forwards}
 @keyframes fall{to{transform:translateY(105vh) rotate(540deg);opacity:.2}}
 
 /* ===== مركز الإحالة + المتصدرين ===== */
-.ref-card{background:linear-gradient(135deg,#3d2c8d,#6c5ce7 60%,#00d2a0);border-radius:var(--radius);padding:20px;margin-bottom:14px}
+.ref-card{background:linear-gradient(135deg,#4f46e5,#6366f1 60%,#22d3ee);border-radius:var(--radius);padding:20px;margin-bottom:14px}
 .ref-link{display:flex;gap:8px;margin-top:12px}
 .ref-link input{flex:1;padding:11px;border-radius:10px;border:none;background:rgba(0,0,0,.25);color:#fff;font-size:13px}
-.lb-row{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid #232a45}
-.lb-rank{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;background:#232a45;flex-shrink:0}
-.lb-rank.r1{background:linear-gradient(135deg,#ffd86b,#b8860b);color:#3a2a00}
+.lb-row{display:flex;align-items:center;gap:12px;padding:12px 4px;border-bottom:1px solid #e7eaf3}
+.lb-rank{width:34px;height:34px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;background:#e7eaf3;flex-shrink:0}
+.lb-rank.r1{background:linear-gradient(135deg,#ffd86b,#b8860b);color:#78350f}
 .lb-rank.r2{background:linear-gradient(135deg,#d8d8e8,#9a9ab0);color:#22232e}
 .lb-rank.r3{background:linear-gradient(135deg,#e0a479,#a9603a);color:#2a1408}
 .lb-row img{width:34px;height:34px;border-radius:50%}
@@ -1117,21 +1119,21 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
 <div class="sidebar" id="sidebar">
   <div class="sb-head"><strong><?= e($siteName) ?></strong><button class="burger" onclick="toggleSidebar()">✕</button></div>
   <nav>
-    <a href="?">🏠 الرئيسية</a>
-    <a href="?page=earn">🪙 اكسب عملات (كابتشا)</a>
-    <a href="?page=watch">📺 شاهد إعلان واربح</a>
-    <a href="?page=wheel">🎡 عجلة الحظ</a>
-    <a href="/tools.php">🧰 أدوات الويب المجانية (٢٠٠+)</a>
-    <a href="?page=tasks">📋 المهام اليومية</a>
-    <a href="?page=referral">🎁 مركز الإحالة</a>
-    <a href="?page=leaderboard">🏆 المتصدرون</a>
-    <a href="?page=chats">💬 مجموعات الدردشة</a>
-    <a href="?page=wallet">💳 محفظتي</a>
-    <a href="?page=orders">📦 طلباتي</a>
-    <a href="?page=privacy">🔒 سياسة الخصوصية</a>
-    <a href="?page=terms">📜 شروط الاستخدام</a>
-    <?php if (is_admin()): ?><a href="?page=admin">🎛️ لوحة الإدارة</a><?php endif; ?>
-    <?php if ($user): ?><a href="?action=logout" style="color:var(--danger)">🚪 تسجيل الخروج</a><?php endif; ?>
+    <a href="?"><span class="nav-ic">🏠</span> الرئيسية</a>
+    <a href="?page=earn"><span class="nav-ic">🪙</span> اكسب عملات (كابتشا)</a>
+    <a href="?page=watch"><span class="nav-ic">📺</span> شاهد إعلان واربح</a>
+    <a href="?page=wheel"><span class="nav-ic">🎡</span> عجلة الحظ</a>
+    <a href="/tools.php"><span class="nav-ic">🧰</span> أدوات الويب المجانية (٢٠٠+)</a>
+    <a href="?page=tasks"><span class="nav-ic">📋</span> المهام اليومية</a>
+    <a href="?page=referral"><span class="nav-ic">🎁</span> مركز الإحالة</a>
+    <a href="?page=leaderboard"><span class="nav-ic">🏆</span> المتصدرون</a>
+    <a href="?page=chats"><span class="nav-ic">💬</span> مجموعات الدردشة</a>
+    <a href="?page=wallet"><span class="nav-ic">💳</span> محفظتي</a>
+    <a href="?page=orders"><span class="nav-ic">📦</span> طلباتي</a>
+    <a href="?page=privacy"><span class="nav-ic">🔒</span> سياسة الخصوصية</a>
+    <a href="?page=terms"><span class="nav-ic">📜</span> شروط الاستخدام</a>
+    <?php if (is_admin()): ?><a href="?page=admin"><span class="nav-ic">🎛️</span> لوحة الإدارة</a><?php endif; ?>
+    <?php if ($user): ?><a href="?action=logout" style="color:var(--danger)"><span class="nav-ic">🚪</span> تسجيل الخروج</a><?php endif; ?>
     <div style="height:90px"></div>
   </nav>
 </div>
@@ -1258,8 +1260,8 @@ case 'earn':
     <div class="admin-box" style="margin-top:18px">
       <h2>🪙 اكسب عملات Yassota</h2>
       <p style="color:var(--muted);margin:10px 0">أدخل الرقم الظاهر بالأسفل بشكل صحيح لتحصل على <?= e(setting('captcha_reward')) ?> عملة. (<?= $done ?>/<?= $max ?> اليوم)</p>
-      <div id="captchaBox" style="font-size:32px;font-weight:800;letter-spacing:8px;background:#11152a;border-radius:12px;padding:18px;text-align:center;margin:14px 0">----</div>
-      <input type="text" id="captchaAnswer" placeholder="أدخل الرقم هنا" style="width:100%;padding:12px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff;text-align:center;font-size:18px">
+      <div id="captchaBox" style="font-size:32px;font-weight:800;letter-spacing:8px;background:#f7f8fc;border-radius:12px;padding:18px;text-align:center;margin:14px 0">----</div>
+      <input type="text" id="captchaAnswer" placeholder="أدخل الرقم هنا" style="width:100%;padding:12px;border-radius:10px;border:1px solid #e7eaf3;background:#f7f8fc;color:#fff;text-align:center;font-size:18px">
       <button class="btn btn-success" style="width:100%;margin-top:12px" onclick="submitCaptcha()">✅ تحقق واحصل على العملات</button>
       <p style="color:var(--muted);font-size:12px;margin-top:10px">📺 يُعرض إعلان قصير (<?= (int)setting('captcha_ad_seconds', 5) ?> ثوانٍ) قبل التحقق لدعم استمرار المنصة.</p>
     </div>
@@ -1293,7 +1295,7 @@ case 'wheel':
     $cost = (int)setting('wheel_cost', 20);
     $n = count($prizes);
     $seg = 360 / $n;
-    $cols = ['#6c5ce7', '#00d2a0', '#ffd86b', '#ff5c5c', '#a08bff', '#33c1ff', '#ff8fcf', '#ffd86b'];
+    $cols = ['#6366f1', '#22d3ee', '#ffd86b', '#ef4444', '#818cf8', '#0ea5e9', '#ec4899', '#ffd86b'];
     $grad = [];
     for ($i = 0; $i < $n; $i++) {
         $c = $cols[$i % count($cols)];
@@ -1302,7 +1304,7 @@ case 'wheel':
     ?>
     <div class="section-title">🎡 عجلة الحظ</div>
     <div class="admin-box wheel-stage">
-      <p style="color:var(--muted)">كل دورة تكلّف <strong style="color:#ffd86b"><?= $cost ?> عملة</strong> — العب بلا حدود!</p>
+      <p style="color:var(--muted)">كل دورة تكلّف <strong style="color:#b45309"><?= $cost ?> عملة</strong> — العب بلا حدود!</p>
       <div class="wheel-outer">
         <div class="wheel-pointer">🔻</div>
         <div class="wheel" id="wheel" style="background:conic-gradient(<?= implode(',', $grad) ?>)">
@@ -1345,7 +1347,7 @@ case 'referral':
       <div class="admin-box">
         <div style="display:flex;justify-content:space-around;text-align:center">
           <div><div style="font-size:26px;font-weight:800;color:var(--accent2)"><?= (int)$invitedCount ?></div><div style="color:var(--muted);font-size:13px">صديق مدعو</div></div>
-          <div><div style="font-size:26px;font-weight:800;color:#ffd86b"><?= (int)$invitedCount * $refReward ?></div><div style="color:var(--muted);font-size:13px">عملة مكتسبة</div></div>
+          <div><div style="font-size:26px;font-weight:800;color:#b45309"><?= (int)$invitedCount * $refReward ?></div><div style="color:var(--muted);font-size:13px">عملة مكتسبة</div></div>
           <div><div style="font-size:26px;font-weight:800;color:var(--accent)"><?= e($user['ref_code']) ?></div><div style="color:var(--muted);font-size:13px">رمزك</div></div>
         </div>
       </div>
@@ -1364,7 +1366,7 @@ case 'leaderboard':
           <div class="lb-rank <?= $rank <= 3 ? 'r' . $rank : '' ?>"><?= $rank <= 3 ? ['🥇','🥈','🥉'][$rank-1] : $rank ?></div>
           <?php if ($t['avatar']): ?><img src="<?= e($t['avatar']) ?>" onerror="this.style.display='none'"><?php endif; ?>
           <div style="flex:1;font-weight:600"><?= e($t['name'] ?: 'مستخدم') ?></div>
-          <div style="color:#ffd86b;font-weight:800">🪙 <?= number_format((int)$t['points']) ?></div>
+          <div style="color:#b45309;font-weight:800">🪙 <?= number_format((int)$t['points']) ?></div>
         </div>
       <?php endforeach; ?>
     </div>
@@ -1403,7 +1405,7 @@ case 'tasks':
         $st->execute([$user['id'], $t['id'], $day]);
         $done = (bool)$st->fetch();
     ?>
-      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #232a45">
+      <div style="display:flex;justify-content:space-between;align-items:center;padding:12px 0;border-bottom:1px solid #e7eaf3">
         <div>
           <strong><?= e($t['title']) ?></strong>
           <div style="color:var(--muted);font-size:12px">⏱️ <?= (int)$t['seconds'] ?> ثانية · +<?= (int)$t['reward'] ?> عملة</div>
@@ -1429,7 +1431,7 @@ case 'wallet':
       <h2>💳 محفظتي</h2>
       <p style="font-size:22px;margin:10px 0">💰 <?= (int)$user['points'] ?> عملة ≈ <strong><?= $usd ?>$</strong></p>
       <p style="color:var(--muted)">الحد الأدنى للسحب: <?= e($minw) ?>$</p>
-      <hr style="border-color:#232a45;margin:14px 0">
+      <hr style="border-color:#e7eaf3;margin:14px 0">
       <h3>🏦 طريقة السحب الخاصة بك</h3>
       <select id="wType">
         <option value="usdt" <?= $user['wallet_type'] === 'usdt' ? 'selected' : '' ?>>USDT (TRC20)</option>
@@ -1443,7 +1445,7 @@ case 'wallet':
       <h3>➕ شحن الرصيد</h3>
       <p style="color:var(--muted);font-size:13px;margin-bottom:10px">حوّل المبلغ إلى إحدى المحافظ التالية ثم أرسل طلب التحقق:</p>
       <?php foreach ($wallets as $w): ?>
-        <div style="background:#11152a;border-radius:10px;padding:10px;margin-bottom:8px">
+        <div style="background:#f7f8fc;border-radius:10px;padding:10px;margin-bottom:8px">
           <strong><?= $w['type'] === 'usdt' ? '💎 USDT' : '📱 الشام كاش' ?> — <?= e($w['label']) ?></strong>
           <div style="font-family:monospace;word-break:break-all"><?= e($w['address']) ?></div>
         </div>
@@ -1466,7 +1468,7 @@ case 'orders':
     <div class="admin-box">
     <?php if (!$orders): ?><div class="empty">لا توجد طلبات بعد.</div><?php endif; ?>
     <?php foreach ($orders as $o): ?>
-      <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #232a45">
+      <div style="display:flex;justify-content:space-between;padding:10px 0;border-bottom:1px solid #e7eaf3">
         <div><?= e($o['icon']) ?> <?= e($o['name']) ?> — <?= e($o['price']) ?>$</div>
         <span class="badge <?= e($o['status']) ?>"><?= e($o['status']) ?></span>
       </div>
@@ -1760,11 +1762,11 @@ case 'admin':
         <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px">
           <button class="btn btn-ghost" onclick="orLoadModels()">📥 جلب كل الموديلات</button>
         </div>
-        <select id="orModelSelect" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff;margin-bottom:10px"><option value="">— اختر موديل بعد الجلب —</option></select>
+        <select id="orModelSelect" style="width:100%;padding:10px;border-radius:10px;border:1px solid #e7eaf3;background:#f7f8fc;color:#fff;margin-bottom:10px"><option value="">— اختر موديل بعد الجلب —</option></select>
         <div id="orModelsInfo" style="color:var(--muted);font-size:12px;margin-bottom:10px"></div>
-        <input id="orPrompt" placeholder="رسالة اختبار" value="قل مرحباً بكلمة واحدة" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:#fff;margin-bottom:10px">
+        <input id="orPrompt" placeholder="رسالة اختبار" value="قل مرحباً بكلمة واحدة" style="width:100%;padding:10px;border-radius:10px;border:1px solid #e7eaf3;background:#f7f8fc;color:#fff;margin-bottom:10px">
         <button class="btn btn-success" onclick="orTest()">🚀 اختبر الموديل المحدد</button>
-        <pre id="orResult" style="white-space:pre-wrap;background:#11152a;border-radius:10px;padding:12px;margin-top:12px;min-height:40px;font-size:13px;color:#cfe9df"></pre>
+        <pre id="orResult" style="white-space:pre-wrap;background:#f7f8fc;border-radius:10px;padding:12px;margin-top:12px;min-height:40px;font-size:13px;color:#166534"></pre>
       </div>
 
     <?php elseif ($tab === 'pages'):
@@ -1939,9 +1941,9 @@ case 'admin':
             </div>
           </div>
           <label>مقتطف قصير (لصفحة القائمة وميتا الوصف)</label>
-          <textarea name="excerpt" rows="2" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:var(--text);margin-bottom:10px"><?= e($editArticle['excerpt'] ?? '') ?></textarea>
+          <textarea name="excerpt" rows="2" style="width:100%;padding:10px;border-radius:10px;border:1px solid #e7eaf3;background:#f7f8fc;color:var(--text);margin-bottom:10px"><?= e($editArticle['excerpt'] ?? '') ?></textarea>
           <label>المحتوى (HTML — h2/h3/p/ul/li/blockquote)</label>
-          <textarea name="content" rows="14" style="width:100%;padding:10px;border-radius:10px;border:1px solid #2a3050;background:#11152a;color:var(--text);font-family:monospace;font-size:13px;margin-bottom:10px"><?= e($editArticle['content'] ?? '') ?></textarea>
+          <textarea name="content" rows="14" style="width:100%;padding:10px;border-radius:10px;border:1px solid #e7eaf3;background:#f7f8fc;color:var(--text);font-family:monospace;font-size:13px;margin-bottom:10px"><?= e($editArticle['content'] ?? '') ?></textarea>
           <?php if ($editArticle): ?><input type="hidden" name="id" value="<?= (int)$editArticle['id'] ?>"><?php endif; ?>
           <button class="btn btn-primary"><?= $editArticle ? 'حفظ التعديلات' : 'نشر المقال' ?></button>
           <?php if ($editArticle): ?><a class="btn btn-ghost" href="?page=admin&tab=articles">إلغاء</a><?php endif; ?>
@@ -1983,9 +1985,9 @@ case 'admin':
           الهدف: آلاف الصفحات القابلة للأرشفة لجلب ترافيك عالٍ.
         </p>
         <div class="formrow" style="margin-bottom:6px">
-          <div style="background:#232a45;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800"><?= (int)$fstats['total'] ?></div><div style="font-size:12px;color:var(--muted)">إجمالي الدومينات</div></div>
-          <div style="background:#232a45;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800;color:var(--accent2)"><?= (int)$fstats['live'] ?></div><div style="font-size:12px;color:var(--muted)">منشورة (Live)</div></div>
-          <div style="background:#232a45;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800"><?= (int)$fstats['ssl'] ?></div><div style="font-size:12px;color:var(--muted)">مؤمّنة SSL</div></div>
+          <div style="background:#e7eaf3;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800"><?= (int)$fstats['total'] ?></div><div style="font-size:12px;color:var(--muted)">إجمالي الدومينات</div></div>
+          <div style="background:#e7eaf3;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800;color:var(--accent2)"><?= (int)$fstats['live'] ?></div><div style="font-size:12px;color:var(--muted)">منشورة (Live)</div></div>
+          <div style="background:#e7eaf3;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800"><?= (int)$fstats['ssl'] ?></div><div style="font-size:12px;color:var(--muted)">مؤمّنة SSL</div></div>
         </div>
         <p style="font-size:12px;color:var(--muted)">وضع cPanel:
           <?php $cpOk = setting('cpanel_host') && setting('cpanel_user') && setting('cpanel_token'); ?>
@@ -2104,7 +2106,7 @@ case 'admin':
           <label style="grid-column:1/-1">📰 شريط الأخبار (كل سطر = خبر)<textarea name="news_ticker" rows="4"><?= e(setting('news_ticker')) ?></textarea></label>
         </form>
         <button class="btn btn-primary" form="" onclick="document.querySelector('form[action=\'?action=admin_save_settings\']').submit()">💾 حفظ الإعدادات</button>
-        <hr style="border-color:#232a45;margin:18px 0">
+        <hr style="border-color:#e7eaf3;margin:18px 0">
         <p style="color:var(--muted);font-size:13px">
           ℹ️ بيانات قاعدة البيانات وبوت تيليجرام وGoogle OAuth وMoneyTag تُضبط من ملف <code>config.php</code> في جذر المشروع (غير مرفوع على Git لحمايته). نسبة الربح 95/5 تقديرية ويتم ضبطها يدوياً عبر "سعر النقطة" لأن شبكات الإعلانات لا تعطي API مباشر بالعائد الحقيقي.
         </p>
@@ -2304,7 +2306,7 @@ function spinWheel(){
   });
 }
 function confetti(){
-  const cols=['#6c5ce7','#00d2a0','#ffd86b','#ff5c5c','#33c1ff'];
+  const cols=['#6366f1','#22d3ee','#ffd86b','#ef4444','#0ea5e9'];
   for(let i=0;i<60;i++){
     const c=document.createElement('div'); c.className='confetti';
     c.style.left=Math.random()*100+'vw';
