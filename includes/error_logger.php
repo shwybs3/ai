@@ -25,7 +25,7 @@ if (!defined('YASSOTA_ERRLOG')) {
         $s = preg_replace('/\b(sk-[A-Za-z0-9_\-]{8,}|AIza[A-Za-z0-9_\-]{20,}|ghp_[A-Za-z0-9]{20,})\b/', '‹redacted-token›', $s);
         foreach (['OPENROUTER_KEY', 'DB_PASS', 'GEMINI_KEY', 'CPANEL_TOKEN', 'CPANEL_PASS', 'NOWPAYMENTS_KEY', 'agent_anthropic_api_key'] as $c) {
             if (defined($c) && constant($c) !== '' && is_string(constant($c))) {
-                $s = str_replace((string)constant($c), "‹redacted:$c›", $s);
+                $s = str_replace((string)constant($c), "‹redacted:{$c}›", $s);
             }
         }
         return $s;
