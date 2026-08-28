@@ -12,7 +12,11 @@ if (!file_exists(__DIR__ . '/config.php')) {
     die('يرجى إنشاء config.php من config.sample.php أولاً.');
 }
 require __DIR__ . '/config.php';
+require __DIR__ . '/includes/error_logger.php';
+error_logger_boot();
 require __DIR__ . '/includes/seo_index.php';
+require __DIR__ . '/includes/subdomain_factory.php';
+require __DIR__ . '/subsite.php';
 
 // ثوابت اختيارية قد لا تكون موجودة في config.php القديم
 foreach ([
@@ -272,6 +276,7 @@ function migrate(): void
     }
 }
 migrate();
+sf_migrate();               // subsites + factory_log tables for the subdomain network
 
 /* ======================================================================
    2) HELPERS
@@ -497,6 +502,11 @@ function google_handle_callback(string $code): void
    ====================================================================== */
 $action = $_GET['action'] ?? '';
 $page = $_GET['page'] ?? 'home';
+
+/* Wildcard router: a request for a *.yassota.com subsite is rendered with
+   the Syria-Home theme and exits here, before the storefront loads. Runs
+   after helpers/settings are defined so host detection works. */
+yassota_maybe_subsite();
 
 // ملاحظة: استقبال أوامر بوت تيليجرام الكاملة (القوائم/الأرباح/المحفظة) يتم في telegram_bot.php
 // هذا الملف فقط يستخدم tg_broadcast_product() للبث عند نشر منتج جديد.
@@ -900,6 +910,43 @@ if ($action && str_starts_with($action, 'admin_')) {
             $_SESSION['gsc_inspect_result'] = gsc_inspect_url(trim($_POST['inspect_url'] ?? ''));
             redirect('?page=admin&tab=indexing');
 
+        /* ---- Subdomain factory ---- */
+        case 'admin_factory_generate':
+            $count  = max(1, min(200, (int)($_POST['count'] ?? 5)));
+            $lang   = ($_POST['lang'] ?? 'ar') === 'en' ? 'en' : 'ar';
+            $niche  = trim($_POST['niche'] ?? '');
+            $dryRun = empty($_POST['go_live']);   // checkbox "go_live" = real cPanel run
+            $res = sf_provision_batch($count, $dryRun, $lang, $niche);
+            $made = count($res['results'] ?? []);
+            flash($res['ok']
+                ? ($dryRun
+                    ? "تم توليد $made دومين فرعي كمسودة (بدون لمس cPanel). راجعها ثم فعّلها."
+                    : "تم إنشاء $made دومين فرعي مباشرة عبر cPanel مع محتوى الذكاء الاصطناعي.")
+                : ('فشل التوليد: ' . $res['error']));
+            redirect('?page=admin&tab=factory');
+
+        case 'admin_factory_wildcard':
+            $res = sf_ensure_wildcard(empty($_POST['go_live']));
+            flash($res['ok'] ? 'تم إعداد الدومين الشامل (*) بنجاح.' : ('فشل: ' . ($res['error'] ?? '')));
+            redirect('?page=admin&tab=factory');
+
+        case 'admin_factory_autossl':
+            $res = sf_run_autossl(empty($_POST['go_live']));
+            flash($res['ok'] ? 'تم تشغيل AutoSSL لإصدار شهادات HTTPS.' : ('فشل: ' . ($res['error'] ?? '')));
+            redirect('?page=admin&tab=factory');
+
+        case 'admin_factory_publish':
+            $id = (int)($_POST['id'] ?? 0);
+            if ($id) db()->prepare("UPDATE subsites SET status='live' WHERE id=?")->execute([$id]);
+            flash('تم نشر الدومين الفرعي.');
+            redirect('?page=admin&tab=factory');
+
+        case 'admin_factory_delete':
+            $id = (int)($_POST['id'] ?? 0);
+            if ($id) db()->prepare('DELETE FROM subsites WHERE id=?')->execute([$id]);
+            flash('تم حذف الدومين الفرعي من القائمة.');
+            redirect('?page=admin&tab=factory');
+
         default:
             die('إجراء غير معروف.');
     }
@@ -1116,6 +1163,7 @@ footer{text-align:center;color:var(--muted);padding:30px 10px;font-size:12px}
     <a href="?page=earn">🪙 اكسب عملات (كابتشا)</a>
     <a href="?page=watch">📺 شاهد إعلان واربح</a>
     <a href="?page=wheel">🎡 عجلة الحظ</a>
+    <a href="/tools.php">🧰 أدوات الويب المجانية (٢٠٠+)</a>
     <a href="?page=tasks">📋 المهام اليومية</a>
     <a href="?page=referral">🎁 مركز الإحالة</a>
     <a href="?page=leaderboard">🏆 المتصدرون</a>
@@ -1480,7 +1528,7 @@ case 'admin':
     $tab = $_GET['tab'] ?? 'dashboard';
     ?>
     <div class="admin-tabs">
-      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','indexing'=>'🛰️ الفهرسة','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
+      <?php foreach (['dashboard'=>'📊 لوحة البيانات','products'=>'🛍️ المنتجات','orders'=>'📦 الطلبات','topups'=>'💵 طلبات الشحن','withdraws'=>'💸 طلبات السحب','wallets'=>'🏦 المحافظ','tasks'=>'📋 المهام','banners'=>'🖼️ البنرات','chats'=>'💬 المجموعات','ai'=>'🤖 OpenRouter','pages'=>'📜 الصفحات','users'=>'👥 المستخدمون','indexing'=>'🛰️ الفهرسة','factory'=>'🏭 مصنع الدومينات','settings'=>'⚙️ الإعدادات'] as $k=>$label): ?>
         <a href="?page=admin&tab=<?= $k ?>" class="<?= $tab === $k ? 'active' : '' ?>"><?= $label ?></a>
       <?php endforeach; ?>
     </div>
@@ -1904,6 +1952,114 @@ case 'admin':
           </tr>
           <?php endforeach; ?>
           <?php if (!$log): ?><tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">لا يوجد إرسال بعد.</td></tr><?php endif; ?>
+        </table>
+      </div>
+
+    <?php elseif ($tab === 'factory'):
+      $fstats = sf_stats();
+      $subs = [];
+      try { $subs = db()->query('SELECT * FROM subsites ORDER BY id DESC LIMIT 100')->fetchAll(); } catch (Throwable $e) {}
+      $flog = [];
+      try { $flog = db()->query('SELECT * FROM factory_log ORDER BY id DESC LIMIT 20')->fetchAll(); } catch (Throwable $e) {}
+      ?>
+      <div class="admin-box">
+        <h3 style="margin-top:0">🏭 مصنع الدومينات الفرعية — yassota.com.*</h3>
+        <p style="color:var(--muted);font-size:13px;line-height:1.9">
+          يولّد شبكة من الدومينات الفرعية على <strong>دومين شامل واحد (Wildcard)</strong> يُنشأ مرة واحدة، ثم يُخدَّم كل دومين
+          فرعي من نفس هذا الكود عبر <code>subsite.php</code> بمحتوى SEO مُولَّد بالذكاء الاصطناعي (OpenRouter — نماذج مجانية).
+          الهدف: آلاف الصفحات القابلة للأرشفة لجلب ترافيك عالٍ.
+        </p>
+        <div class="formrow" style="margin-bottom:6px">
+          <div style="background:#232a45;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800"><?= (int)$fstats['total'] ?></div><div style="font-size:12px;color:var(--muted)">إجمالي الدومينات</div></div>
+          <div style="background:#232a45;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800;color:var(--accent2)"><?= (int)$fstats['live'] ?></div><div style="font-size:12px;color:var(--muted)">منشورة (Live)</div></div>
+          <div style="background:#232a45;border-radius:12px;padding:14px;text-align:center"><div style="font-size:26px;font-weight:800"><?= (int)$fstats['ssl'] ?></div><div style="font-size:12px;color:var(--muted)">مؤمّنة SSL</div></div>
+        </div>
+        <p style="font-size:12px;color:var(--muted)">وضع cPanel:
+          <?php $cpOk = setting('cpanel_host') && setting('cpanel_user') && setting('cpanel_token'); ?>
+          <?= $cpOk ? '<strong style="color:var(--accent2)">مُهيّأ ✓</strong>' : '<strong style="color:var(--danger)">غير مُهيّأ — التوليد سيعمل كمسودة فقط</strong>' ?>
+          &nbsp;·&nbsp; OpenRouter:
+          <?= (setting('openrouter_key') || (defined('OPENROUTER_KEY') && OPENROUTER_KEY)) ? '<strong style="color:var(--accent2)">مُهيّأ ✓</strong>' : '<strong style="color:var(--danger)">غير مُهيّأ — سيُستخدم قالب احتياطي</strong>' ?>
+        </p>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">⚙️ إعدادات المصنع + cPanel + SSL</h3>
+        <form method="post" action="?action=admin_save_settings">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <div><label>الدومين الجذر</label><input type="text" name="factory_root_domain" value="<?= e(setting('factory_root_domain','')) ?>" placeholder="yassota.com"></div>
+            <div><label>مسار الملفات (docroot)</label><input type="text" name="factory_docroot" value="<?= e(setting('factory_docroot','')) ?>" placeholder="public_html"></div>
+            <div><label>نموذج OpenRouter</label><input type="text" name="openrouter_model" value="<?= e(setting('openrouter_model','meta-llama/llama-3.1-8b-instruct:free')) ?>"></div>
+          </div>
+          <div class="formrow">
+            <div><label>cPanel Host (‏https://server:2083)</label><input type="text" name="cpanel_host" value="<?= e(setting('cpanel_host','')) ?>" placeholder="https://server.host:2083"></div>
+            <div><label>cPanel User</label><input type="text" name="cpanel_user" value="<?= e(setting('cpanel_user','')) ?>"></div>
+            <div><label>cPanel API Token</label><input type="password" name="cpanel_token" value="<?= e(setting('cpanel_token','')) ?>" placeholder="من cPanel → Manage API Tokens"></div>
+          </div>
+          <p style="font-size:12px;color:var(--muted)">التوكِن يُحفظ في قاعدة البيانات ولا يظهر في أي سجل أو ملف. أنشئه من cPanel → Manage API Tokens بصلاحية إدارة الدومينات.</p>
+          <button class="btn btn-primary">حفظ الإعدادات</button>
+        </form>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">🚀 توليد دفعة دومينات</h3>
+        <form method="post" action="?action=admin_factory_generate">
+          <input type="hidden" name="csrf" value="<?= csrf_token() ?>">
+          <div class="formrow">
+            <div><label>العدد (١–٢٠٠ للدفعة)</label><input type="number" name="count" value="10" min="1" max="200"></div>
+            <div><label>اللغة</label><select name="lang"><option value="ar">العربية</option><option value="en">English</option></select></div>
+            <div><label>مجال محدد (اختياري)</label><input type="text" name="niche" placeholder="اتركه فارغًا للتنويع التلقائي"></div>
+          </div>
+          <div style="display:flex;align-items:center;gap:8px;margin:8px 0">
+            <input type="checkbox" id="golive" name="go_live" value="1" style="width:auto">
+            <label for="golive" style="margin:0;font-size:13px">تنفيذ مباشر على cPanel (بدون تحديد = مسودة تجريبية آمنة)</label>
+          </div>
+          <button class="btn btn-primary">توليد الآن</button>
+          <span style="font-size:12px;color:var(--muted)">لتوليد آلاف الدومينات، شغّل دفعات متتابعة (كل دفعة حتى ٢٠٠).</span>
+        </form>
+        <div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:14px">
+          <form method="post" action="?action=admin_factory_wildcard"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="go_live" value="1"><button class="btn btn-ghost" onclick="return confirm('إنشاء الدومين الشامل (*) على cPanel؟')">① إنشاء Wildcard *</button></form>
+          <form method="post" action="?action=admin_factory_autossl"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="go_live" value="1"><button class="btn btn-ghost" onclick="return confirm('تشغيل AutoSSL لإصدار شهادات HTTPS؟')">② تشغيل AutoSSL 🔒</button></form>
+          <a class="btn btn-ghost" href="/sitemap.php" target="_blank">③ خريطة الموقع الموحّدة 🗺️</a>
+        </div>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">🌐 الدومينات الفرعية (<?= count($subs) ?> من <?= (int)$fstats['total'] ?>)</h3>
+        <table>
+          <tr><th>الدومين</th><th>المجال</th><th>الحالة</th><th>SSL</th><th>مشاهدات</th><th></th></tr>
+          <?php foreach ($subs as $s): ?>
+          <tr>
+            <td style="font-size:12px"><a href="https://<?= e($s['host']) ?>" target="_blank" style="color:var(--accent2)"><?= e($s['host']) ?></a></td>
+            <td style="font-size:12px"><?= e($s['niche']) ?></td>
+            <td><span class="badge <?= $s['status']==='live'?'approved':'pending' ?>"><?= e($s['status']) ?></span></td>
+            <td style="font-size:12px"><?= $s['ssl'] ? '🔒' : '—' ?></td>
+            <td style="font-size:12px"><?= (int)$s['views'] ?></td>
+            <td style="white-space:nowrap">
+              <?php if ($s['status'] !== 'live'): ?>
+              <form method="post" action="?action=admin_factory_publish" style="display:inline"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$s['id'] ?>"><button class="btn btn-success" style="padding:4px 10px;font-size:12px">نشر</button></form>
+              <?php endif; ?>
+              <form method="post" action="?action=admin_factory_delete" style="display:inline" onsubmit="return confirm('حذف؟')"><input type="hidden" name="csrf" value="<?= csrf_token() ?>"><input type="hidden" name="id" value="<?= (int)$s['id'] ?>"><button class="btn btn-danger" style="padding:4px 10px;font-size:12px">حذف</button></form>
+            </td>
+          </tr>
+          <?php endforeach; ?>
+          <?php if (!$subs): ?><tr><td colspan="6" style="text-align:center;color:var(--muted);padding:20px">لم يتم توليد أي دومين بعد. ابدأ من الأعلى.</td></tr><?php endif; ?>
+        </table>
+      </div>
+
+      <div class="admin-box">
+        <h3 style="margin-top:0">📋 سجل المصنع</h3>
+        <table>
+          <tr><th>الوقت</th><th>الخطوة</th><th>الدومين</th><th>النتيجة</th></tr>
+          <?php foreach ($flog as $row): ?>
+          <tr>
+            <td style="white-space:nowrap;font-size:12px"><?= e(date('m-d H:i', strtotime($row['created_at']))) ?></td>
+            <td style="font-size:12px"><?= e($row['step']) ?></td>
+            <td style="font-size:12px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap"><?= e($row['host'] ?? '—') ?></td>
+            <td style="font-size:12px"><?= $row['ok'] ? '✅ ' : '❌ ' ?><?= e($row['detail']) ?></td>
+          </tr>
+          <?php endforeach; ?>
+          <?php if (!$flog): ?><tr><td colspan="4" style="text-align:center;color:var(--muted);padding:20px">لا يوجد نشاط بعد.</td></tr><?php endif; ?>
         </table>
       </div>
 
